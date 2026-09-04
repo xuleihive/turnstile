@@ -1239,7 +1239,7 @@ export function App() {
             <li className="sidebar-menu-item workspace-menu-item">
               <div className="workspace-switcher">
                 <span className="workspace-icon-slot" aria-hidden="true"><span><TurnstileMark size={16} /></span></span>
-                <b data-no-localize>Turnstile</b>
+                <b data-no-localize>soshk</b>
               </div>
               <DropdownMenu>
                 <DropdownMenuTrigger className="workspace-source-switcher" aria-label="切换数据源">

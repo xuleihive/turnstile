@@ -6,6 +6,8 @@ from typing import Any
 from .models import EnterpriseEntity, EnterpriseEntityCatalog
 
 ORGANIZATION_ID = "org-contoso-global"
+ORGANIZATION_NAME = "SOS"
+SEEDED_USER_EMAIL_DOMAIN = "soshk.com"
 DEFAULT_APPLICATION_USER_DEPARTMENT_ID = "department-platform"
 
 
@@ -123,14 +125,14 @@ def enterprise_catalog() -> EnterpriseEntityCatalog:
     ]
     users = [
         EnterpriseEntity(
-            id=f"test.user{index:02d}@contoso.com",
-            name=f"test.user{index:02d}@contoso.com",
+            id=f"test.user{index:02d}@{SEEDED_USER_EMAIL_DOMAIN}",
+            name=f"test.user{index:02d}@{SEEDED_USER_EMAIL_DOMAIN}",
             parent_id=departments[(index - 1) % len(departments)][0],
         )
         for index in range(1, 21)
     ]
     return EnterpriseEntityCatalog(
-        organizations=[EnterpriseEntity(id=ORGANIZATION_ID, name="Contoso Global")],
+        organizations=[EnterpriseEntity(id=ORGANIZATION_ID, name=ORGANIZATION_NAME)],
         departments=[
             EnterpriseEntity(id=id_, name=name, parent_id=ORGANIZATION_ID)
             for id_, name in departments
