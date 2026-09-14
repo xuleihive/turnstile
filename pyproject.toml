@@ -27,7 +27,7 @@ dev = [
     # emits JSON,
     # so comparing them requires a parser. Dev-only, never shipped in the deployment zip.
     "pyyaml==6.0.3",
-    "ruff==0.15.22",
+    "ruff==0.16.4",
 ]
 
 [tool.pytest.ini_options]
