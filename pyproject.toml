@@ -21,7 +21,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy==2.3.0",
+    "mypy==2.3.1",
     "pytest==9.1.1",
     # Only tests/platform/contracts/test_openapi.py needs it: the contract is YAML and the app
     # emits JSON,
