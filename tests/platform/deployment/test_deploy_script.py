@@ -9,6 +9,7 @@ import urllib.error
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from packaging.tags import cpython_tags
@@ -19,6 +20,7 @@ from scripts.deploy import (
     DeploymentError,
     DeploymentInputs,
     ExistingCore,
+    SecretMaterial,
     _install_linux_dependencies,
     _upgrade_lock,
     _write_private_json,
@@ -1076,6 +1078,92 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
         release_document["parameters"]["currentApiSettings"]["value"]
         == {"EXISTING_API_SETTING": "preserved"}
     )
+
+
+def _release_document(base_values: dict[str, Any]) -> dict[str, Any]:
+    material = SecretMaterial(
+        values={"apimSubscriptionKey": "key", "observerAdapterSharedKey": "shared"},
+        owner_password=None,
+    )
+    return runtime_release_parameters(
+        material,
+        {
+            "apiName": "api-turnstile-test",
+            "controlPlaneFunctionName": "func-turnstile-control-test",
+            "gatewayApiPath": "https://apim.test/turnstile/llm",
+        },
+        {
+            "webAppUrl": "https://observer.test",
+            "adapterKeyNamedValueName": "turnstile-observer-key",
+        },
+        {},
+        {},
+        base_parameters={"parameters": {k: {"value": v} for k, v in base_values.items()}},
+    )
+
+
+def test_runtime_release_carries_parameter_driven_api_settings() -> None:
+    """The base template only runs on a first deployment, so every setting whose value comes
+    from a parameter has to be written by the runtime release as well -- otherwise changing the
+    parameter updates nothing on an environment that already exists."""
+    document = _release_document(
+        {
+            "entraClientId": "11111111-2222-3333-4444-555555555555",
+            "entraAllowedEmailDomains": ["contoso.com", "contoso.onmicrosoft.com"],
+            "provisionControlPlane": True,
+            "gatewayApplicationKeyManagementEnabled": True,
+            "gatewayApplicationProvisioningEnabled": True,
+            "gatewayApplicationDefaultMonthlyTokenLimit": 250000,
+            "gatewayApplicationDefaultTokensPerMinute": 7000,
+            "databricksOAuthEnabled": True,
+        }
+    )
+    values = {name: entry["value"] for name, entry in document["parameters"].items()}
+    assert values["entraClientId"] == "11111111-2222-3333-4444-555555555555"
+    assert values["entraAllowedEmailDomains"] == ["contoso.com", "contoso.onmicrosoft.com"]
+    assert values["applicationKeyManagementEnabled"] is True
+    assert values["applicationProvisioningEnabled"] is True
+    assert values["applicationDefaultMonthlyTokenLimit"] == 250000
+    assert values["applicationDefaultTokensPerMinute"] == 7000
+    assert values["databricksOAuthEnabled"] is True
+
+
+def test_runtime_release_gates_control_plane_settings_like_the_base_template() -> None:
+    """`main.bicep` passes `provisionControlPlane && flag` down to `data-plane.bicep`. The
+    runtime release has to apply the same gate or the two would disagree for one deployment."""
+    document = _release_document(
+        {
+            "provisionControlPlane": False,
+            "gatewayApplicationProvisioningEnabled": True,
+            "databricksOAuthEnabled": True,
+        }
+    )
+    values = {name: entry["value"] for name, entry in document["parameters"].items()}
+    assert values["applicationProvisioningEnabled"] is False
+    assert values["databricksOAuthEnabled"] is False
+
+
+def test_runtime_release_without_base_parameters_keeps_previous_defaults() -> None:
+    """Callers that predate the `base_parameters` argument must keep working."""
+    document = runtime_release_parameters(
+        SecretMaterial(values={"apimSubscriptionKey": "key"}, owner_password=None),
+        {
+            "apiName": "api-turnstile-test",
+            "controlPlaneFunctionName": "func-turnstile-control-test",
+            "gatewayApiPath": "https://apim.test/turnstile/llm",
+        },
+        {
+            "webAppUrl": "https://observer.test",
+            "adapterKeyNamedValueName": "turnstile-observer-key",
+        },
+        {},
+        {},
+    )
+    values = {name: entry["value"] for name, entry in document["parameters"].items()}
+    assert values["entraClientId"] == ""
+    assert values["entraAllowedEmailDomains"] == []
+    assert values["applicationProvisioningEnabled"] is False
+    assert values["applicationDefaultMonthlyTokenLimit"] == 100000
 
 
 class WhatIfRunner(CommandRunner):

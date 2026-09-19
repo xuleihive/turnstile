@@ -1096,13 +1096,34 @@ def observer_parameters(
     )
 
 
+def _resolved_base_parameter(base_parameters: Mapping[str, Any], name: str, default: Any) -> Any:
+    """Read a value out of the document already built for `main.bicep`.
+
+    Reading the resolved document rather than `inputs.parameters` is deliberate: it is the
+    same object the base template receives, so a value written by the runtime release cannot
+    drift from the one the base template would have written for the same run.
+    """
+    entry = base_parameters.get("parameters")
+    if not isinstance(entry, Mapping):
+        return default
+    value = entry.get(name)
+    if not isinstance(value, Mapping) or "value" not in value:
+        return default
+    return value["value"]
+
+
 def runtime_release_parameters(
     secrets_: SecretMaterial,
     platform_outputs: Mapping[str, Any],
     observer_outputs: Mapping[str, Any],
     current_api_settings: Mapping[str, str],
     current_control_plane_settings: Mapping[str, str],
+    base_parameters: Mapping[str, Any] | None = None,
 ) -> JsonObject:
+    base = base_parameters or {}
+    # `main.bicep` gates both of these on `provisionControlPlane`; mirroring that here keeps the
+    # value identical to the one `data-plane.bicep` would receive.
+    control_plane = bool(_resolved_base_parameter(base, "provisionControlPlane", False))
     return _arm_parameter_document(
         {
             "apiName": _output_string(platform_outputs, "apiName"),
@@ -1117,6 +1138,25 @@ def runtime_release_parameters(
             ),
             "publicationWorkerEnabled": True,
             "releaseWorkerEnabled": True,
+            "entraClientId": str(_resolved_base_parameter(base, "entraClientId", "") or ""),
+            "entraAllowedEmailDomains": list(
+                _resolved_base_parameter(base, "entraAllowedEmailDomains", []) or []
+            ),
+            "applicationKeyManagementEnabled": bool(
+                _resolved_base_parameter(base, "gatewayApplicationKeyManagementEnabled", False)
+            ),
+            "applicationProvisioningEnabled": control_plane
+            and bool(
+                _resolved_base_parameter(base, "gatewayApplicationProvisioningEnabled", False)
+            ),
+            "applicationDefaultMonthlyTokenLimit": int(
+                _resolved_base_parameter(base, "gatewayApplicationDefaultMonthlyTokenLimit", 100000)
+            ),
+            "applicationDefaultTokensPerMinute": int(
+                _resolved_base_parameter(base, "gatewayApplicationDefaultTokensPerMinute", 100000)
+            ),
+            "databricksOAuthEnabled": control_plane
+            and bool(_resolved_base_parameter(base, "databricksOAuthEnabled", False)),
             "currentApiSettings": dict(current_api_settings),
             "currentControlPlaneSettings": dict(current_control_plane_settings),
         }
@@ -1646,6 +1686,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
             platform_outputs,
             api_settings,
             control_plane_settings,
+            base_parameters=base_parameters,
         )
         what_if_resource_group(
             runner,
@@ -1703,6 +1744,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         observer_outputs,
         api_settings,
         control_plane_settings,
+        base_parameters=base_parameters,
     )
     what_if_resource_group(
         runner,
