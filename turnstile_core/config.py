@@ -127,6 +127,14 @@ class Settings(BaseSettings):
 
     delegated_invocation_tester_ids: list[str] = Field(default_factory=list)
 
+    # Whether the twenty fixture people in the seeded catalogue appear in the governance
+    # pages. They exist so the traffic generator can bill generated calls to somebody who is
+    # deliberately not a real employee, and on a demo that roster is the point. On a customer
+    # install it is twenty accounts at a company they have never heard of, sitting in the
+    # budget page, impossible to delete because nothing stores them. Turn it off there.
+    # The traffic generator keeps its fixtures either way.
+    seed_demo_directory: bool = True
+
     traffic_generation_budget_usd: float = Field(default=20.0, gt=0, le=20)
     traffic_max_requests: int = Field(default=500, ge=1, le=5000)
     traffic_max_output_tokens: int = Field(default=64, ge=1, le=512)

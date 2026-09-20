@@ -941,7 +941,9 @@ def test_people_budget_directory_is_bounded_at_ten_thousand_users(
             for index in range(10_000)
         ],
     )
-    monkeypatch.setattr(budget_service, "enterprise_catalog", lambda: catalog)
+    monkeypatch.setattr(
+        budget_service, "governance_directory", lambda *_args, **_kwargs: catalog
+    )
     repository = InMemoryRepository()
     app.dependency_overrides[get_repository] = lambda: repository
     headers = {"X-Hive-Role": "owner"}

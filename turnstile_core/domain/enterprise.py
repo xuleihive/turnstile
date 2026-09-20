@@ -54,7 +54,10 @@ def merge_application_owners(
 
 
 def merge_observed_users(
-    catalog: EnterpriseEntityCatalog, observed: Iterable[Mapping[str, Any]]
+    catalog: EnterpriseEntityCatalog,
+    observed: Iterable[Mapping[str, Any]],
+    *,
+    excluded_ids: frozenset[str] = frozenset(),
 ) -> EnterpriseEntityCatalog:
     """Add people who actually called the gateway to the seeded catalog.
 
@@ -77,14 +80,22 @@ def merge_observed_users(
     budget and model policy. It now calls as `system-runtime-health-check`, and because
     that id has no `@` it can never be listed as a person, never be given a budget and
     never be given a model policy for the check to trip over.
+
+    `excluded_ids` is the same idea for identities that are email-shaped but still not
+    people here -- the seeded fixtures on an install that has disowned them. One test call
+    made as `test.user01@contoso.com` is enough to put that name back in the org chart,
+    where it reads as an employee rather than as the acceptance check it was.
     """
     known_departments = {item.id for item in catalog.departments}
     existing = {item.id for item in catalog.users}
+    disowned = {item.casefold() for item in excluded_ids}
     discovered: list[EnterpriseEntity] = []
     for row in observed:
         user_id = (row.get("user_id") or "").strip()
         department_id = (row.get("department_id") or "").strip()
         if "@" not in user_id or user_id in existing or department_id not in known_departments:
+            continue
+        if user_id.casefold() in disowned:
             continue
         existing.add(user_id)
         discovered.append(
@@ -101,7 +112,47 @@ def merge_observed_users(
     )
 
 
+def governance_directory(
+    observed: Iterable[Mapping[str, Any]], *, include_seeded_people: bool
+) -> EnterpriseEntityCatalog:
+    """The catalog an administrator reads: the org structure and the people in it.
+
+    `enterprise_catalog()` carries twenty fixture people so the traffic generator has
+    somewhere to attribute generated calls that is deliberately not a real employee. That is
+    the right call for generated traffic and a poor first impression for a real deployment:
+    the budget page opens on `test.user01@contoso.com` through `test.user20@contoso.com`, none
+    of whom exist at the customer, none of whom can be deleted -- they are generated on every
+    request -- and all of whom stand between the operator and the people they came to allocate.
+
+    With the fixtures disowned the roster starts empty and fills from the people who have
+    actually used the gateway, which is how real employees have always arrived. The departments
+    stay either way: a discovered person has to resolve to a known department to hang in the
+    budget hierarchy.
+
+    Disowning them also means disowning their traffic. A single acceptance check made as
+    `test.user01@contoso.com` -- a 403 denial, no tokens, no cost -- was enough to put that
+    name back on the budget page as though it were an employee. If this install says the
+    fixtures are not its people, a call from one does not make them one.
+
+    The flag is passed in rather than read here because the domain layer imports no
+    configuration -- see the layering test.
+    """
+    catalog = enterprise_catalog()
+    if include_seeded_people:
+        return merge_observed_users(catalog, observed)
+    return merge_observed_users(
+        catalog.model_copy(update={"users": []}),
+        observed,
+        excluded_ids=frozenset(user.id for user in catalog.users),
+    )
+
+
 def enterprise_catalog() -> EnterpriseEntityCatalog:
+    """Everything seeded, fixture people included.
+
+    Only the traffic generator should take the people from here. Anything an administrator
+    reads goes through `governance_directory()`.
+    """
     departments = [
         ("department-platform", "AI Platform"),
         ("department-commerce", "Commerce"),

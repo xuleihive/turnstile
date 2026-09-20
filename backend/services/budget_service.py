@@ -6,9 +6,8 @@ from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
 from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
+    governance_directory,
     merge_application_owners,
-    merge_observed_users,
 )
 from turnstile_core.domain.models import (
     BudgetScopeType,
@@ -61,9 +60,14 @@ class TokenBudgetService:
         self,
         repository: QueryRepository,
         project_model_access: ModelAccessProjector | None = None,
+        *,
+        seed_demo_directory: bool = True,
     ) -> None:
         self._repository = repository
         self._project_model_access = project_model_access
+        # Defaults to True so an existing caller keeps the behaviour it had; a deployment that
+        # is not a demo turns it off and the fixture people leave the budget pages.
+        self._seed_demo_directory = seed_demo_directory
 
     def _publish_model_access(self, user_ids: Sequence[str]) -> None:
         """Push a just-saved policy to the ledger the gateway reads.
@@ -89,7 +93,10 @@ class TokenBudgetService:
         # Merged, not seeded: a person who has actually used the gateway must be
         # allocatable, otherwise governance only covers identities with no traffic.
         catalog = merge_application_owners(
-            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            governance_directory(
+                self._repository.observed_users(),
+                include_seeded_people=self._seed_demo_directory,
+            ),
             self._repository.application_owners(),
         )
         return {
