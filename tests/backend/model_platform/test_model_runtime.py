@@ -988,6 +988,44 @@ def test_cli_adapter_executes_restricted_command(tmp_path: Path) -> None:
     assert CliGatewayAdapter().check(route).status.value == "available"
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected_status"),
+    [
+        (200, "available"),
+        (204, "available"),
+        (301, "unavailable"),
+        (401, "unavailable"),
+        (404, "unavailable"),
+        (429, "unavailable"),
+        (500, "unavailable"),
+    ],
+)
+def test_http_adapter_health_requires_a_success_response(
+    status_code: int, expected_status: str
+) -> None:
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        assert str(incoming.url) == "https://gateway.test/ready"
+        assert incoming.headers["authorization"] == "Bearer gateway-secret"
+        return httpx.Response(status_code)
+
+    adapter = OpenAICompatibleGatewayAdapter(
+        GatewayKind.APIM,
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    route = {
+        "runtime_id": UUID("30000000-0000-4000-8000-000000000003"),
+        "runtime_config": {"health_path": "/ready"},
+        "gateway_base_url": "https://gateway.test",
+        "gateway_auth_type": "bearer",
+        "gateway_credential": "gateway-secret",
+    }
+
+    result = adapter.check(route)
+
+    assert result.status.value == expected_status
+    assert result.message == f"HTTP {status_code} from apim"
+
+
 def test_http_adapter_injects_business_metadata() -> None:
     def handler(incoming: httpx.Request) -> httpx.Response:
         assert incoming.headers["x-hive-organization"] == "contoso"

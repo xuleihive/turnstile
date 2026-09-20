@@ -433,7 +433,7 @@ class OpenAICompatibleGatewayAdapter:
                 headers=self._auth_headers(route),
                 timeout=10,
             )
-            available = response.status_code < 500
+            available = response.is_success
             message = f"HTTP {response.status_code} from {self._implementation.value}"
         except httpx.HTTPError as error:
             available = False
