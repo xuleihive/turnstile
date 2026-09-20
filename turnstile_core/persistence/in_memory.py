@@ -24,6 +24,7 @@ from .in_memory_applications import InMemoryApplicationRepositoryMixin
 from .in_memory_assistant import InMemoryAssistantRepositoryMixin
 from .in_memory_billable_requests import InMemoryBillableRequestRepositoryMixin
 from .in_memory_budgets import InMemoryBudgetRepositoryMixin
+from .in_memory_organization import InMemoryOrganizationRepositoryMixin
 from .in_memory_publications import InMemoryPublicationRepositoryMixin
 from .in_memory_registry import InMemoryRegistryRepositoryMixin
 from .repository import (
@@ -83,6 +84,7 @@ class InMemoryRepository(
     InMemoryAssistantRepositoryMixin,
     InMemoryBudgetRepositoryMixin,
     InMemoryBillableRequestRepositoryMixin,
+    InMemoryOrganizationRepositoryMixin,
     QueryRepository,
 ):
     def __init__(self) -> None:
@@ -162,6 +164,29 @@ class InMemoryRepository(
         self.gateway_application_model_policies: dict[UUID, dict[str, Any]] = {}
         self.gateway_application_model_access: dict[UUID, set[UUID]] = {}
         self.gateway_application_audit: list[dict[str, Any]] = []
+        self.gateway_application_attribution: dict[UUID, dict[str, Any]] = {}
+        self.gateway_application_attribution_audit: list[dict[str, Any]] = []
+        # Mirrors what migration 009 seeds, so the fake and a migrated database answer the
+        # same structure to anything that reads it.
+        self.org_units_by_id: dict[str, dict[str, Any]] = {
+            entity.id: {
+                "id": entity.id,
+                "unit_type": unit_type,
+                "parent_id": entity.parent_id,
+                "display_name": entity.name,
+                "status": "active",
+                "created_by": "seed",
+                "created_at": datetime.now(UTC),
+                "updated_by": "seed",
+                "updated_at": datetime.now(UTC),
+            }
+            for unit_type, entities in (
+                ("organization", enterprise_catalog().organizations),
+                ("department", enterprise_catalog().departments),
+            )
+            for entity in entities
+        }
+        self.org_unit_audit: list[dict[str, Any]] = []
         self.department_enforcement: dict[str, dict[str, Any]] = {
             department.id: {
                 "department_id": department.id,

@@ -98,6 +98,7 @@ import { ModelManagementPage } from "./pages/model-management-page";
 import { ApimNativeRoutesPage } from "./pages/apim-native-routes-page";
 import { GatewayReleasesPage } from "./pages/gateway-releases-page";
 import { ApplicationsPage } from "./pages/applications-page";
+import { OrganizationPage } from "./pages/organization-page";
 import { SettingsPage } from "./pages/settings-page";
 import type {
   AuditFinding,
@@ -114,6 +115,7 @@ type Page =
   | "apim-native-routes"
   | "gateway-releases"
   | "applications"
+  | "organization"
   | "budgets"
   | "assistant"
   | "pinned-report"
@@ -151,6 +153,7 @@ const pageIds: Page[] = [
   "apim-native-routes",
   "gateway-releases",
   "applications",
+  "organization",
   "budgets",
   "assistant",
   "pinned-report",
@@ -1175,6 +1178,12 @@ export function App() {
   ];
   if (selectedDataSource === "apim") {
     navGroups.push({
+      label: "组织管理",
+      items: [
+        { label: "组织与部门", icon: Building2, page: "organization" },
+      ],
+    });
+    navGroups.push({
       label: "模型平台",
       items: [
         { label: "模型管理", icon: Cpu, page: "models" },
@@ -1502,6 +1511,7 @@ export function App() {
           {selectedDataSource === "apim" && page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen={nativeRouteDrawerOpen} onRouteDrawerOpenChange={setNativeRouteDrawerOpen} addOpen={nativeRouteAddOpen} onAddOpenChange={setNativeRouteAddOpen} />}
           {selectedDataSource === "apim" && page === "gateway-releases" && <GatewayReleasesPage releaseDrawerOpen={gatewayReleaseDrawerOpen} onReleaseDrawerOpenChange={setGatewayReleaseDrawerOpen} />}
           {selectedDataSource === "apim" && page === "applications" && <ApplicationsPage />}
+          {selectedDataSource === "apim" && page === "organization" && <OrganizationPage />}
           {page === "assistant" && (
             <AssistantPage
               key={selectedDataSource}

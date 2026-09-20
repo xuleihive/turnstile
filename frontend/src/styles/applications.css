@@ -44,9 +44,36 @@
 .application-inventory-toolbar .application-filters { margin: 0; }
 .application-inventory-toolbar .application-filters button { height: 32px; }
 .application-inventory-toolbar .model-search-control { margin-left: auto; }
-.application-model-table { --model-table-min-width: 638px; }
+.application-model-table { --model-table-min-width: 950px; }
+.application-department-cell em { color: var(--muted-foreground); font-style: normal; }
+.application-owner-cell em { color: var(--muted-foreground); font-style: normal; }
+.application-owner-cell b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.application-owner-hint {
+  display: flex; align-items: flex-start; gap: 6px;
+  color: var(--warning-foreground, var(--muted-foreground));
+}
+.application-owner-hint svg { flex: none; margin-top: 2px; }
+.application-department-filter { display: flex; align-items: center; gap: 10px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; }
+.application-department-filter label { display: flex; align-items: center; gap: 6px; }
+.application-department-filter select { min-width: 140px; }
+.application-row-select { display: inline-flex; align-items: center; padding-right: 2px; }
+.application-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  font-size: 12px;
+}
+.application-bulk-bar label { display: flex; align-items: center; gap: 6px; }
+.application-bulk-bar select { min-width: 170px; }
+.application-bulk-result { color: var(--muted-foreground); }
 .application-model-table .model-table-head,
-.application-model-table .model-list-row { grid-template-columns: var(--resizable-table-columns, minmax(180px, 1.2fr) minmax(130px, .75fr) minmax(180px, 1fr) 80px); }
+.application-model-table .model-list-row { grid-template-columns: var(--resizable-table-columns, minmax(180px, 1.2fr) minmax(130px, .75fr) minmax(140px, .8fr) minmax(180px, 1fr) 80px); }
 .application-inventory-list { min-height: 0; }
 .application-inventory-row { color: var(--foreground); text-decoration: none; }
 .application-inventory-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }

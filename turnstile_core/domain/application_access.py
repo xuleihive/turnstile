@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
+from .application_attribution import AttributionSource
 from .models import StrictModel
 
 ApplicationType = Literal["service", "agent", "delegated_user", "system"]
@@ -203,6 +204,78 @@ def decode_application_avatar_data_url(value: str) -> tuple[str, bytes]:
     return media_type, image_bytes
 
 
+class GatewayApplicationDepartmentUpdate(StrictModel):
+    """Which department a subscription is filed under, and therefore which budget it spends.
+
+    The gateway reads this off the subscription on every request that does not declare a
+    department of its own, so filing a subscription here is what makes its traffic count
+    against that department. Moving one moves future usage; usage already recorded keeps the
+    department it was recorded with, because a budget that silently restates last month is
+    not a budget anyone can reconcile.
+    """
+
+    department_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("department_id")
+    @classmethod
+    def normalize_blank_to_absent(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class GatewayApplicationOwnerUpdate(StrictModel):
+    """Name the person who holds a subscription, when derivation could not.
+
+    Required to look like an address, because the budget directory admits a person only when
+    their id contains an `@` -- that rule is what keeps machine identities such as the runtime
+    health probe out of the person list. An owner written here that is not an address would be
+    accepted and then silently fail to be budgetable, which is a worse outcome than refusing it.
+    """
+
+    owner_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("owner_id")
+    @classmethod
+    def normalize_and_require_address(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if "@" not in trimmed:
+            raise ValueError(
+                "An owner must be an email address; the budget directory cannot hold an id "
+                "without one"
+            )
+        return trimmed
+
+
+class GatewayApplicationBulkDepartment(StrictModel):
+    """File a batch of subscriptions in one action.
+
+    An install that names a subscription per person arrives with several hundred of them, all
+    unfiled. Doing that one dialog at a time is not a slow version of this feature -- it is
+    the reason nobody does it, and an unfiled inventory is the state this whole area exists
+    to get out of.
+    """
+
+    application_ids: list[UUID] = Field(min_length=1, max_length=500)
+    department_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("department_id")
+    @classmethod
+    def normalize_blank_to_absent(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class GatewayApplicationBulkDepartmentResult(StrictModel):
+    updated: int = Field(ge=0)
+    unchanged: int = Field(ge=0)
+
+
 class GatewayApplicationAvatarUpdate(StrictModel):
     avatar_data_url: str | None = Field(default=None, max_length=90_000)
 
@@ -226,7 +299,15 @@ class GatewayApplicationSummary(StrictModel):
     display_name: str
     description: str | None
     owner_id: str | None
+    owner_source: AttributionSource | None = None
     department_id: str | None
+    department_name: str | None = None
+    department_source: AttributionSource | None = None
+    # Two subscriptions that appear to be held by one person share this. It is what lets the
+    # screen say "these two keys look like one person" for the holders whose address is nowhere
+    # in the data, and who would otherwise silently draw two allowances from a per-key budget.
+    person_group: str | None = None
+    person_group_size: int = 1
     application_type: ApplicationType
     status: ApplicationStatus
     system_managed: bool
@@ -346,6 +427,10 @@ class GatewayApplicationDiscoveryItem(StrictModel):
     scope_exists: bool
     application_type: ApplicationType
     system_managed: bool
+    # The APIM user the subscription's `ownerId` points at, resolved to their email. This is the
+    # customer's own record of who holds the key, so it outranks anything read out of a display
+    # name. Optional because most subscriptions on a real install have no owner set at all.
+    owner_email: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
     def system_type_matches_management(self) -> GatewayApplicationDiscoveryItem:

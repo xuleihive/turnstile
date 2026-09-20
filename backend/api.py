@@ -28,6 +28,7 @@ from .http.model_platform import (
     publication_router as model_platform_publication_router,
 )
 from .http.observability import router as observability_router
+from .http.organization import router as organization_router
 from .http.service_dependencies import (
     application_access_service as _application_access_service,
 )
@@ -92,6 +93,7 @@ protected.routes.extend(budgets_router.routes)
 protected.routes.extend(model_platform_protected_router.routes)
 protected.routes.extend(observability_router.routes)
 protected.routes.extend(application_access_router.routes)
+protected.routes.extend(organization_router.routes)
 app.include_router(protected)
 app.include_router(assistant_title_router)
 app.include_router(model_platform_publication_router)

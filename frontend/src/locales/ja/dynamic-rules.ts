@@ -1,4 +1,9 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全选当前\s*([\d,]+)\s*个$/g, (_match, value) => `表示中の ${value} 件をすべて選択`],
+  [/^已更新\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} 件を更新しました`],
+  [/^已选\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} 件を選択中`],
+  [/^与另\s*([\d,]+)\s*把钥匙同名$/g, (_match, value) => `他の ${value} 件のキーと同名です`],
+  [/^还有\s*([\d,]+)\s*个订阅去掉用途后缀后同名，可能是同一个人。两个订阅各自算各自的额度。$/g, (_match, value) => `用途サフィックスを除くと他の ${value} 件の購読と同名のため、同一人物の可能性があります。各購読はそれぞれ個別に上限を消費します。`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key をコピー`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key をローテーション`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `${kind} Key をローテーションしますか？`],

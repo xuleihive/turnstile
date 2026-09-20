@@ -1,0 +1,181 @@
+.org-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px 32px;
+  overflow-y: auto;
+}
+
+.org-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 0;
+  color: var(--muted-foreground);
+}
+
+.org-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 16px 18px;
+}
+
+.org-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.org-card > header h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.org-card-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+
+.org-organization {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.org-organization code,
+.org-table code {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.org-unit-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.org-unit-rename {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 320px;
+}
+
+.org-table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.org-table-head,
+.org-row {
+  display: grid;
+  grid-template-columns: var(--resizable-table-columns, 1fr);
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.org-department-table .org-table-head,
+.org-department-table .org-row {
+  grid-template-columns: var(--resizable-table-columns, minmax(200px, 1.4fr) minmax(220px, 1.6fr) 90px 140px 120px);
+}
+
+.org-role-table .org-table-head,
+.org-role-table .org-row {
+  grid-template-columns: var(--resizable-table-columns, minmax(220px, 1.4fr) minmax(160px, 1fr));
+}
+
+.org-member-table .org-table-head,
+.org-member-table .org-row {
+  grid-template-columns: var(--resizable-table-columns, minmax(260px, 1.6fr) 110px 110px 160px minmax(180px, 1fr));
+}
+
+.org-member-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.org-readonly {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.org-table-heading {
+  font-weight: 500;
+  color: var(--muted-foreground);
+  padding: 6px 0;
+}
+
+.org-row > [role="cell"] {
+  padding: 8px 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.org-row[data-retired] {
+  opacity: 0.55;
+}
+
+.org-unit-references {
+  display: flex;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+.org-create-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.org-create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  font-size: 12px;
+}
+
+.org-create-form label small {
+  color: var(--muted-foreground);
+  line-height: 1.5;
+  max-width: 420px;
+}
+
+.org-create-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+.org-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

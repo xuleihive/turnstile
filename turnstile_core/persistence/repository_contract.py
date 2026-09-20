@@ -329,6 +329,11 @@ class QueryRepository(ABC):
     def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def subscription_attributed_usage(
+        self, from_: datetime, to: datetime
+    ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
     def token_usage_by_budget_scope(
         self, from_: datetime, to: datetime
     ) -> Sequence[dict[str, Any]]: ...
@@ -747,6 +752,56 @@ class QueryRepository(ABC):
         model_ids: Sequence[UUID],
         actor: str,
     ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def org_units(self) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def create_org_unit(
+        self,
+        unit_id: str,
+        unit_type: str,
+        parent_id: str | None,
+        display_name: str,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def rename_org_unit(
+        self, unit_id: str, display_name: str, actor: str
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def set_org_unit_status(
+        self, unit_id: str, status: str, actor: str
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def org_unit_references(self, unit_id: str) -> dict[str, int]: ...
+
+    @abstractmethod
+    def list_org_unit_audit(
+        self, unit_id: str, limit: int = 20
+    ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def update_gateway_application_department(
+        self,
+        application_id: UUID,
+        department_id: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def update_gateway_application_owner(
+        self,
+        application_id: UUID,
+        owner_id: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def list_gateway_application_attribution(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def list_gateway_application_subscriptions(

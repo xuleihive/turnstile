@@ -1,4 +1,9 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全选当前\s*([\d,]+)\s*个$/g, (_match, value) => `표시된 ${value}개 모두 선택`],
+  [/^已更新\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value}개 업데이트됨`],
+  [/^已选\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value}개 선택됨`],
+  [/^与另\s*([\d,]+)\s*把钥匙同名$/g, (_match, value) => `다른 ${value}개의 키와 이름이 같습니다`],
+  [/^还有\s*([\d,]+)\s*个订阅去掉用途后缀后同名，可能是同一个人。两个订阅各自算各自的额度。$/g, (_match, value) => `용도 접미사를 제외하면 다른 ${value}개 구독과 이름이 같아 동일인일 수 있습니다. 각 구독은 각자의 한도를 사용합니다.`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key 복사`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key 교체`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `${kind} Key를 교체할까요?`],

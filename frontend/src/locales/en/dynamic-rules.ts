@@ -2,6 +2,11 @@ const plural = (value: string, singular: string, pluralForm = `${singular}s`) =>
   Number(value.replace(/,/g, "")) === 1 ? singular : pluralForm
 
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全选当前\s*([\d,]+)\s*个$/g, (_match, value) => `Select all ${value}`],
+  [/^已更新\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} updated`],
+  [/^已选\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} selected`],
+  [/^与另\s*([\d,]+)\s*把钥匙同名$/g, (_match, value) => `Same name as ${value} other key${Number(value) === 1 ? "" : "s"}`],
+  [/^还有\s*([\d,]+)\s*个订阅去掉用途后缀后同名，可能是同一个人。两个订阅各自算各自的额度。$/g, (_match, value) => `${value} other subscription${Number(value) === 1 ? " has" : "s have"} the same name once the usage suffix is removed, so they may be one person. Each subscription draws its own allowance.`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `Copy ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `Rotate ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `Rotate ${kind} Key?`],

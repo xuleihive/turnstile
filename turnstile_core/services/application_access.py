@@ -13,10 +13,14 @@ from ..domain.application_access import (
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudget,
     GatewayApplicationBudgetUpdate,
+    GatewayApplicationBulkDepartment,
+    GatewayApplicationBulkDepartmentResult,
+    GatewayApplicationDepartmentUpdate,
     GatewayApplicationDetail,
     GatewayApplicationDiscovery,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
+    GatewayApplicationOwnerUpdate,
     GatewayApplicationProvisioningDefaults,
     GatewayApplicationSubscription,
     GatewayApplicationSubscriptionKeyRotation,
@@ -29,6 +33,13 @@ from ..domain.application_access import (
     application_subscription_id_for,
     decode_application_avatar_data_url,
 )
+from ..domain.application_attribution import (
+    OwnerDerivation,
+    department_for_owner,
+    derive_owner,
+    person_group,
+)
+from ..domain.enterprise import governance_departments
 from ..domain.models import TrendResponse
 from ..integrations.apim_control_plane_contract import (
     ApimSubscriptionKeyClient,
@@ -89,26 +100,59 @@ class ApplicationAccessService:
         self, discovery: GatewayApplicationDiscovery, actor: str
     ) -> Sequence[dict[str, object]]:
         period_start, _ = _period_bounds(discovery.discovered_at)
-        values = [
+        # Attribution is worked out here rather than in the repository so that the rule is
+        # testable without a database, and so the whole existing estate is read once instead of
+        # once per discovered subscription.
+        known = [
             {
-                **item.model_dump(),
-                "application_id": application_id_for(
-                    discovery.gateway_profile_id, item.apim_subscription_id
-                ),
-                "subscription_id": application_subscription_id_for(
-                    discovery.gateway_profile_id, item.apim_subscription_id
-                ),
-                "audit_id": uuid4(),
-                "slug": item.apim_subscription_id.casefold(),
-                "source": (
-                    "bicep"
-                    if item.apim_subscription_id
-                    in {"turnstile-dashboard", "turnstile-publisher-probe"}
-                    else "discovered"
-                ),
+                "owner_id": row.get("owner_id"),
+                "department_id": row.get("department_id"),
+                "person_group": person_group(str(row.get("display_name") or "")),
             }
-            for item in discovery.items
+            for row in self._repository.list_gateway_applications()
         ]
+        values = []
+        for item in discovery.items:
+            derivation = derive_owner(item.display_name, apim_owner_email=item.owner_email)
+            # A system subscription is the platform talking to itself. Giving it a holder would
+            # put the platform in the person directory and hang a budget off it.
+            if item.system_managed:
+                derivation = OwnerDerivation()
+            inherited = department_for_owner(
+                derivation.owner_id, derivation.person_group, known
+            )
+            values.append(
+                {
+                    **item.model_dump(exclude={"owner_email"}),
+                    "application_id": application_id_for(
+                        discovery.gateway_profile_id, item.apim_subscription_id
+                    ),
+                    "subscription_id": application_subscription_id_for(
+                        discovery.gateway_profile_id, item.apim_subscription_id
+                    ),
+                    "audit_id": uuid4(),
+                    "slug": item.apim_subscription_id.casefold(),
+                    "source": (
+                        "bicep"
+                        if item.apim_subscription_id
+                        in {"turnstile-dashboard", "turnstile-publisher-probe"}
+                        else "discovered"
+                    ),
+                    "owner_id": derivation.owner_id,
+                    "owner_source": derivation.owner_source,
+                    "department_id": inherited,
+                    "department_source": "derived" if inherited else None,
+                }
+            )
+            # A key adopted in this same batch is a candidate parent for the next one, so two new
+            # keys for one person do not need two separate syncs to end up together.
+            known.append(
+                {
+                    "owner_id": derivation.owner_id,
+                    "department_id": inherited,
+                    "person_group": derivation.person_group,
+                }
+            )
         return self._repository.sync_gateway_applications(
             discovery.gateway_profile_id,
             values,
@@ -359,6 +403,91 @@ class ApplicationAccessService:
             raise ControlPlaneNotFoundError("Application not found")
         return self.application(application_id)
 
+    def update_application_department(
+        self,
+        application_id: UUID,
+        request: GatewayApplicationDepartmentUpdate,
+        actor: str,
+    ) -> GatewayApplicationDetail:
+        """File a subscription under a department.
+
+        The department is checked against the catalog because the id is a join key: a
+        subscription filed under one that does not exist is filed nowhere, while still
+        reading on screen as though it had been filed.
+
+        The gateway reads this column on every request that declares no department of its
+        own, so filing a subscription is what makes its traffic count against that
+        department's budget. It takes effect from the next request; usage already recorded
+        keeps the department it was recorded under.
+        """
+        if request.department_id is not None:
+            known = {item.id for item in governance_departments(self._repository.org_units())}
+            if request.department_id not in known:
+                raise ValueError(f"Unknown department: {request.department_id}")
+        row = self._repository.update_gateway_application_department(
+            application_id, request.department_id, actor
+        )
+        if row is None:
+            raise ControlPlaneNotFoundError("Application not found")
+        return self.application(application_id)
+
+    def update_application_owner(
+        self,
+        application_id: UUID,
+        request: GatewayApplicationOwnerUpdate,
+        actor: str,
+    ) -> GatewayApplicationDetail:
+        """Say who holds a subscription, when neither APIM nor its name could say.
+
+        Writing this marks the field as decided by a person, and from then on no sync will
+        touch it. That is the whole contract: a sync is allowed to fill blanks so that an
+        estate of several hundred keys can be attributed without anyone typing, and is never
+        allowed to undo a correction someone made afterwards.
+        """
+        row = self._repository.update_gateway_application_owner(
+            application_id, request.owner_id, actor
+        )
+        if row is None:
+            raise ControlPlaneNotFoundError("Application not found")
+        return self.application(application_id)
+
+    def update_application_department_bulk(
+        self, request: GatewayApplicationBulkDepartment, actor: str
+    ) -> GatewayApplicationBulkDepartmentResult:
+        if request.department_id is not None:
+            known = {item.id for item in governance_departments(self._repository.org_units())}
+            if request.department_id not in known:
+                raise ValueError(f"Unknown department: {request.department_id}")
+        # Snapshotted, not held by reference. The in-memory repository hands back the same
+        # dicts it stores and updates them in place, so comparing afterwards against a row
+        # read before the write reports every change as a no-op.
+        rows = {
+            UUID(str(row["id"])): {
+                "department_id": row.get("department_id"),
+                "system_managed": row.get("system_managed"),
+            }
+            for row in self._repository.list_gateway_applications()
+        }
+        updated = 0
+        unchanged = 0
+        for application_id in request.application_ids:
+            row = rows.get(application_id)
+            if row is None or row.get("system_managed"):
+                # A system-managed subscription belongs to the platform; silently skipping it
+                # is kinder than failing a batch of four hundred over one row.
+                unchanged += 1
+                continue
+            if row.get("department_id") == request.department_id:
+                unchanged += 1
+                continue
+            if self._repository.update_gateway_application_department(
+                application_id, request.department_id, actor
+            ) is None:
+                unchanged += 1
+            else:
+                updated += 1
+        return GatewayApplicationBulkDepartmentResult(updated=updated, unchanged=unchanged)
+
     def update_application_model_access(
         self,
         application_id: UUID,
@@ -414,6 +543,25 @@ class ApplicationAccessService:
             UUID(str(item["application_id"])): item
             for item in self._repository.list_gateway_application_avatars(application_ids)
         }
+        department_names = {
+            item.id: item.name
+            for item in governance_departments(self._repository.org_units())
+        }
+        attribution = {
+            UUID(str(item["application_id"])): item
+            for item in self._repository.list_gateway_application_attribution()
+        }
+        # Counted across the whole estate rather than per row: a holder with two keys is only
+        # visible as such when both are in view, and the screen needs to say so on either one.
+        group_sizes: dict[str, int] = {}
+        row_groups: dict[UUID, str | None] = {}
+        for row in rows:
+            if bool(row.get("system_managed")):
+                continue
+            group = person_group(str(row.get("display_name") or ""))
+            row_groups[UUID(str(row["id"]))] = group
+            if group:
+                group_sizes[group] = group_sizes.get(group, 0) + 1
         summaries: list[GatewayApplicationSummary] = []
         for row, application_id in zip(rows, application_ids, strict=True):
             application_subscriptions = subscriptions.get(application_id, [])
@@ -466,6 +614,13 @@ class ApplicationAccessService:
                 GatewayApplicationSummary.model_validate(
                     {
                         **dict(row),
+                        # Resolved per response rather than stored: a
+                        # department that gets renamed would otherwise keep
+                        # showing its old name on every subscription filed
+                        # under it until someone re-saved each one.
+                        "department_name": department_names.get(
+                            str(row["department_id"] or "")
+                        ),
                         "avatar_url": _avatar_url(
                             application_id,
                             avatars.get(application_id, {}).get("updated_at"),
@@ -483,6 +638,14 @@ class ApplicationAccessService:
                         ),
                         "budget": budget,
                         "usage": usage_model,
+                        "owner_source": attribution.get(application_id, {}).get("owner_source"),
+                        "department_source": attribution.get(application_id, {}).get(
+                            "department_source"
+                        ),
+                        "person_group": row_groups.get(application_id),
+                        "person_group_size": group_sizes.get(
+                            row_groups.get(application_id) or "", 1
+                        ),
                     }
                 )
             )

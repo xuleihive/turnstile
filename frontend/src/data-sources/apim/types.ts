@@ -998,6 +998,8 @@ export type GatewayApplicationUserUsage = {
   last_request_at: string
 }
 
+export type GatewayAttributionSource = "apim" | "derived" | "manual"
+
 export type GatewayApplicationSummary = {
   id: string
   gateway_profile_id: string
@@ -1005,7 +1007,12 @@ export type GatewayApplicationSummary = {
   display_name: string
   description: string | null
   owner_id: string | null
+  owner_source?: GatewayAttributionSource | null
   department_id: string | null
+  department_name?: string | null
+  department_source?: GatewayAttributionSource | null
+  person_group?: string | null
+  person_group_size?: number
   application_type: GatewayApplicationType
   status: GatewayApplicationStatus
   system_managed: boolean
@@ -1027,6 +1034,41 @@ export type GatewayApplicationSummary = {
 export type GatewayApplicationAvatarUpdate = {
   avatar_data_url: string | null
 }
+
+export type GatewayApplicationDepartmentUpdate = {
+  department_id: string | null
+}
+
+export type OrgUnitReferences = { budgets: number; usage_records: number; applications: number }
+
+export type OrgUnit = {
+  id: string
+  unit_type: "organization" | "department"
+  parent_id: string | null
+  display_name: string
+  status: "active" | "retired"
+  references: OrgUnitReferences
+  updated_by: string
+  updated_at: string
+}
+
+export type OrganizationDirectory = {
+  organization: OrgUnit | null
+  departments: OrgUnit[]
+}
+
+export type ConsoleMember = {
+  email: string
+  display_name: string | null
+  role: "owner" | "member"
+  enabled: boolean
+  sign_in: "password" | "microsoft"
+  created_at: string
+  last_login_at: string | null
+  is_self: boolean
+}
+
+export type ConsoleMemberList = { members: ConsoleMember[]; owner_count: number }
 
 export type GatewayApplicationAvatar = {
   avatar_url: string | null

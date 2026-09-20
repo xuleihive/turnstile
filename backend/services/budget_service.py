@@ -6,9 +6,8 @@ from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
 from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
+    governance_directory,
     merge_application_owners,
-    merge_observed_users,
 )
 from turnstile_core.domain.models import (
     BudgetScopeType,
@@ -61,9 +60,14 @@ class TokenBudgetService:
         self,
         repository: QueryRepository,
         project_model_access: ModelAccessProjector | None = None,
+        *,
+        seed_demo_directory: bool = True,
     ) -> None:
         self._repository = repository
         self._project_model_access = project_model_access
+        # Defaults to True so an existing caller keeps the behaviour it had; a deployment that
+        # is not a demo turns it off and the fixture people leave the budget pages.
+        self._seed_demo_directory = seed_demo_directory
 
     def _publish_model_access(self, user_ids: Sequence[str]) -> None:
         """Push a just-saved policy to the ledger the gateway reads.
@@ -89,7 +93,16 @@ class TokenBudgetService:
         # Merged, not seeded: a person who has actually used the gateway must be
         # allocatable, otherwise governance only covers identities with no traffic.
         catalog = merge_application_owners(
-            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            governance_directory(
+                self._repository.observed_users(),
+                include_seeded_people=self._seed_demo_directory,
+                units=self._repository.org_units(),
+                # Usage attributed through a subscription leaves `token_usage.user_id` saying
+                # `unattributed`, so a key's holder never appears in the roster built from
+                # observed traffic -- and an entity absent from the roster cannot be given a
+                # budget, however much their key spends.
+                applications=self._repository.list_gateway_applications(),
+            ),
             self._repository.application_owners(),
         )
         return {
@@ -132,6 +145,17 @@ class TokenBudgetService:
             (row["scope_type"], row["scope_id"]): int(row["used_tokens"])
             for row in usage_rows
         }
+        # Usage that declared no identity of its own, attributed to the subscription that
+        # produced it. The query above drops those rows in its final
+        # `WHERE scope_id <> 'unattributed'`, so this adds rather than overlaps: at an install
+        # where nothing sets the attribution headers it is the difference between a budget page
+        # that reports zero forever and one that reports what was actually spent.
+        for row in self._repository.subscription_attributed_usage(
+            datetime.combine(period_start, time.min, tzinfo=UTC),
+            datetime.combine(period_end, time.min, tzinfo=UTC),
+        ):
+            key = (row["scope_type"], row["scope_id"])
+            usage[key] = usage.get(key, 0) + int(row["used_tokens"])
         now = datetime.now(UTC)
         items: list[dict[str, Any]] = []
         risk_items: list[dict[str, Any]] = []

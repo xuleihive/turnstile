@@ -1961,6 +1961,24 @@ class AzureApimPublisherClient:
             value.casefold()
             for value in self._settings.apim_subscription_agent_map
         }
+        # One listing resolves every subscription's ownerId to an email. Doing it per subscription
+        # would be one call per key; an install with several hundred keys has far fewer users, and
+        # most subscriptions have no owner at all.
+        owner_emails: dict[str, str] = {}
+        try:
+            for user in self._list_all("/users"):
+                raw_user_properties = user.get("properties")
+                user_properties = (
+                    raw_user_properties if isinstance(raw_user_properties, Mapping) else {}
+                )
+                email = str(user_properties.get("email") or "").strip()
+                if email and "@" in email:
+                    owner_emails[str(user.get("name") or "").casefold()] = email
+        except Exception:
+            # A gateway whose user list is not readable still discovers its subscriptions; those
+            # keys simply arrive without an owner rather than failing the whole sync.
+            owner_emails = {}
+
         items: list[GatewayApplicationDiscoveryItem] = []
         for subscription in self._list_all("/subscriptions"):
             apim_subscription_id = self._resource_name(subscription)
@@ -2011,6 +2029,7 @@ class AzureApimPublisherClient:
                 if apim_subscription_id.casefold() in agent_ids
                 else "service"
             )
+            owner_reference = str(properties.get("ownerId") or "").rsplit("/", 1)[-1]
             items.append(
                 GatewayApplicationDiscoveryItem(
                     apim_subscription_id=apim_subscription_id,
@@ -2021,6 +2040,7 @@ class AzureApimPublisherClient:
                     scope_exists=scope_exists,
                     application_type=application_type,
                     system_managed=system_managed,
+                    owner_email=owner_emails.get(owner_reference.casefold()),
                 )
             )
         return GatewayApplicationDiscovery(

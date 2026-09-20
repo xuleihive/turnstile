@@ -92,6 +92,18 @@ def test_assistant_starter_prompts_enter_the_composer_in_the_active_locale() -> 
 
 def test_standalone_labels_have_exact_catalog_entries() -> None:
     labels = (
+        # Attribution labels on the subscriptions and organization screens. Every one of these
+        # is under MIN_HAN_CHARACTERS, so the coverage test above cannot see them -- and the
+        # word-by-word fallback renders the miss rather than failing. `归属人` shipped to a live
+        # environment as the column heading `归属people` before this list caught it.
+        "归属人",
+        "未指定",
+        "未归属",
+        "使用中",
+        "重命名",
+        "账号",
+        "标识",
+        "来自 APIM",
         "验证配置",
         "准备后端资源",
         "构建 APIM Revision",

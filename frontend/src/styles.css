@@ -3,6 +3,7 @@
 @import "./styles/model-platform.css";
 @import "./styles/gateway-releases.css";
 @import "./styles/applications.css";
+@import "./styles/organization.css";
 @import "./styles/navigation.css";
 @import "./styles/assistant-reports.css";
 @import "./styles/auth.css";

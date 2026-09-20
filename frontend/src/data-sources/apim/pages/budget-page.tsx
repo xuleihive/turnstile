@@ -370,7 +370,10 @@ function BudgetRow({
         ? <button type="button" className="budget-tree-toggle" onClick={onToggle} aria-label={expanded ? "折叠" : "展开"}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
         : <span className="budget-tree-spacer" />}
       <span className="budget-scope-icon"><ScopeIcon size={14} /></span>
-      <span><strong>{item.scope_name}</strong><small>{scopeLabels[item.scope_type]}</small></span>
+      {/* A scope name is the customer's own text -- their organization, their department, a
+          person's address. The runtime translator walks text nodes and would translate it:
+          a department named 生物信息 rendered as "生物Info" in English until this was marked. */}
+      <span><strong data-no-localize>{item.scope_name}</strong><small>{scopeLabels[item.scope_type]}</small></span>
     </div>
     <div className="budget-number-cell" data-label="预算"><strong>{item.token_limit == null ? "--" : formatFullTokens(item.token_limit)}</strong><small>{item.token_limit == null ? "尚未分配" : `预警 ${item.warning_threshold_percent}%`}</small></div>
     <BudgetProgress item={item} />
@@ -767,7 +770,7 @@ function PeopleBudgetWorkspace({
       {!people.isLoading && pageItems.length === 0 && <div className="people-table-state"><UserRound size={18} />没有符合条件的人员</div>}
       {!people.isLoading && pageItems.map((item) => <div className="people-table-row" role="row" key={item.scope_id}>
         {canManage ? <Checkbox checked={selectedIds.has(item.scope_id) || allMatching} disabled={allMatching} onCheckedChange={(checked) => togglePerson(item.scope_id, checked === true)} aria-label={`选择 ${item.scope_name}`} /> : <span />}
-        <div className="people-name-cell"><strong title={item.scope_name}>{item.scope_name}</strong>{item.scope_id !== item.scope_name && <small>{item.scope_id}</small>}</div>
+        <div className="people-name-cell"><strong data-no-localize title={item.scope_name}>{item.scope_name}</strong>{item.scope_id !== item.scope_name && <small data-no-localize>{item.scope_id}</small>}</div>
         <div className="people-model-cell">{item.model_policy_configured
           ? item.allowed_model_ids.length > 0
             ? <><strong title={item.allowed_model_ids.map((id) => models.find((model) => model.id === id)?.display_name ?? id).join("、")}>{models.find((model) => model.id === item.allowed_model_ids[0])?.display_name ?? "已分配模型"}</strong><small>{item.allowed_model_ids.length > 1 ? `另有 ${item.allowed_model_ids.length - 1} 个` : "长期有效"}</small></>

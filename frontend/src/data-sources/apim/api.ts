@@ -29,6 +29,9 @@ import type {
   GatewayApplicationDetail,
   GatewayApplicationList,
   GatewayApplicationModelAccessUpdate,
+  GatewayApplicationDepartmentUpdate,
+  ConsoleMemberList,
+  OrganizationDirectory,
   GatewayApplicationSubscriptionCreate,
   GatewayApplicationSubscriptionKeyKind,
   GatewayApplicationSubscriptionKeySecret,
@@ -469,6 +472,59 @@ export const dataSource = {
     value,
     "PUT",
   ),
+  updateGatewayApplicationDepartment: (
+    id: string,
+    value: GatewayApplicationDepartmentUpdate,
+  ) => writeJson<GatewayApplicationDetail>(
+    `/api/v1/application-access/applications/${encodeURIComponent(id)}/department`,
+    value,
+    "PUT",
+  ),
+  updateGatewayApplicationOwner: (
+    id: string,
+    value: { owner_id: string | null },
+  ) => writeJson<GatewayApplicationDetail>(
+    `/api/v1/application-access/applications/${encodeURIComponent(id)}/owner`,
+    value,
+    "PUT",
+  ),
+  updateGatewayApplicationDepartmentBulk: (value: {
+    application_ids: string[]
+    department_id: string | null
+  }) => writeJson<{ updated: number; unchanged: number }>(
+    "/api/v1/application-access/applications/bulk-department",
+    value,
+    "PUT",
+  ),
+  organizationDirectory: () =>
+    request<OrganizationDirectory>("/api/v1/organization/directory"),
+  createDepartment: (value: { id: string; display_name: string }) =>
+    writeJson<OrganizationDirectory>("/api/v1/organization/departments", value, "POST"),
+  renameOrgUnit: (unitId: string, displayName: string) =>
+    writeJson<OrganizationDirectory>(
+      `/api/v1/organization/units/${encodeURIComponent(unitId)}/name`,
+      { display_name: displayName },
+      "PUT",
+    ),
+  setOrgUnitStatus: (unitId: string, status: "active" | "retired") =>
+    writeJson<OrganizationDirectory>(
+      `/api/v1/organization/units/${encodeURIComponent(unitId)}/status`,
+      { status },
+      "PUT",
+    ),
+  consoleMembers: () => request<ConsoleMemberList>("/api/v1/organization/members"),
+  setConsoleMemberRole: (email: string, role: "owner" | "member") =>
+    writeJson<ConsoleMemberList>(
+      `/api/v1/organization/members/${encodeURIComponent(email)}/role`,
+      { role },
+      "PUT",
+    ),
+  setConsoleMemberEnabled: (email: string, enabled: boolean) =>
+    writeJson<ConsoleMemberList>(
+      `/api/v1/organization/members/${encodeURIComponent(email)}/status`,
+      { enabled },
+      "PUT",
+    ),
   syncGatewayApplications: (gatewayId: string) =>
     request<GatewayReleaseOperationAccepted>(
       `/api/v1/application-access/gateways/${encodeURIComponent(gatewayId)}/sync`,

@@ -69,6 +69,74 @@ class PostgreSqlBudgetRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
+    def subscription_attributed_usage(
+        self, from_: datetime, to: datetime
+    ) -> Sequence[dict[str, Any]]:
+        """Usage that declared no identity, attributed to the subscription that produced it.
+
+        `token_usage.department_id` and `.user_id` come from request headers and default to
+        `unattributed`, which `token_usage_by_budget_scope` discards in its final
+        `WHERE scope_id <> 'unattributed'`. At an install where nothing sets those headers that
+        is every row, so department and person budgets there report zero no matter how they are
+        configured.
+
+        The subscription is identified on every request regardless of what the caller says, and
+        `token_usage_application_attribution` already records which one produced each row. So the
+        discarded usage can be attributed here instead -- at read time, deliberately. Writing it
+        into `token_usage` is not available: `guard_apim_usage_identity` makes `user_id`
+        immutable per correlation, and a value derived from a field an administrator can edit
+        would make a second event for the same request conflict with the first and be rejected
+        for good. Resolving on read also means filing a subscription corrects what its past
+        usage rolls up to, which is what an administrator filing three hundred keys expects.
+
+        This only ever adds rows the other query threw away: every branch here requires the
+        usage row's own attribution to be `unattributed`, which is exactly the condition under
+        which that query drops it. So the two cannot double count.
+        """
+        with self._connection() as connection:
+            rows = connection.execute(
+                """WITH filed AS (
+                       SELECT usage.id,
+                              usage.department_id AS declared_department,
+                              usage.user_id AS declared_user,
+                              usage.input_tokens + usage.cached_tokens
+                                  + usage.output_tokens AS total_tokens,
+                              application.department_id,
+                              application.owner_id
+                       FROM token_usage usage
+                       JOIN token_usage_application_attribution attribution
+                         ON attribution.usage_id = usage.id
+                       JOIN gateway_application application
+                         ON application.id = attribution.application_id
+                       WHERE usage.ts >= %s AND usage.ts < %s
+                         AND usage.usage_domain = 'apim'
+                         AND application.system_managed = FALSE
+                   )
+                   SELECT 'department'::TEXT AS scope_type,
+                          department_id AS scope_id,
+                          SUM(total_tokens)::BIGINT AS used_tokens
+                   FROM filed
+                   WHERE department_id IS NOT NULL
+                     AND declared_department = 'unattributed'
+                   GROUP BY department_id
+                   UNION ALL
+                   SELECT 'user'::TEXT, owner_id, SUM(total_tokens)::BIGINT
+                   FROM filed
+                   WHERE owner_id IS NOT NULL
+                     AND declared_user = 'unattributed'
+                   GROUP BY owner_id
+                   UNION ALL
+                   SELECT 'organization'::TEXT, unit.parent_id, SUM(filed.total_tokens)::BIGINT
+                   FROM filed
+                   JOIN org_unit unit ON unit.id = filed.department_id
+                   WHERE filed.department_id IS NOT NULL
+                     AND filed.declared_department = 'unattributed'
+                     AND unit.parent_id IS NOT NULL
+                   GROUP BY unit.parent_id""",
+                (from_, to),
+            ).fetchall()
+        return cast(Sequence[dict[str, Any]], rows)
+
     def token_usage_by_budget_scope(
         self, from_: datetime, to: datetime
     ) -> Sequence[dict[str, Any]]:

@@ -35,6 +35,7 @@ const apimPageIds = new Set([
   "applications",
   "gateway-releases",
   "models",
+  "organization",
   "pinned-report",
   "settings",
 ])

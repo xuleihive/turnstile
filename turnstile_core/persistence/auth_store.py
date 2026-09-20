@@ -58,6 +58,96 @@ class AuthStore:
 
     # --- accounts ---------------------------------------------------------------------
 
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, email, display_name, role, enabled,
+                       password_hash IS NOT NULL AS has_password,
+                       created_at, last_login_at
+                FROM app_user
+                ORDER BY role, email
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_user_role(self, email: str, role: str, actor: str) -> dict[str, Any] | None:
+        """Promote or demote an account, refusing to remove the last way back in.
+
+        Both guards exist because the only repair for either mistake is shell access to the
+        deployment: `backend.accounts` is a command rather than a route precisely so that
+        minting the first account needs something stronger than an HTTP call, and that same
+        property makes it a poor recovery path for an administrator who has locked themselves
+        out of a running install at four in the afternoon.
+
+        Demoting yourself is refused even when another Owner exists. The account that can undo
+        it is someone else's, so the mistake is only recoverable by asking a colleague, and the
+        action reads as routine right up until it isn't.
+        """
+        normalized = email.strip().lower()
+        with self._connection() as connection, connection.transaction():
+            existing = connection.execute(
+                "SELECT id, email, role FROM app_user WHERE email = %s FOR UPDATE",
+                (normalized,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if existing["role"] == role:
+                return dict(existing)
+            if role != "owner" and normalized == actor.strip().lower():
+                raise ValueError("You cannot remove your own Owner role")
+            if role != "owner" and existing["role"] == "owner":
+                remaining = connection.execute(
+                    """SELECT count(*) AS total FROM app_user
+                       WHERE role = 'owner' AND enabled AND email <> %s""",
+                    (normalized,),
+                ).fetchone()
+                if not remaining or int(remaining["total"]) == 0:
+                    raise ValueError("This is the last Owner; promote someone else first")
+            row = connection.execute(
+                """UPDATE app_user SET role = %s WHERE email = %s
+                   RETURNING id, email, display_name, role, enabled""",
+                (role, normalized),
+            ).fetchone()
+            # A demoted Owner keeps an Owner-shaped session until it expires otherwise, and
+            # `session_owner` reads the role at sign-in rather than per request.
+            connection.execute(
+                "DELETE FROM user_session WHERE user_id = %s", (existing["id"],)
+            )
+        return dict(row) if row else None
+
+    def set_user_enabled(self, email: str, enabled: bool, actor: str) -> dict[str, Any] | None:
+        normalized = email.strip().lower()
+        with self._connection() as connection, connection.transaction():
+            existing = connection.execute(
+                "SELECT id, email, role, enabled FROM app_user WHERE email = %s FOR UPDATE",
+                (normalized,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if bool(existing["enabled"]) == enabled:
+                return dict(existing)
+            if not enabled and normalized == actor.strip().lower():
+                raise ValueError("You cannot disable your own account")
+            if not enabled and existing["role"] == "owner":
+                remaining = connection.execute(
+                    """SELECT count(*) AS total FROM app_user
+                       WHERE role = 'owner' AND enabled AND email <> %s""",
+                    (normalized,),
+                ).fetchone()
+                if not remaining or int(remaining["total"]) == 0:
+                    raise ValueError("This is the last Owner; promote someone else first")
+            row = connection.execute(
+                """UPDATE app_user SET enabled = %s WHERE email = %s
+                   RETURNING id, email, display_name, role, enabled""",
+                (enabled, normalized),
+            ).fetchone()
+            if not enabled:
+                connection.execute(
+                    "DELETE FROM user_session WHERE user_id = %s", (existing["id"],)
+                )
+        return dict(row) if row else None
+
     def find_user_by_email(self, email: str) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(

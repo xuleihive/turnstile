@@ -128,7 +128,20 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "FINOPS_NAVIGATE_EVENT" in page
     assert 'className="model-list-row application-inventory-row"' in page
     assert 'className="model-table application-model-table"' in page
-    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 180, 80]" in page
+    # Six columns: the department a subscription is filed under, and the person who holds it.
+    # Both are now what the gateway attributes a request to when the caller declares nothing,
+    # so an inventory that does not show them hides the inputs to every budget on the site.
+    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 120, 160, 170, 80]" in page
+    assert 'className="model-runtime-cell application-department-cell"' in page
+    assert 'className="model-runtime-cell application-owner-cell"' in page
+    assert '"部门"' in page
+    assert '"归属人"' in page
+    # A holder with two keys draws two allowances from a per-key budget, so the pairing has to
+    # be visible even when no address could be derived for them.
+    assert "person_group_size" in page
+    # Filtering to one department lives in the URL so the view can be sent to someone else.
+    assert "function departmentFromUrl()" in page
+    assert 'searchParams.get("department")' in page
     assert "application-row-action" not in page
     assert "subscriptions-category-chevron" not in page
     assert 'className="application-detail-workspace"' in page
@@ -157,7 +170,9 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "application.user_count" in page
     assert "application-timeline" in page
     assert ".application-inventory-row" in styles
-    assert "--model-table-min-width: 638px" in styles
+    # Widened again for the owner column; the point of the assertion is that the inventory
+    # still declares a minimum, so a six-column grid cannot silently collapse.
+    assert "--model-table-min-width: 950px" in styles
     assert ".application-avatar-editor" in styles
     assert "container: subscription-content / inline-size" in styles
     assert "grid-template-columns: var(--subscriptions-nav-width, 276px) minmax(0, 1fr)" in styles

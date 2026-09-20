@@ -25,6 +25,7 @@ from .repository_assistant import PostgreSqlAssistantRepositoryMixin
 from .repository_billable_requests import PostgreSqlBillableRequestRepositoryMixin
 from .repository_budgets import PostgreSqlBudgetRepositoryMixin
 from .repository_contract import OpsDbProxy, QueryRepository
+from .repository_organization import PostgreSqlOrganizationRepositoryMixin
 from .repository_publications import PostgreSqlPublicationRepositoryMixin
 from .repository_registry import PostgreSqlRegistryRepositoryMixin
 from .repository_support import (
@@ -66,6 +67,7 @@ class PostgreSqlOpsDbProxy(
     PostgreSqlBillableRequestRepositoryMixin,
     PostgreSqlRegistryRepositoryMixin,
     PostgreSqlPublicationRepositoryMixin,
+    PostgreSqlOrganizationRepositoryMixin,
     QueryRepository,
 ):
     def gateway_application_usage_activity(

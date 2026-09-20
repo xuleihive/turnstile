@@ -10,9 +10,13 @@ from turnstile_core.domain.application_access import (
     GatewayApplicationAvatar,
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudgetUpdate,
+    GatewayApplicationBulkDepartment,
+    GatewayApplicationBulkDepartmentResult,
+    GatewayApplicationDepartmentUpdate,
     GatewayApplicationDetail,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
+    GatewayApplicationOwnerUpdate,
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
@@ -232,6 +236,59 @@ def update_gateway_application_model_access(
         )
     except ControlPlaneNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.put(
+    "/applications/{application_id}/department",
+    response_model=GatewayApplicationDetail,
+)
+def update_gateway_application_department(
+    application_id: UUID,
+    request: GatewayApplicationDepartmentUpdate,
+    service: ApplicationAccessServiceDependency,
+    identity: OwnerSession,
+) -> GatewayApplicationDetail:
+    try:
+        return service.update_application_department(
+            application_id, request, identity.email
+        )
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.put(
+    "/applications/{application_id}/owner",
+    response_model=GatewayApplicationDetail,
+)
+def update_gateway_application_owner(
+    application_id: UUID,
+    request: GatewayApplicationOwnerUpdate,
+    service: ApplicationAccessServiceDependency,
+    identity: OwnerSession,
+) -> GatewayApplicationDetail:
+    try:
+        return service.update_application_owner(application_id, request, identity.email)
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.put(
+    "/applications/bulk-department",
+    response_model=GatewayApplicationBulkDepartmentResult,
+)
+def update_gateway_application_department_bulk(
+    request: GatewayApplicationBulkDepartment,
+    service: ApplicationAccessServiceDependency,
+    identity: OwnerSession,
+) -> GatewayApplicationBulkDepartmentResult:
+    try:
+        return service.update_application_department_bulk(request, identity.email)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
