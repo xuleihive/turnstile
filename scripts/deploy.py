@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import distributions
@@ -446,7 +446,9 @@ def _arm_parameter_document(values: Mapping[str, Any]) -> JsonObject:
 
 
 @contextmanager
-def temporary_parameter_file(document: Mapping[str, Any], directory: Path) -> Iterator[Path]:
+def temporary_parameter_file(
+    document: Mapping[str, Any], directory: Path
+) -> Generator[Path, None, None]:
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, raw_path = tempfile.mkstemp(prefix="parameters-", suffix=".json", dir=directory)
     path = Path(raw_path)
@@ -1390,7 +1392,7 @@ def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 @contextmanager
-def _upgrade_lock(directory: Path) -> Iterator[None]:
+def _upgrade_lock(directory: Path) -> Generator[None, None, None]:
     try:
         import fcntl
     except ImportError as error:

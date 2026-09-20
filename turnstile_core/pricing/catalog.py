@@ -43,6 +43,8 @@ AZURE_RETAIL_ENDPOINT = "https://prices.azure.com/api/retail/prices"
 ANTHROPIC_PRICING_URL = "https://docs.claude.com/en/docs/about-claude/pricing"
 CATALOG_TTL_SECONDS = 6 * 60 * 60
 
+_Rates = tuple[float, float, float | None, float | None]
+
 # The index is read from one region because a model's Global rate is identical in every region --
 # measured across 24 to 28 regions per model, always one figure. This region is chosen for
 # breadth: it carries every model the narrower regions do.
@@ -420,14 +422,13 @@ class AzureRetailCatalog:
                 parsed.per_million
             )
 
-        Rates = tuple[float, float, float | None, float | None]
-        by_deployment: dict[str, dict[Rates, list[str]]] = {}
+        by_deployment: dict[str, dict[_Rates, list[str]]] = {}
         for (deployment, region), slot_prices in buckets.items():
             input_rate = slot_prices.get("input")
             output_rate = slot_prices.get("output")
             if input_rate is None or output_rate is None:
                 continue
-            rates: Rates = (
+            rates: _Rates = (
                 input_rate,
                 output_rate,
                 slot_prices.get("cached"),

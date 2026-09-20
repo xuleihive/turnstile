@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
@@ -53,7 +53,7 @@ runtime_service = _runtime_service
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     # Fail fast on misconfiguration. Without this, a deployment missing
     # CREDENTIAL_ENCRYPTION_KEY starts healthy and only breaks on the first
     # request that touches the model registry, surfacing as an opaque 500.
