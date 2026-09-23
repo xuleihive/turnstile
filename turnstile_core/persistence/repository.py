@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time as clock
 from collections.abc import Mapping, Sequence
@@ -1043,6 +1044,46 @@ class PostgreSqlOpsDbProxy(
                    ORDER BY email"""
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
+
+    def enterprise_entities(self) -> Sequence[dict[str, Any]]:
+        """The configured organization catalog; empty means the seeded one is in use."""
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT entity_type, entity_id, name, parent_id, is_default, external_ref,
+                          attributes, position, updated_at, updated_by
+                   FROM enterprise_entity
+                   ORDER BY entity_type, position"""
+            ).fetchall()
+        return cast(Sequence[dict[str, Any]], rows)
+
+    def replace_enterprise_entities(
+        self, rows: Sequence[Mapping[str, Any]], actor: str
+    ) -> None:
+        """Replace the whole catalog in one transaction, so no reader sees half of it."""
+        with self._connection() as connection:
+            connection.execute("DELETE FROM enterprise_entity")
+            if rows:
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        """INSERT INTO enterprise_entity (
+                               entity_type, entity_id, name, parent_id, is_default,
+                               external_ref, attributes, position, updated_by
+                           ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)""",
+                        [
+                            (
+                                row["entity_type"],
+                                row["entity_id"],
+                                row["name"],
+                                row["parent_id"],
+                                row["is_default"],
+                                row["external_ref"],
+                                json.dumps(row["attributes"]),
+                                row["position"],
+                                actor,
+                            )
+                            for row in rows
+                        ],
+                    )
 
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int

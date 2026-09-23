@@ -56,6 +56,14 @@ The timer discovers reservations across older partitions, determines settlement 
 
 The independently gated v2 policy selects complete formal evidence, application acknowledgement and complete diagnostic recovery in that order. Equal-rank conflicts preserve first received evidence; an estimated or status-only error cannot displace a measured result. Immutable admission fixes the UTC budget month. Pre-cutover requests keep their legacy rules, with no backfill or historical reclassification. Person and Application budgets use the selected evidence, while raw activity retains only actual measured events and their original timestamps and pricing.
 
+## Organization catalog
+
+Budgets hang on an organization, department and person hierarchy. Until an Owner or an integration writes a catalog, the organizations and departments are the seeded demonstration set, and a real department cannot be given a budget because the budget API only accepts scopes the catalog knows.
+
+`PUT /api/v1/enterprise-catalog` (Owner) replaces the catalog as a whole in one transaction: organizations, departments with their parent organization, and optionally the default department where Owners are listed before they generate traffic. A directory sync sends the complete set rather than a change, because a partial update is how a department silently loses its parent. Each entity may carry an `external_ref`, such as the Microsoft Entra group behind it, and a few descriptive `attributes`; Turnstile returns both as written and interprets neither. `GET` reads it back with `source: configured` or `seeded`, and `DELETE` returns to the seeded set.
+
+People are not part of the catalog. They are discovered from attributed gateway usage and Owner accounts, as before, and are listed only under a department the catalog contains. Synthetic traffic generation keeps using the seeded catalog so that generated, billable calls are never charged to a real person.
+
 ## Scope boundary
 
 The deployment creates Turnstile infrastructure. It does not create Azure AI Foundry projects or provider model deployments. Provider resources remain customer-owned and are connected after installation.

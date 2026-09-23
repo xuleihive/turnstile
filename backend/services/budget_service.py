@@ -6,9 +6,9 @@ from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
 from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
+    resolve_enterprise_catalog,
 )
 from turnstile_core.domain.models import (
     BudgetScopeType,
@@ -89,7 +89,10 @@ class TokenBudgetService:
         # Merged, not seeded: a person who has actually used the gateway must be
         # allocatable, otherwise governance only covers identities with no traffic.
         catalog = merge_application_owners(
-            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            merge_observed_users(
+                resolve_enterprise_catalog(self._repository.enterprise_entities()),
+                self._repository.observed_users(),
+            ),
             self._repository.application_owners(),
         )
         return {

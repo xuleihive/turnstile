@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from turnstile_core.domain.enterprise import (
     configured_invocation_testers,
-    enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
+    resolve_enterprise_catalog,
 )
 from turnstile_core.domain.models import (
     AuditFinding,
@@ -82,7 +82,10 @@ def get_enterprise_entities(
     repository: Repository, settings: Config
 ) -> EnterpriseEntityCatalog:
     catalog = merge_application_owners(
-        merge_observed_users(enterprise_catalog(), repository.observed_users()),
+        merge_observed_users(
+            resolve_enterprise_catalog(repository.enterprise_entities()),
+            repository.observed_users(),
+        ),
         repository.application_owners(),
     )
     return catalog.model_copy(

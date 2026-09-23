@@ -130,6 +130,7 @@ class InMemoryRepository(
         self.pinned_charts: list[dict[str, Any]] = []
         self.conversations: list[dict[str, Any]] = []
         self.application_owner_rows: list[dict[str, Any]] = []
+        self.enterprise_entity_rows: list[dict[str, Any]] = []
         # Mirrors the single seeded row migration 027 creates.
         self.assistant_setting: dict[str, Any] = {
             "model_id": None,
@@ -906,6 +907,17 @@ class InMemoryRepository(
 
     def application_owners(self) -> list[dict[str, Any]]:
         return list(self.application_owner_rows)
+
+    def enterprise_entities(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.enterprise_entity_rows]
+
+    def replace_enterprise_entities(
+        self, rows: Sequence[Mapping[str, Any]], actor: str
+    ) -> None:
+        now = datetime.now(UTC)
+        self.enterprise_entity_rows = [
+            {**dict(row), "updated_at": now, "updated_by": actor} for row in rows
+        ]
 
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int

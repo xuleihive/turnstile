@@ -3,10 +3,172 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .models import EnterpriseEntity, EnterpriseEntityCatalog
+from .models import (
+    EnterpriseCatalogEntity,
+    EnterpriseCatalogResponse,
+    EnterpriseCatalogWrite,
+    EnterpriseEntity,
+    EnterpriseEntityCatalog,
+)
 
 ORGANIZATION_ID = "org-contoso-global"
 DEFAULT_APPLICATION_USER_DEPARTMENT_ID = "department-platform"
+
+
+def catalog_write_problems(write: EnterpriseCatalogWrite) -> list[str]:
+    """Structural errors a schema cannot express. Empty means the catalog can be stored."""
+    problems: list[str] = []
+    organization_ids = [item.id for item in write.organizations]
+    department_ids = [item.id for item in write.departments]
+    for kind, ids in (("organization", organization_ids), ("department", department_ids)):
+        seen: set[str] = set()
+        for id_ in ids:
+            if id_ in seen:
+                problems.append(f"Duplicate {kind} id: {id_}")
+            seen.add(id_)
+    known_organizations = set(organization_ids)
+    for department in write.departments:
+        if department.parent_id not in known_organizations:
+            problems.append(
+                f"Department {department.id} names parent {department.parent_id}, "
+                "which is not an organization in this catalog"
+            )
+    if write.default_department_id and write.default_department_id not in set(department_ids):
+        problems.append(
+            f"Default department {write.default_department_id} is not a department in this catalog"
+        )
+    for entity in [*write.organizations, *write.departments]:
+        for key in entity.attributes:
+            if not key or len(key) > 64:
+                problems.append(f"{entity.id}: attribute names must be 1 to 64 characters")
+    return problems
+
+
+def catalog_rows(write: EnterpriseCatalogWrite) -> list[dict[str, Any]]:
+    """The rows a write stores, in document order so the catalog reads back as written."""
+    rows: list[dict[str, Any]] = []
+    for position, organization in enumerate(write.organizations):
+        rows.append(
+            {
+                "entity_type": "organization",
+                "entity_id": organization.id,
+                "name": organization.name,
+                "parent_id": None,
+                "is_default": False,
+                "external_ref": organization.external_ref,
+                "attributes": dict(organization.attributes),
+                "position": position,
+            }
+        )
+    for position, department in enumerate(write.departments):
+        rows.append(
+            {
+                "entity_type": "department",
+                "entity_id": department.id,
+                "name": department.name,
+                "parent_id": department.parent_id,
+                "is_default": department.id == write.default_department_id,
+                "external_ref": department.external_ref,
+                "attributes": dict(department.attributes),
+                "position": position,
+            }
+        )
+    return rows
+
+
+def configured_catalog(rows: Iterable[Mapping[str, Any]]) -> EnterpriseEntityCatalog | None:
+    """The stored catalog, or None when nothing has been configured.
+
+    Projects, agents and people are not part of it: people are discovered from gateway
+    usage and Owner accounts, as with the seeded catalog, and a configured catalog does not
+    invent projects or agents that nobody defined.
+    """
+    ordered = sorted(rows, key=lambda row: (str(row["entity_type"]), int(row["position"])))
+    organizations = [
+        EnterpriseEntity(id=str(row["entity_id"]), name=str(row["name"]))
+        for row in ordered
+        if row["entity_type"] == "organization"
+    ]
+    if not organizations:
+        return None
+    departments = [
+        EnterpriseEntity(
+            id=str(row["entity_id"]), name=str(row["name"]), parent_id=str(row["parent_id"])
+        )
+        for row in ordered
+        if row["entity_type"] == "department"
+    ]
+    default = next(
+        (str(row["entity_id"]) for row in ordered if row.get("is_default")),
+        departments[0].id if departments else None,
+    )
+    return EnterpriseEntityCatalog(
+        organizations=organizations,
+        departments=departments,
+        projects=[],
+        agents=[],
+        users=[],
+        default_department_id=default,
+    )
+
+
+def resolve_enterprise_catalog(rows: Iterable[Mapping[str, Any]]) -> EnterpriseEntityCatalog:
+    """The configured catalog when there is one, otherwise the seeded demonstration."""
+    return configured_catalog(rows) or enterprise_catalog()
+
+
+def default_department_id(catalog: EnterpriseEntityCatalog) -> str | None:
+    if catalog.default_department_id:
+        return catalog.default_department_id
+    ids = {item.id for item in catalog.departments}
+    if DEFAULT_APPLICATION_USER_DEPARTMENT_ID in ids:
+        return DEFAULT_APPLICATION_USER_DEPARTMENT_ID
+    return catalog.departments[0].id if catalog.departments else None
+
+
+def catalog_response(rows: Iterable[Mapping[str, Any]]) -> EnterpriseCatalogResponse:
+    stored = list(rows)
+    if not any(row["entity_type"] == "organization" for row in stored):
+        seeded = enterprise_catalog()
+        return EnterpriseCatalogResponse(
+            source="seeded",
+            organizations=[
+                EnterpriseCatalogEntity(id=item.id, name=item.name) for item in seeded.organizations
+            ],
+            departments=[
+                EnterpriseCatalogEntity(id=item.id, name=item.name, parent_id=item.parent_id)
+                for item in seeded.departments
+            ],
+            default_department_id=default_department_id(seeded),
+        )
+    ordered = sorted(stored, key=lambda row: (str(row["entity_type"]), int(row["position"])))
+    entities = {
+        kind: [
+            EnterpriseCatalogEntity(
+                id=str(row["entity_id"]),
+                name=str(row["name"]),
+                parent_id=row.get("parent_id"),
+                external_ref=row.get("external_ref"),
+                attributes=dict(row.get("attributes") or {}),
+            )
+            for row in ordered
+            if row["entity_type"] == kind
+        ]
+        for kind in ("organization", "department")
+    }
+    dated = [row for row in stored if row.get("updated_at")]
+    latest: Mapping[str, Any] = max(dated, key=lambda row: row["updated_at"]) if dated else {}
+    return EnterpriseCatalogResponse(
+        source="configured",
+        organizations=entities["organization"],
+        departments=entities["department"],
+        default_department_id=next(
+            (str(row["entity_id"]) for row in ordered if row.get("is_default")),
+            entities["department"][0].id if entities["department"] else None,
+        ),
+        updated_at=latest.get("updated_at"),
+        updated_by=latest.get("updated_by"),
+    )
 
 
 def configured_invocation_testers(
@@ -30,6 +192,10 @@ def merge_application_owners(
     catalog: EnterpriseEntityCatalog, users: Iterable[Mapping[str, Any]]
 ) -> EnterpriseEntityCatalog:
     """Add Owner accounts before they generate gateway traffic."""
+    department = default_department_id(catalog)
+    if department is None:
+        # A catalog with no departments has nowhere to list a person.
+        return catalog
     existing = {item.id for item in catalog.users}
     discovered: list[EnterpriseEntity] = []
     for row in users:
@@ -43,7 +209,7 @@ def merge_application_owners(
             EnterpriseEntity(
                 id=user_id,
                 name=str(row.get("display_name") or user_id).strip() or user_id,
-                parent_id=DEFAULT_APPLICATION_USER_DEPARTMENT_ID,
+                parent_id=department,
             )
         )
     if not discovered:

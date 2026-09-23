@@ -106,7 +106,8 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         route for route in copilot_protected.routes if isinstance(route, APIRoute)
     ]
 
-    assert len(apim_routes) == 86
+    # 86 plus the organization catalog's GET, PUT and DELETE.
+    assert len(apim_routes) == 89
     adoption = next(
         route for route in apim_routes
         if route.path == "/api/v1/model-management/connections/{runtime_id}/adopt"

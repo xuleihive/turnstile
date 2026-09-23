@@ -41,9 +41,9 @@ from turnstile_core.domain.assistant_models import (
     PinnedReportLayout,
 )
 from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
+    resolve_enterprise_catalog,
 )
 from turnstile_core.domain.models import EnterpriseEntityCatalog
 from turnstile_core.domain.runtime_models import (
@@ -161,7 +161,10 @@ class AssistantService:
 
     def _catalog(self) -> EnterpriseEntityCatalog:
         return merge_application_owners(
-            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            merge_observed_users(
+                resolve_enterprise_catalog(self._repository.enterprise_entities()),
+                self._repository.observed_users(),
+            ),
             self._repository.application_owners(),
         )
 

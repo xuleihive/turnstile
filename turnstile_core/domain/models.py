@@ -247,6 +247,51 @@ class EnterpriseEntityCatalog(StrictModel):
     agents: list[EnterpriseEntity]
     users: list[EnterpriseEntity]
     invocation_testers: list[EnterpriseEntity] = Field(default_factory=list)
+    # Where Owners are listed before they generate traffic. None means the seeded default.
+    default_department_id: str | None = None
+
+
+# Catalog ids travel in URLs, budget scopes and usage rows, so they are kept to characters
+# that need no escaping anywhere those go.
+CATALOG_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$"
+CatalogAttributeValue = str | int | float | bool
+
+
+class CatalogOrganizationWrite(StrictModel):
+    id: str = Field(pattern=CATALOG_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=200)
+    external_ref: str | None = Field(default=None, max_length=400)
+    attributes: dict[str, CatalogAttributeValue] = Field(default_factory=dict, max_length=20)
+
+
+class CatalogDepartmentWrite(CatalogOrganizationWrite):
+    parent_id: str = Field(pattern=CATALOG_ID_PATTERN)
+
+
+class EnterpriseCatalogWrite(StrictModel):
+    """A whole catalog. Writing one replaces the previous one."""
+
+    organizations: list[CatalogOrganizationWrite] = Field(min_length=1, max_length=2000)
+    departments: list[CatalogDepartmentWrite] = Field(default_factory=list, max_length=10000)
+    default_department_id: str | None = Field(default=None, pattern=CATALOG_ID_PATTERN)
+
+
+class EnterpriseCatalogEntity(StrictModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    external_ref: str | None = None
+    attributes: dict[str, CatalogAttributeValue] = Field(default_factory=dict)
+
+
+class EnterpriseCatalogResponse(StrictModel):
+    # "seeded" is the built-in demonstration catalog, in use until one is configured.
+    source: Literal["configured", "seeded"]
+    organizations: list[EnterpriseCatalogEntity]
+    departments: list[EnterpriseCatalogEntity]
+    default_department_id: str | None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
 
 
 BudgetScopeType = Literal["organization", "department", "user"]

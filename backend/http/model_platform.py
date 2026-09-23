@@ -33,9 +33,9 @@ from turnstile_core.domain.control_plane import (
 )
 from turnstile_core.domain.enterprise import (
     configured_invocation_tester,
-    enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
+    resolve_enterprise_catalog,
 )
 from turnstile_core.domain.images import ImageInvocationRequest, ImageInvocationResponse
 from turnstile_core.domain.runtime_models import (
@@ -841,7 +841,10 @@ def _bind_invocation_identity(
             effective_user_name = identity.name or identity.email
         else:
             catalog = merge_application_owners(
-                merge_observed_users(enterprise_catalog(), repository.observed_users()),
+                merge_observed_users(
+                    resolve_enterprise_catalog(repository.enterprise_entities()),
+                    repository.observed_users(),
+                ),
                 repository.application_owners(),
             )
             tester = configured_invocation_tester(

@@ -20,6 +20,7 @@ from .http.authentication import get_entra_verifier as _get_entra_verifier
 from .http.authentication import router as authentication_router
 from .http.budgets import router as budgets_router
 from .http.dependencies import get_repository
+from .http.enterprise_catalog import router as enterprise_catalog_router
 from .http.governance import router as governance_router
 from .http.model_platform import (
     protected_router as model_platform_protected_router,
@@ -89,6 +90,7 @@ def health() -> dict[str, str]:
 protected.routes.extend(assistant_router.routes)
 protected.routes.extend(governance_router.routes)
 protected.routes.extend(budgets_router.routes)
+protected.routes.extend(enterprise_catalog_router.routes)
 protected.routes.extend(model_platform_protected_router.routes)
 protected.routes.extend(observability_router.routes)
 protected.routes.extend(application_access_router.routes)

@@ -175,6 +175,14 @@ class QueryRepository(ABC):
     def application_owners(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def enterprise_entities(self) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def replace_enterprise_entities(
+        self, rows: Sequence[Mapping[str, Any]], actor: str
+    ) -> None: ...
+
+    @abstractmethod
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int
     ) -> Sequence[dict[str, Any]]: ...
