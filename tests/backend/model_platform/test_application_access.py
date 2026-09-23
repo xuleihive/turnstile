@@ -54,7 +54,13 @@ def test_application_avatar_rejects_mismatched_image_type() -> None:
 def _discovery(
     *subscription_ids: str,
     discovered_at: datetime | None = None,
+    system_ids: set[str] | None = None,
 ) -> GatewayApplicationDiscovery:
+    system_ids = system_ids or {
+        "master",
+        "turnstile-dashboard",
+        "turnstile-publisher-probe",
+    }
     return GatewayApplicationDiscovery(
         gateway_profile_id=APIM_ID,
         discovered_at=discovered_at or datetime(2026, 8, 26, 2, tzinfo=UTC),
@@ -66,13 +72,8 @@ def _discovery(
                 scope_type="product",
                 scope_id="finops-applications",
                 scope_exists=True,
-                application_type=(
-                    "system"
-                    if subscription_id in {"master", "turnstile-publisher-probe"}
-                    else "service"
-                ),
-                system_managed=subscription_id
-                in {"master", "turnstile-publisher-probe"},
+                application_type="system" if subscription_id in system_ids else "service",
+                system_managed=subscription_id in system_ids,
             )
             for subscription_id in subscription_ids
         ],
@@ -147,6 +148,36 @@ def test_application_discovery_is_idempotent_and_preserves_budget() -> None:
     assert repository.gateway_application_budgets[
         (datetime(2026, 8, 1).date(), master_id)
     ]["enforce"] is False
+
+
+def test_custom_deployed_subscription_ids_are_classified_as_bicep() -> None:
+    repository = InMemoryRepository()
+    service = ApplicationAccessService(
+        repository,
+        sync_available=True,
+        dashboard_subscription_id="unit-dashboard",
+        probe_subscription_id="unit-publisher-probe",
+    )
+
+    service.sync_discovery(
+        _discovery(
+            "unit-dashboard",
+            "unit-publisher-probe",
+            "unit-application",
+            system_ids={"unit-dashboard", "unit-publisher-probe"},
+        ),
+        "worker",
+    )
+
+    sources = {
+        str(item["apim_subscription_id"]): item["source"]
+        for item in repository.gateway_application_subscriptions
+    }
+    assert sources == {
+        "unit-dashboard": "bicep",
+        "unit-publisher-probe": "bicep",
+        "unit-application": "discovered",
+    }
 
 
 def test_missing_subscription_is_marked_cancelled_and_stale() -> None:
@@ -323,12 +354,33 @@ def test_apim_subscription_discovery_uses_list_without_secrets() -> None:
                                 "state": "active",
                             },
                         },
+                        {
+                            "id": f"{root}/subscriptions/unit-dashboard",
+                            "properties": {
+                                "displayName": "Unit dashboard",
+                                "scope": f"{root}/products/finops-applications",
+                                "state": "active",
+                            },
+                        },
+                        {
+                            "id": f"{root}/subscriptions/unit-publisher-probe",
+                            "properties": {
+                                "displayName": "Unit publisher probe",
+                                "scope": f"{root}/products/finops-applications",
+                                "state": "active",
+                            },
+                        },
                     ]
                 },
             )
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
-    settings = publisher_settings()
+    settings = publisher_settings().model_copy(
+        update={
+            "apim_dashboard_subscription_id": "unit-dashboard",
+            "apim_probe_subscription_id": "unit-publisher-probe",
+        }
+    )
     settings.apim_subscription_agent_map = {
         "outline-assistant": {
             "id": "agent-outline-assistant",
@@ -346,6 +398,8 @@ def test_apim_subscription_discovery_uses_list_without_secrets() -> None:
     assert {item.apim_subscription_id for item in discovered.items} == {
         "master",
         "outline-assistant",
+        "unit-dashboard",
+        "unit-publisher-probe",
     }
     master = next(
         item for item in discovered.items if item.apim_subscription_id == "master"
@@ -357,6 +411,11 @@ def test_apim_subscription_discovery_uses_list_without_secrets() -> None:
     )
     assert master.scope_type == "service"
     assert assistant.application_type == "agent"
+    assert {
+        item.apim_subscription_id
+        for item in discovered.items
+        if item.system_managed and item.application_type == "system"
+    } == {"master", "unit-dashboard", "unit-publisher-probe"}
     assert all(request.method == "GET" for request in requests)
     assert all("listSecrets" not in str(request.url) for request in requests)
     assert "must-be-ignored" not in discovered.model_dump_json()

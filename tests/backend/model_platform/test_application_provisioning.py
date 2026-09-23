@@ -23,6 +23,8 @@ from tests.backend.model_platform.control_plane_support import (
 )
 from turnstile_core.config import Settings
 from turnstile_core.domain.application_access import (
+    GatewayApplicationDiscovery,
+    GatewayApplicationDiscoveryItem,
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionProvisionSpec,
 )
@@ -502,6 +504,57 @@ def test_creation_capability_requires_all_deployed_dependencies(
     assert repository.gateway_release_operations == []
 
 
+def test_api_services_use_configured_system_subscription_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        gateway_release_worker_enabled=True,
+        gateway_application_provisioning_enabled=True,
+        ledger_table_endpoint="https://ledger.example.test",
+        credential_encryption_key=SecretStr(Fernet.generate_key().decode()),
+        azure_subscription_id=str(UUID(int=5)),
+        apim_resource_group="unit-rg",
+        apim_service_name="unit-apim",
+        apim_dashboard_subscription_id="unit-dashboard",
+        apim_probe_subscription_id="unit-publisher-probe",
+    )
+    monkeypatch.setattr(service_dependencies, "get_settings", lambda: settings)
+    repository = InMemoryRepository()
+
+    access = service_dependencies.application_access_service(repository)
+    access.sync_discovery(
+        GatewayApplicationDiscovery(
+            gateway_profile_id=APIM_ID,
+            discovered_at=datetime(2026, 9, 23, tzinfo=UTC),
+            items=[
+                GatewayApplicationDiscoveryItem(
+                    apim_subscription_id="unit-dashboard",
+                    display_name="Unit dashboard",
+                    state="active",
+                    scope_type="product",
+                    scope_id="unit-product",
+                    scope_exists=True,
+                    application_type="system",
+                    system_managed=True,
+                )
+            ],
+        ),
+        "worker",
+    )
+    assert repository.gateway_application_subscriptions[0]["source"] == "bicep"
+
+    control_plane = service_dependencies.control_plane_service(repository)
+    with pytest.raises(ControlPlaneConflictError, match="reserved"):
+        control_plane.request_application_subscription_provision(
+            APIM_ID,
+            GatewayApplicationSubscriptionCreate(
+                subscription_id="unit-publisher-probe",
+                display_name="Reserved",
+            ),
+            "owner@example.com",
+        )
+
+
 class StagedProvisioner(FakeApimClient):
     def __init__(self) -> None:
         super().__init__()
@@ -941,6 +994,27 @@ def test_terminal_ledger_failure_keeps_subscription_suspended_and_clears_secret(
 def test_system_subscription_ids_cannot_be_queued(subscription_id: str) -> None:
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(repository, CredentialCipher(Fernet.generate_key()))
+    with pytest.raises(ControlPlaneConflictError, match="reserved"):
+        service.request_application_subscription_provision(
+            APIM_ID,
+            GatewayApplicationSubscriptionCreate(
+                subscription_id=subscription_id,
+                display_name="Reserved",
+            ),
+            "owner@example.com",
+        )
+    assert repository.gateway_release_operations == []
+
+
+@pytest.mark.parametrize("subscription_id", ("unit-dashboard", "unit-publisher-probe"))
+def test_custom_system_subscription_ids_cannot_be_queued(subscription_id: str) -> None:
+    repository = InMemoryRepository()
+    service = GatewayControlPlaneService(
+        repository,
+        CredentialCipher(Fernet.generate_key()),
+        dashboard_subscription_id="unit-dashboard",
+        probe_subscription_id="unit-publisher-probe",
+    )
     with pytest.raises(ControlPlaneConflictError, match="reserved"):
         service.request_application_subscription_provision(
             APIM_ID,

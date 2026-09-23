@@ -30,7 +30,7 @@ Delegated invocation does not change the authenticated session. A Member remains
 
 ## APIM and control plane
 
-Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_PRINCIPAL_ID`, `APIM_GATEWAY_URL`, and `APIM_DASHBOARD_SUBSCRIPTION_KEY` to the deployed resources. The dashboard key is server-side only and must never be compiled into the frontend. Keep all control-plane feature flags false until the corresponding managed identities and roles exist.
+Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_PRINCIPAL_ID`, `APIM_GATEWAY_URL`, `APIM_DASHBOARD_SUBSCRIPTION_ID`, `APIM_DASHBOARD_SUBSCRIPTION_KEY`, and `APIM_PROBE_SUBSCRIPTION_ID` to the deployed resources. The subscription IDs must match the APIM resources created for the environment. The dashboard key is server-side only and must never be compiled into the frontend. Keep all control-plane feature flags false until the corresponding managed identities and roles exist.
 
 `APIM_REGRESSION_MODEL_KEY` has no default. Set it only after onboarding a model that can be used for publication probes.
 

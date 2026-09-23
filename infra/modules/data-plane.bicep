@@ -23,6 +23,8 @@ param apimResourceGroupName string
 param apimName string
 param apimApiId string = 'turnstile-llm'
 param apimProductId string = 'finops-ai-consumers'
+param dashboardSubscriptionId string = 'turnstile-dashboard'
+param probeSubscriptionId string = 'turnstile-publisher-probe'
 param apimGatewayUrl string
 param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
@@ -656,7 +658,9 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APIM_API_ID', value: apimApiId }
         { name: 'APIM_PRODUCT_ID', value: apimProductId }
         { name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }
+        { name: 'APIM_DASHBOARD_SUBSCRIPTION_ID', value: dashboardSubscriptionId }
         { name: 'APIM_DASHBOARD_SUBSCRIPTION_KEY', value: apimSubscriptionKey }
+        { name: 'APIM_PROBE_SUBSCRIPTION_ID', value: probeSubscriptionId }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(gatewayReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(gatewayApplicationProvisioningEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(gatewayApplicationDefaultMonthlyTokenLimit) }

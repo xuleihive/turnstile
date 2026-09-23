@@ -102,6 +102,8 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         application_product_id: str = "finops-ai-consumers",
+        dashboard_subscription_id: str = "turnstile-dashboard",
+        probe_subscription_id: str = "turnstile-publisher-probe",
         databricks_oauth_enabled: bool = False,
     ) -> None:
         super().__init__(
@@ -114,6 +116,8 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
             application_default_token_limit=application_default_token_limit,
             application_default_tokens_per_minute=application_default_tokens_per_minute,
             application_product_id=application_product_id,
+            dashboard_subscription_id=dashboard_subscription_id,
+            probe_subscription_id=probe_subscription_id,
             databricks_oauth_enabled=databricks_oauth_enabled,
         )
 

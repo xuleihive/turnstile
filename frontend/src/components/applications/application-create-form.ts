@@ -33,7 +33,7 @@ export function applicationCreateError(
   if (!gateway?.enabled || gateway.implementation !== "apim") return "请选择可用的 APIM 网关。"
   if (!value.display_name.trim() || value.display_name.trim().length > 100) return "名称须为 1–100 个字符。"
   if (!/^[a-z0-9][a-z0-9-]{0,126}$/.test(value.subscription_id)) return "订阅 ID 只能包含小写字母、数字和连字符。"
-  if (["master", "turnstile-dashboard", "turnstile-publisher-probe"].includes(value.subscription_id)) return "此订阅 ID 为系统保留，请使用其他 ID。"
+  if (value.subscription_id === "master") return "此订阅 ID 为系统保留，请使用其他 ID。"
   if ((value.description?.length ?? 0) > 1000) return "说明不能超过 1000 个字符。"
   if (inventory.some((item) => item.gateway_profile_id === gateway.id && item.slug.toLowerCase() === value.subscription_id)) return "此网关中已存在同名订阅 ID，请使用其他 ID。"
   return null

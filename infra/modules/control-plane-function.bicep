@@ -14,6 +14,7 @@ param apimResourceGroupName string
 param apimName string
 param apimApiId string = 'turnstile-llm'
 param apimProductId string = 'finops-ai-consumers'
+param dashboardSubscriptionId string = 'turnstile-dashboard'
 param probeSubscriptionId string = 'turnstile-publisher-probe'
 param chatCompletionsOperationId string = 'chat-completions'
 param responsesOperationId string = 'responses'
@@ -174,6 +175,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APIM_COUNT_TOKENS_OPERATION_ID', value: countTokensOperationId }
         { name: 'APIM_MODELS_OPERATION_ID', value: modelsOperationId }
         { name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }
+        { name: 'APIM_DASHBOARD_SUBSCRIPTION_ID', value: dashboardSubscriptionId }
         { name: 'APIM_PROBE_SUBSCRIPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${apimProbeSubscriptionKeySecretUri})' }
         { name: 'APIM_PROBE_SUBSCRIPTION_ID', value: probeSubscriptionId }
         { name: 'APIM_REGRESSION_MODEL_KEY', value: regressionModelKey }

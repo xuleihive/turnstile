@@ -1956,7 +1956,11 @@ class AzureApimPublisherClient:
         product_ids = {
             self._resource_name(value) for value in self._list_all("/products")
         }
-        system_ids = {"master", self._settings.apim_probe_subscription_id}
+        system_ids = {
+            "master",
+            self._settings.apim_dashboard_subscription_id.casefold(),
+            self._settings.apim_probe_subscription_id.casefold(),
+        }
         agent_ids = {
             value.casefold()
             for value in self._settings.apim_subscription_agent_map
@@ -2003,7 +2007,7 @@ class AzureApimPublisherClient:
                 raise PolicyCompilationError(
                     f"APIM subscription {apim_subscription_id} has an unsupported scope"
                 )
-            system_managed = apim_subscription_id in system_ids
+            system_managed = apim_subscription_id.casefold() in system_ids
             application_type: ApplicationType = (
                 "system"
                 if system_managed

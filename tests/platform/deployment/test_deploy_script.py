@@ -327,6 +327,45 @@ def test_external_apim_still_provisions_a_clean_platform(tmp_path: Path) -> None
     )
 
 
+def test_runtime_release_recovers_legacy_shared_apim_system_ids(tmp_path: Path) -> None:
+    path = _parameters(tmp_path / "parameters.json")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["parameters"].update(
+        {
+            "resourcePrefix": {"value": "shared"},
+        }
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+    inputs = DeploymentInputs.load("subscription", path, tmp_path / "state.json")
+    answers = iter(("a-secure-owner-password", "a-secure-owner-password"))
+    material = load_or_create_secret_material(
+        inputs,
+        read_password=lambda _: next(answers),
+        require_owner_password=False,
+    )
+
+    release = runtime_release_parameters(
+        inputs,
+        material,
+        {
+            "apiName": "api-shared-test",
+            "controlPlaneFunctionName": "func-shared-control-test",
+            "gatewayApiPath": "https://apim-existing.azure-api.net/shared/llm",
+            "apimApiId": "shared-llm",
+            "apimProbeSubscriptionId": "shared-publisher-probe",
+        },
+        {
+            "webAppUrl": "https://observer.test",
+            "adapterKeyNamedValueName": "shared-observer-key",
+        },
+        {},
+        {},
+    )["parameters"]
+
+    assert release["dashboardSubscriptionId"]["value"] == "shared-dashboard"
+    assert release["probeSubscriptionId"]["value"] == "shared-publisher-probe"
+
+
 def test_external_apim_adoption_rejects_partial_configuration(tmp_path: Path) -> None:
     path = _parameters(tmp_path / "parameters.json")
     document = json.loads(path.read_text(encoding="utf-8"))
@@ -1032,6 +1071,7 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
     root_document = deployment_parameters(inputs, material)
     observer_document = observer_parameters(inputs, platform_outputs, material, "abc123")
     release_document = runtime_release_parameters(
+        inputs,
         material,
         {
             "apiName": "api-turnstile-test",
@@ -1075,6 +1115,14 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
     assert (
         release_document["parameters"]["currentApiSettings"]["value"]
         == {"EXISTING_API_SETTING": "preserved"}
+    )
+    assert (
+        release_document["parameters"]["dashboardSubscriptionId"]["value"]
+        == "turnstile-dashboard"
+    )
+    assert (
+        release_document["parameters"]["probeSubscriptionId"]["value"]
+        == "turnstile-publisher-probe"
     )
 
 

@@ -41,6 +41,8 @@ class GatewayReleaseOperationWorker:
         cipher: CredentialCipher | None = None,
         application_projector: Callable[[UUID, UUID], None] | None = None,
         parent_policy: str | None = None,
+        dashboard_subscription_id: str = "turnstile-dashboard",
+        probe_subscription_id: str = "turnstile-publisher-probe",
     ) -> None:
         self._repository = repository
         self._client = client
@@ -50,12 +52,16 @@ class GatewayReleaseOperationWorker:
         self._service = GatewayControlPlaneService(
             repository,
             retention_policy=retention_policy,
+            dashboard_subscription_id=dashboard_subscription_id,
+            probe_subscription_id=probe_subscription_id,
         )
         self._application_service = ApplicationAccessService(
             repository,
             sync_available=True,
             default_token_limit=application_default_token_limit,
             default_tokens_per_minute=application_default_tokens_per_minute,
+            dashboard_subscription_id=dashboard_subscription_id,
+            probe_subscription_id=probe_subscription_id,
         )
 
     def run_once(

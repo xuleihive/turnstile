@@ -74,6 +74,8 @@ DEFAULT_POSTGRES_TIER = "Burstable"
 DEFAULT_OBSERVER_PLAN_SKU_NAME = "P0v3"
 DEFAULT_OBSERVER_PLAN_WORKER_COUNT = 1
 OBSERVER_PLAN_SKU_NAMES = frozenset({"P0v3", "P1v3", "P2v3", "P3v3"})
+DEFAULT_APIM_DASHBOARD_SUBSCRIPTION_ID = "turnstile-dashboard"
+DEFAULT_APIM_PROBE_SUBSCRIPTION_ID = "turnstile-publisher-probe"
 OBSERVER_ORCHESTRATOR_PARAMETERS = {
     "observerPlanSkuName",
     "observerPlanWorkerCount",
@@ -1096,13 +1098,60 @@ def observer_parameters(
     )
 
 
+def _effective_apim_system_subscription_id(
+    inputs: DeploymentInputs,
+    platform_outputs: Mapping[str, Any],
+    *,
+    output_name: str,
+    parameter_name: str,
+    shared_apim_suffix: str,
+    default: str,
+) -> str:
+    saved = platform_outputs.get(output_name)
+    if isinstance(saved, str) and saved.strip():
+        return saved.strip()
+    configured = inputs.parameters.get(parameter_name)
+    if configured is not None and not isinstance(configured, str):
+        raise DeploymentError(f"Parameter {parameter_name} must be a string")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    existing_apim = inputs.parameters.get("existingApimName")
+    legacy_shared_outputs = (
+        platform_outputs.get("apimApiId") == f"{inputs.resource_prefix}-llm"
+        and platform_outputs.get("apimProbeSubscriptionId")
+        == f"{inputs.resource_prefix}-publisher-probe"
+    )
+    if (
+        isinstance(existing_apim, str) and existing_apim.strip()
+    ) or legacy_shared_outputs:
+        return f"{inputs.resource_prefix}-{shared_apim_suffix}"
+    return default
+
+
 def runtime_release_parameters(
+    inputs: DeploymentInputs,
     secrets_: SecretMaterial,
     platform_outputs: Mapping[str, Any],
     observer_outputs: Mapping[str, Any],
     current_api_settings: Mapping[str, str],
     current_control_plane_settings: Mapping[str, str],
 ) -> JsonObject:
+    dashboard_subscription_id = _effective_apim_system_subscription_id(
+        inputs,
+        platform_outputs,
+        output_name="apimDashboardSubscriptionId",
+        parameter_name="apimDashboardSubscriptionId",
+        shared_apim_suffix="dashboard",
+        default=DEFAULT_APIM_DASHBOARD_SUBSCRIPTION_ID,
+    )
+    probe_subscription_id = _effective_apim_system_subscription_id(
+        inputs,
+        platform_outputs,
+        output_name="apimProbeSubscriptionId",
+        parameter_name="apimProbeSubscriptionId",
+        shared_apim_suffix="publisher-probe",
+        default=DEFAULT_APIM_PROBE_SUBSCRIPTION_ID,
+    )
     return _arm_parameter_document(
         {
             "apiName": _output_string(platform_outputs, "apiName"),
@@ -1110,6 +1159,8 @@ def runtime_release_parameters(
                 platform_outputs, "controlPlaneFunctionName"
             ),
             "apimGatewayUrl": _output_string(platform_outputs, "gatewayApiPath"),
+            "dashboardSubscriptionId": dashboard_subscription_id,
+            "probeSubscriptionId": probe_subscription_id,
             "apimSubscriptionKey": secrets_.values["apimSubscriptionKey"],
             "usageObserverUrl": _output_string(observer_outputs, "webAppUrl"),
             "usageObserverKeyNamedValue": _output_string(
@@ -1641,6 +1692,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
             _output_string(platform_outputs, "controlPlaneFunctionName"),
         )
         release_parameters = runtime_release_parameters(
+            inputs,
             secrets_,
             platform_outputs,
             platform_outputs,
@@ -1698,6 +1750,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         _output_string(platform_outputs, "controlPlaneFunctionName"),
     )
     release_parameters = runtime_release_parameters(
+        inputs,
         secrets_,
         platform_outputs,
         observer_outputs,

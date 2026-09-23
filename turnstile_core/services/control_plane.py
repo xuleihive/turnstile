@@ -123,6 +123,8 @@ class GatewayControlPlaneService:
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         application_product_id: str = _APPLICATION_PRODUCT_ID,
+        dashboard_subscription_id: str = "turnstile-dashboard",
+        probe_subscription_id: str = "turnstile-publisher-probe",
         image_generation_enabled: bool = False,
         image_generation_defaults: ImageGenerationLimits | None = None,
         databricks_oauth_enabled: bool = False,
@@ -136,6 +138,11 @@ class GatewayControlPlaneService:
         self._application_default_token_limit = application_default_token_limit
         self._application_default_tokens_per_minute = application_default_tokens_per_minute
         self._application_product_id = application_product_id
+        self._reserved_subscription_ids = {
+            "master",
+            dashboard_subscription_id.casefold(),
+            probe_subscription_id.casefold(),
+        }
         self._image_generation_enabled = image_generation_enabled
         self._image_generation_defaults = image_generation_defaults
         self._retention_policy = retention_policy or GatewayReleaseRetentionPolicy(
@@ -478,9 +485,7 @@ class GatewayControlPlaneService:
             raise ControlPlaneUnavailableError(_APPLICATION_PROVISIONING_UNAVAILABLE)
         if self._cipher is None:
             raise ControlPlaneUnavailableError("Credential encryption is unavailable")
-        if request.subscription_id in {
-            "master", "turnstile-dashboard", "turnstile-publisher-probe"
-        }:
+        if request.subscription_id.casefold() in self._reserved_subscription_ids:
             raise ControlPlaneConflictError("This APIM subscription ID is reserved for the system")
         gateway = next(
             (

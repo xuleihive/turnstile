@@ -41,6 +41,8 @@ def test_release_timer_never_constructs_publication_worker(
         gateway_release_protected_labels=["milestone", "rollback"],
         gateway_application_default_monthly_token_limit=100_000,
         gateway_application_default_tokens_per_minute=100_000,
+        apim_dashboard_subscription_id="unit-dashboard",
+        apim_probe_subscription_id="unit-publisher-probe",
         control_plane_lease_seconds=180,
         control_plane_max_attempts=30,
     )
@@ -86,6 +88,8 @@ def test_release_timer_never_constructs_publication_worker(
                 "application_default_tokens_per_minute": 100_000,
                 "cipher": cipher,
                 "parent_policy": None,
+                "dashboard_subscription_id": "unit-dashboard",
+                "probe_subscription_id": "unit-publisher-probe",
             }
 
         def run_once(

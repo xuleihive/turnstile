@@ -73,6 +73,8 @@ class ApplicationAccessService:
         key_client: ApimSubscriptionKeyClient | None = None,
         default_token_limit: int = 100_000,
         default_tokens_per_minute: int = 100_000,
+        dashboard_subscription_id: str = "turnstile-dashboard",
+        probe_subscription_id: str = "turnstile-publisher-probe",
     ) -> None:
         self._repository = repository
         self._sync_available = sync_available
@@ -84,6 +86,10 @@ class ApplicationAccessService:
         self._key_client = key_client
         self._default_token_limit = default_token_limit
         self._default_tokens_per_minute = default_tokens_per_minute
+        self._deployed_subscription_ids = {
+            dashboard_subscription_id.casefold(),
+            probe_subscription_id.casefold(),
+        }
 
     def sync_discovery(
         self, discovery: GatewayApplicationDiscovery, actor: str
@@ -102,8 +108,8 @@ class ApplicationAccessService:
                 "slug": item.apim_subscription_id.casefold(),
                 "source": (
                     "bicep"
-                    if item.apim_subscription_id
-                    in {"turnstile-dashboard", "turnstile-publisher-probe"}
+                    if item.apim_subscription_id.casefold()
+                    in self._deployed_subscription_ids
                     else "discovered"
                 ),
             }

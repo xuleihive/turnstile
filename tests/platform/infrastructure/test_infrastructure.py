@@ -308,6 +308,21 @@ def test_api_and_apim_share_the_same_gateway_path() -> None:
     assert "path: apiPath" in APIM_INTEGRATION
 
 
+def test_configurable_system_subscription_ids_reach_runtime_apps() -> None:
+    assert MAIN.count("dashboardSubscriptionId: apimDashboardSubscriptionId") == 3
+    assert MAIN.count("probeSubscriptionId: apimProbeSubscriptionId") == 3
+    assert "output apimDashboardSubscriptionId string" in MAIN
+    assert "output apimProbeSubscriptionId string" in MAIN
+    for template in (DATA_PLANE, CONTROL_PLANE):
+        assert "param dashboardSubscriptionId string = 'turnstile-dashboard'" in template
+        assert "param probeSubscriptionId string = 'turnstile-publisher-probe'" in template
+        assert "APIM_DASHBOARD_SUBSCRIPTION_ID" in template
+        assert "APIM_PROBE_SUBSCRIPTION_ID" in template
+    release = (ROOT / "infra/runtime-release.bicep").read_text(encoding="utf-8")
+    assert release.count("APIM_DASHBOARD_SUBSCRIPTION_ID: dashboardSubscriptionId") == 2
+    assert release.count("APIM_PROBE_SUBSCRIPTION_ID: probeSubscriptionId") == 2
+
+
 def test_api_bootstraps_initial_owner_between_migration_and_startup() -> None:
     assert (
         "appCommandLine: 'python -m backend.migrate && python -m backend.bootstrap "

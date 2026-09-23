@@ -71,13 +71,16 @@ test("subscription ID normalization is locale independent and bounded", () => {
   assert.equal(applicationSubscriptionIdFromName("x".repeat(150)).length, 127)
 })
 
-test("creation requires an enabled APIM gateway and valid unreserved identity", () => {
+test("creation requires an enabled APIM gateway and leaves configurable reservations to the API", () => {
   assert.equal(applicationCreateError(gateway, request, []), null)
   for (const candidate of [undefined, { ...gateway, enabled: false }, { ...gateway, implementation: "direct" }]) {
     assert.ok(applicationCreateError(candidate, request, []))
   }
-  for (const subscription_id of ["UPPER", "bad_id", "x".repeat(128), "master", "turnstile-dashboard", "turnstile-publisher-probe"]) {
+  for (const subscription_id of ["UPPER", "bad_id", "x".repeat(128), "master"]) {
     assert.ok(applicationCreateError(gateway, { ...request, subscription_id }, []))
+  }
+  for (const subscription_id of ["turnstile-dashboard", "turnstile-publisher-probe"]) {
+    assert.equal(applicationCreateError(gateway, { ...request, subscription_id }, []), null)
   }
   assert.ok(applicationCreateError(gateway, { ...request, display_name: " " }, []))
   assert.ok(applicationCreateError(gateway, { ...request, description: "x".repeat(1001) }, []))

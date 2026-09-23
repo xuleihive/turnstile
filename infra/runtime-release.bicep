@@ -9,6 +9,12 @@ param controlPlaneFunctionName string
 @description('Published APIM API URL including the API path.')
 param apimGatewayUrl string
 
+@description('APIM subscription identifier reserved for dashboard traffic.')
+param dashboardSubscriptionId string = 'turnstile-dashboard'
+
+@description('APIM subscription identifier reserved for publication probes.')
+param probeSubscriptionId string = 'turnstile-publisher-probe'
+
 @description('Server-side APIM subscription key used only by authenticated dashboard invocations.')
 @secure()
 param apimSubscriptionKey string
@@ -43,7 +49,9 @@ resource apiSettings 'Microsoft.Web/sites/config@2024-11-01' = {
   name: 'appsettings'
   properties: union(currentApiSettings, {
     APIM_GATEWAY_URL: apimGatewayUrl
+    APIM_DASHBOARD_SUBSCRIPTION_ID: dashboardSubscriptionId
     APIM_DASHBOARD_SUBSCRIPTION_KEY: apimSubscriptionKey
+    APIM_PROBE_SUBSCRIPTION_ID: probeSubscriptionId
     GATEWAY_RELEASE_WORKER_ENABLED: string(releaseWorkerEnabled)
   })
 }
@@ -56,6 +64,8 @@ resource controlPlaneSettings 'Microsoft.Web/sites/config@2024-11-01' = {
     GATEWAY_PUBLICATION_WORKER_ENABLED: string(publicationWorkerEnabled)
     GATEWAY_RELEASE_WORKER_ENABLED: string(releaseWorkerEnabled)
     APIM_GATEWAY_URL: apimGatewayUrl
+    APIM_DASHBOARD_SUBSCRIPTION_ID: dashboardSubscriptionId
+    APIM_PROBE_SUBSCRIPTION_ID: probeSubscriptionId
     APIM_USAGE_OBSERVER_URL: usageObserverUrl
     APIM_USAGE_OBSERVER_KEY_NAMED_VALUE: usageObserverKeyNamedValue
   })

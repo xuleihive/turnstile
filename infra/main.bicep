@@ -268,6 +268,8 @@ module dataPlane 'modules/data-plane.bicep' = {
     apimName: effectiveApimName
     apimApiId: apimApiId
     apimProductId: apimProductId
+    dashboardSubscriptionId: apimDashboardSubscriptionId
+    probeSubscriptionId: apimProbeSubscriptionId
     apimGatewayUrl: effectiveGatewayApiPath
     ledgerTableName: ledgerTableName
     gatewayReleaseWorkerEnabled: provisionControlPlane && gatewayReleaseWorkerEnabled && apimUsageObserver.mode == 'enabled'
@@ -340,6 +342,7 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
     apimName: effectiveApimName
     apimApiId: apimApiId
     apimProductId: apimProductId
+    dashboardSubscriptionId: apimDashboardSubscriptionId
     probeSubscriptionId: apimProbeSubscriptionId
     apimGatewayUrl: effectiveGatewayApiPath
     regressionModelKey: apimRegressionModelKey
@@ -384,6 +387,7 @@ output apimName string = effectiveApimName
 output apimResourceGroupName string = effectiveApimResourceGroupName
 output apimPrincipalId string = effectiveApimPrincipalId
 output apimApiId string = apimApiId
+output apimDashboardSubscriptionId string = apimDashboardSubscriptionId
 output apimProbeSubscriptionId string = apimProbeSubscriptionId
 output observerAdapterKeyNamedValueName string = observerAdapterKeyNamedValueName
 output postgresServerName string = dataPlane.outputs.postgresServerName

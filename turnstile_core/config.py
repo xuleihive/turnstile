@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     apim_count_tokens_operation_id: str = "anthropic-count-tokens"
     apim_models_operation_id: str = "anthropic-models"
     apim_gateway_url: str | None = None
+    apim_dashboard_subscription_id: str = "turnstile-dashboard"
     apim_dashboard_subscription_key: SecretStr | None = None
     apim_probe_subscription_key: SecretStr | None = None
     apim_probe_subscription_id: str = "turnstile-publisher-probe"

@@ -131,6 +131,8 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
             if settings.gateway_application_provisioning_enabled and settings.ledger_table_endpoint
             else None
         ),
+        dashboard_subscription_id=settings.apim_dashboard_subscription_id,
+        probe_subscription_id=settings.apim_probe_subscription_id,
     )
     operation = release_worker.run_once(
         worker_id=worker_id,
