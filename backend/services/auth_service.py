@@ -123,6 +123,9 @@ class EntraIdentity:
     # indistinguishable from a real name.
     display_name: str | None
     tenant_id: str
+    # The app roles assigned to the signer for this registration, from the token's `roles`
+    # claim. Empty when none are assigned or the registration defines none.
+    roles: tuple[str, ...] = ()
 
 
 class EntraTokenVerifier:
@@ -150,9 +153,17 @@ class EntraTokenVerifier:
     implementation, which admits `attacker@microsoft.com.example.net`.
     """
 
-    def __init__(self, client_id: str, allowed_email_domains: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        client_id: str,
+        allowed_email_domains: tuple[str, ...],
+        tenant_ids: tuple[str, ...] = (),
+    ) -> None:
         self._client_id = client_id
         self._allowed_email_domains = tuple(d.lower().lstrip("@") for d in allowed_email_domains)
+        # Empty means any tenant, the multi-tenant default. A single-tenant deployment pins
+        # its own tenant, so a correctly signed token from anywhere else is still refused.
+        self._tenant_ids = tuple(t.strip().lower() for t in tenant_ids)
         # The `common` key set covers every tenant, which is what a multi-tenant app needs;
         # PyJWKClient caches it and refetches on an unknown `kid`, so Microsoft's key
         # rotation is a non-event rather than an outage.
@@ -185,6 +196,8 @@ class EntraTokenVerifier:
             # Without this a token from one tenant could carry another tenant's `tid`, and
             # anything downstream that trusted `tid` would be reading an attacker's value.
             raise AuthError("该账户不属于此组织。")
+        if self._tenant_ids and tenant_id.lower() not in self._tenant_ids:
+            raise AuthError("该账户不属于此组织。")
 
         email = _claim_email(claims)
         if not email:
@@ -192,10 +205,15 @@ class EntraTokenVerifier:
         if not self._domain_allowed(email):
             raise AuthError("该账户不属于此组织。")
 
+        raw_roles = claims.get("roles")
+        roles: tuple[str, ...] = ()
+        if isinstance(raw_roles, list):
+            roles = tuple(r for r in raw_roles if isinstance(r, str))
         return EntraIdentity(
             email=email,
             display_name=str(claims["name"]).strip() if claims.get("name") else None,
             tenant_id=tenant_id,
+            roles=roles,
         )
 
     def _domain_allowed(self, email: str) -> bool:

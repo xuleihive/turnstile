@@ -166,6 +166,12 @@ param entraClientId string = ''
 @description('Exact email domains allowed to sign in through Microsoft Entra.')
 param entraAllowedEmailDomains array = []
 
+@description('Tenant of a single-tenant Entra registration. Empty keeps the multi-tenant /organizations sign-in.')
+param entraTenantId string = ''
+
+@description('Entra app role required to sign in with Microsoft. Empty keeps automatic Member provisioning; when set, only holders sign in, as Owner.')
+param entraAdminRole string = ''
+
 @description('Email address for the first password Owner created only when the user table is empty.')
 param bootstrapOwnerEmail string
 
@@ -278,6 +284,8 @@ module dataPlane 'modules/data-plane.bicep' = {
     gatewayApplicationDefaultTokensPerMinute: gatewayApplicationDefaultTokensPerMinute
     entraClientId: entraClientId
     entraAllowedEmailDomains: entraAllowedEmailDomains
+    entraTenantId: entraTenantId
+    entraAdminRole: entraAdminRole
     bootstrapOwnerEmail: bootstrapOwnerEmail
     bootstrapOwnerPasswordHash: bootstrapOwnerPasswordHash
   }

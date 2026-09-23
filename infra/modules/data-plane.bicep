@@ -35,6 +35,8 @@ param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
 param gatewayApplicationDefaultTokensPerMinute int = 100000
 param entraClientId string = ''
 param entraAllowedEmailDomains array = []
+param entraTenantId string = ''
+param entraAdminRole string = ''
 param bootstrapOwnerEmail string
 @secure()
 param bootstrapOwnerPasswordHash string
@@ -667,6 +669,8 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'GATEWAY_APPLICATION_KEY_MANAGEMENT_ENABLED', value: string(gatewayApplicationKeyManagementEnabled) }
         { name: 'ENTRA_CLIENT_ID', value: entraClientId }
         { name: 'ENTRA_ALLOWED_EMAIL_DOMAINS', value: string(entraAllowedEmailDomains) }
+        { name: 'ENTRA_TENANT_IDS', value: string(empty(entraTenantId) ? [] : [entraTenantId]) }
+        { name: 'ENTRA_ADMIN_ROLE', value: entraAdminRole }
         { name: 'BOOTSTRAP_OWNER_EMAIL', value: bootstrapOwnerEmail }
         { name: 'BOOTSTRAP_OWNER_PASSWORD_HASH', value: bootstrapOwnerPasswordHash }
         { name: 'PRODUCTION', value: 'true' }

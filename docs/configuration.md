@@ -17,6 +17,9 @@ Copy `.env.example` to `.env` for the API and `frontend/.env.example` to `fronte
 | `ENTRA_CLIENT_ID` | Public client ID accepted by the backend token verifier. |
 | `VITE_ENTRA_CLIENT_ID` | Same public client ID compiled into the frontend. |
 | `ENTRA_ALLOWED_EMAIL_DOMAINS` | JSON array of exact email domains allowed to sign in. |
+| `ENTRA_TENANT_IDS` | Optional JSON array of tenant IDs whose tokens are accepted. Empty keeps multi-tenant sign-in; a single-tenant registration lists its own tenant. Set from the `entraTenantId` deployment parameter. |
+| `VITE_ENTRA_TENANT_ID` | The same tenant compiled into the frontend, which then signs in against that tenant instead of `/organizations`. |
+| `ENTRA_ADMIN_ROLE` | Optional Entra app role a Microsoft sign-in must carry. When set, only holders sign in, they sign in as Owner, and nobody else is given an account. Pair it with **Assignment required** on the enterprise application so Entra refuses everyone else before a token is issued. Set from the `entraAdminRole` deployment parameter. |
 | `MEMBER_SESSION_TTL_HOURS` | Fixed member session duration. |
 | `OWNER_SESSION_TTL_HOURS` | Fixed owner session duration. |
 | `SESSION_COOKIE_NAME` | Session cookie name; defaults to `turnstile_session`. |

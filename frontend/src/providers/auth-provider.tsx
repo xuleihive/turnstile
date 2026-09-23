@@ -51,11 +51,15 @@ const AuthContext = createContext<AuthContextValue | null>(null)
  *  our own. Keep it in step with `entra_client_id` on the backend: that is what `aud` is
  *  checked against, and a mismatch fails every Microsoft sign-in. */
 const ENTRA_CLIENT_ID = import.meta.env.VITE_ENTRA_CLIENT_ID?.trim() ?? ""
+/** Optional. Set for a single-tenant registration, where `/organizations` is refused
+ *  (AADSTS50194) and a guest must sign in through the resource tenant. The backend then
+ *  pins the same tenant with ENTRA_TENANT_IDS, so the two stay one decision. */
+const ENTRA_TENANT_ID = import.meta.env.VITE_ENTRA_TENANT_ID?.trim() ?? ""
 
 const msalConfig: Configuration = {
   auth: {
     clientId: ENTRA_CLIENT_ID || "00000000-0000-0000-0000-000000000000",
-    authority: "https://login.microsoftonline.com/organizations",
+    authority: `https://login.microsoftonline.com/${ENTRA_TENANT_ID || "organizations"}`,
     // `window.location.origin` rather than a constant so one registration covers
     // localhost, test and production. Each origin still has to be listed in the app
     // registration, but the code does not need to know which one it is running as.

@@ -21,6 +21,7 @@ USER_ID = UUID("00000000-0000-4000-8000-000000000001")
 class CapturingAuthStore:
     def __init__(self, role: str = "owner") -> None:
         self.sessions: list[dict[str, Any]] = []
+        self.entra_upserts: list[dict[str, Any]] = []
         self.expired_cleanup_calls = 0
         self.role = role
 
@@ -29,7 +30,10 @@ class CapturingAuthStore:
             return None
         return self._user(hash_password("correct-password"))
 
-    def upsert_entra_user(self, email: str, display_name: str | None) -> dict[str, Any]:
+    def upsert_entra_user(
+        self, email: str, display_name: str | None, role: str | None = None
+    ) -> dict[str, Any]:
+        self.entra_upserts.append({"email": email, "role": role})
         return self._user(None, email=email, display_name=display_name)
 
     def delete_expired_sessions(self) -> int:
