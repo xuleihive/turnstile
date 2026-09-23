@@ -123,6 +123,9 @@ class EntraIdentity:
     # indistinguishable from a real name.
     display_name: str | None
     tenant_id: str
+    # The app roles assigned to the signer for this registration, from the token's `roles`
+    # claim. Empty when none are assigned or the registration defines none.
+    roles: tuple[str, ...] = ()
 
 
 class EntraTokenVerifier:
@@ -150,9 +153,17 @@ class EntraTokenVerifier:
     implementation, which admits `attacker@microsoft.com.example.net`.
     """
 
-    def __init__(self, client_id: str, allowed_email_domains: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        client_id: str,
+        allowed_email_domains: tuple[str, ...],
+        tenant_ids: tuple[str, ...] = (),
+    ) -> None:
         self._client_id = client_id
         self._allowed_email_domains = tuple(d.lower().lstrip("@") for d in allowed_email_domains)
+        # Empty means any tenant, the multi-tenant default. A single-tenant deployment pins
+        # its own tenant, so a correctly signed token from anywhere else is still refused.
+        self._tenant_ids = tuple(t.strip().lower() for t in tenant_ids)
         # The `common` key set covers every tenant, which is what a multi-tenant app needs;
         # PyJWKClient caches it and refetches on an unknown `kid`, so Microsoft's key
         # rotation is a non-event rather than an outage.
@@ -185,6 +196,8 @@ class EntraTokenVerifier:
             # Without this a token from one tenant could carry another tenant's `tid`, and
             # anything downstream that trusted `tid` would be reading an attacker's value.
             raise AuthError("该账户不属于此组织。")
+        if self._tenant_ids and tenant_id.lower() not in self._tenant_ids:
+            raise AuthError("该账户不属于此组织。")
 
         email = _claim_email(claims)
         if not email:
@@ -192,10 +205,15 @@ class EntraTokenVerifier:
         if not self._domain_allowed(email):
             raise AuthError("该账户不属于此组织。")
 
+        raw_roles = claims.get("roles")
+        roles: tuple[str, ...] = ()
+        if isinstance(raw_roles, list):
+            roles = tuple(r for r in raw_roles if isinstance(r, str))
         return EntraIdentity(
             email=email,
             display_name=str(claims["name"]).strip() if claims.get("name") else None,
             tenant_id=tenant_id,
+            roles=roles,
         )
 
     def _domain_allowed(self, email: str) -> bool:
@@ -226,3 +244,94 @@ def _claim_email(claims: dict[str, Any]) -> str:
 
 def session_expiry(hours: int, now: datetime | None = None) -> datetime:
     return (now or datetime.now(UTC)) + timedelta(hours=hours)
+
+
+@dataclass(frozen=True)
+class EntraCaller:
+    """An API caller proved by a Microsoft Entra access token rather than a session."""
+
+    subject: str
+    # The person's address for a delegated token; `app:<client id>` for a workload, which
+    # has no address and so never becomes a row in app_user.
+    email: str
+    display_name: str | None
+    roles: tuple[str, ...]
+    delegated: bool
+    expires_at: datetime
+
+
+class EntraAccessTokenVerifier:
+    """Validates an access token issued for this API, for automation and scripts.
+
+    A person's token (delegated, carrying `scp`) must include the API scope and pass the
+    same mail-domain allow-list as sign-in. A workload's token (app-only, no `scp`) has no
+    address, so its authorization rests entirely on the app role and the pinned tenant --
+    which is why a tenant must be pinned before any token is accepted: in a multi-tenant
+    registration another tenant's administrator can assign this app's roles to anyone in
+    their own tenant.
+    """
+
+    def __init__(
+        self,
+        client_id: str,
+        allowed_email_domains: tuple[str, ...],
+        tenant_ids: tuple[str, ...],
+        required_scope: str = "Turnstile.Manage",
+    ) -> None:
+        self._client_id = client_id
+        self._allowed_email_domains = tuple(d.lower().lstrip("@") for d in allowed_email_domains)
+        self._tenant_ids = tuple(t.strip().lower() for t in tenant_ids)
+        self._required_scope = required_scope
+        self._jwks = PyJWKClient(
+            "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+            cache_keys=True,
+        )
+
+    def verify(self, token: str) -> EntraCaller:
+        if not self._client_id or not self._tenant_ids:
+            raise AuthError("Microsoft 登录尚未配置。")
+        try:
+            signing_key = self._jwks.get_signing_key_from_jwt(token)
+            claims: dict[str, Any] = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=[self._client_id, f"api://{self._client_id}"],
+                options={"require": ["exp", "iat", "aud", "iss", "tid", "oid"]},
+            )
+        except (jwt.PyJWTError, httpx.HTTPError) as error:
+            raise AuthError("Microsoft 登录未能完成，请重试。") from error
+
+        tenant_id = str(claims.get("tid") or "").lower()
+        if claims.get("iss") != f"https://login.microsoftonline.com/{tenant_id}/v2.0":
+            raise AuthError("该账户不属于此组织。")
+        if tenant_id not in self._tenant_ids:
+            raise AuthError("该账户不属于此组织。")
+
+        raw_roles = claims.get("roles")
+        roles: tuple[str, ...] = ()
+        if isinstance(raw_roles, list):
+            roles = tuple(r for r in raw_roles if isinstance(r, str))
+        scopes = str(claims.get("scp") or "").split()
+        delegated = bool(scopes)
+        if delegated:
+            if self._required_scope not in scopes:
+                raise AuthError("该令牌未包含所需的权限范围。")
+            email = _claim_email(claims)
+            if not email or email.rsplit("@", 1)[-1] not in self._allowed_email_domains:
+                raise AuthError("该账户不属于此组织。")
+            name = str(claims["name"]).strip() if claims.get("name") else None
+        else:
+            client = str(claims.get("azp") or claims.get("appid") or "")
+            if not client:
+                raise AuthError("Microsoft 登录未能完成，请重试。")
+            email = f"app:{client}"
+            name = None
+        return EntraCaller(
+            subject=str(claims["oid"]),
+            email=email,
+            display_name=name,
+            roles=roles,
+            delegated=delegated,
+            expires_at=datetime.fromtimestamp(int(claims["exp"]), UTC),
+        )

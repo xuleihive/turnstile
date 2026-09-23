@@ -70,7 +70,9 @@ class AuthStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def upsert_entra_user(self, email: str, display_name: str | None) -> dict[str, Any]:
+    def upsert_entra_user(
+        self, email: str, display_name: str | None, role: str | None = None
+    ) -> dict[str, Any]:
         """Provision on first Microsoft sign-in.
 
         The token has already been verified and the domain already checked by the time this
@@ -84,18 +86,35 @@ class AuthStore:
         A token without a `name` claim stores NULL rather than a slug cut out of the
         address. The caller already has the email and can show it; a fabricated name is
         indistinguishable from a real one once it is on screen.
+
+        `role` is given only when the deployment requires an Entra app role to sign in. The
+        role assignment in Entra is then the source of truth, so it is written on every
+        sign-in rather than only on creation.
         """
         with self._connection() as connection:
-            row = connection.execute(
-                """
-                INSERT INTO app_user (email, display_name)
-                VALUES (%s, %s)
-                ON CONFLICT (email) DO UPDATE
-                    SET display_name = COALESCE(EXCLUDED.display_name, app_user.display_name)
-                RETURNING id, email, display_name, password_hash, role, enabled
-                """,
-                (email.strip().lower(), (display_name or "").strip() or None),
-            ).fetchone()
+            if role is None:
+                row = connection.execute(
+                    """
+                    INSERT INTO app_user (email, display_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (email) DO UPDATE
+                        SET display_name = COALESCE(EXCLUDED.display_name, app_user.display_name)
+                    RETURNING id, email, display_name, password_hash, role, enabled
+                    """,
+                    (email.strip().lower(), (display_name or "").strip() or None),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    INSERT INTO app_user (email, display_name, role)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (email) DO UPDATE
+                        SET display_name = COALESCE(EXCLUDED.display_name, app_user.display_name),
+                            role = EXCLUDED.role
+                    RETURNING id, email, display_name, password_hash, role, enabled
+                    """,
+                    (email.strip().lower(), (display_name or "").strip() or None, role),
+                ).fetchone()
         return dict(row) if row else {}
 
     def create_password_user(

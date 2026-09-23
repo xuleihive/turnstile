@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -9,6 +10,8 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .domain.image_profiles import ImageGenerationLimits
+
+_TENANT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 class Settings(BaseSettings):
@@ -116,6 +119,16 @@ class Settings(BaseSettings):
     entra_allowed_email_domains: list[str] = Field(
         default_factory=list
     )
+    # Tenants whose tokens are accepted. Empty keeps the multi-tenant behaviour described
+    # above. A single-tenant registration lists its own tenant here, and the frontend then
+    # signs in against that tenant rather than `/organizations` -- which is also what lets a
+    # guest account sign in with the resource tenant's policies applied.
+    entra_tenant_ids: list[str] = Field(default_factory=list)
+    # The app role a Microsoft sign-in must carry. Empty keeps automatic Member
+    # provisioning. When set, only holders of the role can sign in, they sign in as Owner,
+    # and nobody else is given an account: who administers the console is decided by the
+    # role assignment in Entra, not by a row in this database.
+    entra_admin_role: str = ""
     # Application sessions are role-bound because an Owner can change budgets, model
     # access and gateway credentials while a Member is primarily a reader/caller.
     member_session_ttl_hours: int = Field(default=24, ge=1, le=168)
@@ -154,6 +167,14 @@ class Settings(BaseSettings):
         if self.control_plane_enabled and not observer_url:
             raise ValueError("The enabled control plane requires an APIM usage observer")
         return self
+
+    @field_validator("entra_tenant_ids")
+    @classmethod
+    def normalize_entra_tenant_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip().lower() for value in values]
+        if any(not _TENANT_ID.fullmatch(value) for value in normalized):
+            raise ValueError("ENTRA_TENANT_IDS must be tenant GUIDs")
+        return normalized
 
     @field_validator("delegated_invocation_tester_ids")
     @classmethod

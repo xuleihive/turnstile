@@ -50,6 +50,12 @@
     "entraAllowedEmailDomains": {
       "value": []
     },
+    "entraTenantId": {
+      "value": ""
+    },
+    "entraAdminRole": {
+      "value": ""
+    },
     "employeeOrgId": {
       "value": "organization-default"
     },

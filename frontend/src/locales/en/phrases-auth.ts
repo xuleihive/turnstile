@@ -16,6 +16,7 @@ export const ENGLISH_AUTH_PHRASES: Record<string, string> = {
   "退出登录": "Sign out",
   "Microsoft 登录失败，请重试。": "Microsoft sign-in failed. Please try again.",
   "该账户不属于此组织。": "That account is not part of this organization.",
+  "此控制台仅限管理员使用。": "This console is for administrators only. Ask an administrator to add you to the admin group in Microsoft Entra.",
   "密码": "Password",
   "登录": "Sign in",
   "或": "or",

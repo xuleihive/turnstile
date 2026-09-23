@@ -864,6 +864,7 @@ def build_packages(
 ) -> dict[str, Path]:
     environment = dict(os.environ)
     environment["VITE_ENTRA_CLIENT_ID"] = str(inputs.parameters.get("entraClientId") or "")
+    environment["VITE_ENTRA_TENANT_ID"] = str(inputs.parameters.get("entraTenantId") or "")
     runner.run(["npm", "--prefix", "frontend", "ci"], cwd=REPOSITORY_ROOT)
     runner.run(
         ["npm", "--prefix", "frontend", "run", "build"],

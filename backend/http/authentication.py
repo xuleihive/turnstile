@@ -29,6 +29,7 @@ def get_entra_verifier() -> EntraTokenVerifier:
     return EntraTokenVerifier(
         client_id=settings.entra_client_id,
         allowed_email_domains=tuple(settings.entra_allowed_email_domains),
+        tenant_ids=tuple(settings.entra_tenant_ids),
     )
 
 
@@ -114,7 +115,15 @@ def login_with_entra(
         identity = verifier.verify(body.id_token)
     except AuthError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
-    user = store.upsert_entra_user(identity.email, identity.display_name)
+    role: str | None = None
+    if settings.entra_admin_role:
+        # Checked before any row is written: someone without the role must not be left
+        # with an account, even a disabled one, because the role assignment in Entra is
+        # the only record of who administers this console.
+        if settings.entra_admin_role not in identity.roles:
+            raise HTTPException(status_code=403, detail="此控制台仅限管理员使用。")
+        role = "owner"
+    user = store.upsert_entra_user(identity.email, identity.display_name, role=role)
     if not user.get("enabled", True):
         raise HTTPException(status_code=403, detail="该账户已被停用。")
     return _issue(response, store, user, "entra", settings)

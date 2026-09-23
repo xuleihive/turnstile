@@ -17,6 +17,11 @@ Copy `.env.example` to `.env` for the API and `frontend/.env.example` to `fronte
 | `ENTRA_CLIENT_ID` | Public client ID accepted by the backend token verifier. |
 | `VITE_ENTRA_CLIENT_ID` | Same public client ID compiled into the frontend. |
 | `ENTRA_ALLOWED_EMAIL_DOMAINS` | JSON array of exact email domains allowed to sign in. |
+| `ENTRA_TENANT_IDS` | Optional JSON array of tenant IDs whose tokens are accepted. Empty keeps multi-tenant sign-in; a single-tenant registration lists its own tenant. Set from the `entraTenantId` deployment parameter. |
+| `VITE_ENTRA_TENANT_ID` | The same tenant compiled into the frontend, which then signs in against that tenant instead of `/organizations`. |
+| `ENTRA_ADMIN_ROLE` | Optional Entra app role a Microsoft sign-in must carry. When set, only holders sign in, they sign in as Owner, and nobody else is given an account. Pair it with **Assignment required** on the enterprise application so Entra refuses everyone else before a token is issued. Set from the `entraAdminRole` deployment parameter. |
+
+With both `ENTRA_ADMIN_ROLE` and `ENTRA_TENANT_IDS` set, the API also accepts a Microsoft Entra **access token** (`Authorization: Bearer`) in place of a session, for scripts and automation. The token must be issued for this application (audience `ENTRA_CLIENT_ID` or `api://ENTRA_CLIENT_ID`) by a pinned tenant and carry the admin role. A person's token must also carry the `Turnstile.Manage` scope and an allowed mail domain, and acts as that person's Owner account; a workload identity's app-only token acts as `app:<client id>`. Without both settings, tokens are ignored and only sessions are accepted. A tenant must be pinned because, in a multi-tenant registration, another tenant's administrator can assign this application's roles to anyone in their own tenant.
 | `MEMBER_SESSION_TTL_HOURS` | Fixed member session duration. |
 | `OWNER_SESSION_TTL_HOURS` | Fixed owner session duration. |
 | `SESSION_COOKIE_NAME` | Session cookie name; defaults to `turnstile_session`. |
