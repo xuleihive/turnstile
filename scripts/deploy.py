@@ -235,8 +235,11 @@ class CommandRunner:
         capture: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         print("$ " + " ".join(command))
+        # Resolve through PATHEXT: on Windows `az` and `npm` are .cmd files, which
+        # CreateProcess does not find from a bare name.
+        executable = shutil.which(command[0]) or command[0]
         return subprocess.run(
-            list(command),
+            [executable, *command[1:]],
             cwd=cwd,
             env=dict(env) if env is not None else None,
             check=True,
@@ -302,9 +305,27 @@ def _read_owner_password(read_password: PasswordReader) -> str:
     return password
 
 
+
+def _private_mode_ok(path: Path) -> bool:
+    """True when only the owner can read the file.
+
+    POSIX only. On Windows `st_mode` does not express NTFS access control: Python reports
+    0o666, or 0o444 for a read-only file, so the check would refuse every file there. The
+    protection on Windows is the per-user profile ACL that the state lives under.
+    """
+    if os.name == "nt":
+        return True
+    return not (stat.S_IMODE(path.stat().st_mode) & 0o077)
+
+
+def _restrict_descriptor(descriptor: int) -> None:
+    """chmod 0600 where the platform can; Windows has no os.fchmod before Python 3.13."""
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, 0o600)
+
+
 def owner_credentials_password(path: Path, expected_email: str) -> str:
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
+    if not _private_mode_ok(path):
         raise DeploymentError(f"Owner credentials permissions must be 0600: {path}")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -330,8 +351,7 @@ def load_or_create_secret_material(
     state_path = inputs.state_path
     owner_password: str | None = None
     if state_path.exists():
-        mode = stat.S_IMODE(state_path.stat().st_mode)
-        if mode & 0o077:
+        if not _private_mode_ok(state_path):
             raise DeploymentError(f"Secret state permissions must be 0600: {state_path}")
         try:
             document = json.loads(state_path.read_text(encoding="utf-8"))
@@ -451,7 +471,7 @@ def temporary_parameter_file(document: Mapping[str, Any], directory: Path) -> It
     descriptor, raw_path = tempfile.mkstemp(prefix="parameters-", suffix=".json", dir=directory)
     path = Path(raw_path)
     try:
-        os.fchmod(descriptor, 0o600)
+        _restrict_descriptor(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(document, handle)
             handle.write("\n")
@@ -1379,7 +1399,7 @@ def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(prefix="upgrade-", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        _restrict_descriptor(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             json.dump(value, output, indent=2)
             output.flush()
@@ -1391,13 +1411,27 @@ def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
 
 @contextmanager
 def _upgrade_lock(directory: Path) -> Iterator[None]:
-    try:
-        import fcntl
-    except ImportError as error:
-        raise DeploymentError("APIM upgrades require a POSIX deployment host") from error
+    """One upgrade at a time per deployment, on POSIX (fcntl) and Windows (msvcrt)."""
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / ".lock").open("a+") as lock:
         os.chmod(lock.name, 0o600)
+        if os.name == "nt":
+            import msvcrt
+
+            # Byte 0 is the lock; the file's content is never read.
+            lock.seek(0)
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                raise DeploymentError("Another process owns this APIM upgrade") from error
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        import fcntl
+
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:

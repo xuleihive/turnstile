@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 import subprocess
@@ -52,6 +53,10 @@ from scripts.deploy import (
 )
 from scripts.stage_deployment import REPOSITORY_ROOT
 
+# NTFS access control is not expressed in st_mode, and Windows has no fcntl, so tests
+# that assert POSIX file modes, executable bits or locks cannot hold there.
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX file modes and locks")
+
 
 def _parameters(path: Path) -> Path:
     path.write_text(
@@ -71,6 +76,7 @@ def _parameters(path: Path) -> Path:
     return path
 
 
+@POSIX_ONLY
 def test_secret_state_is_private_stable_and_excludes_plaintext(tmp_path: Path) -> None:
     inputs = DeploymentInputs.load(
         "00000000-0000-0000-0000-000000000001",
@@ -248,6 +254,7 @@ def test_owner_credentials_are_private_and_match_public_email(tmp_path: Path) ->
         owner_credentials_password(path, "other@example.com")
 
 
+@POSIX_ONLY
 def test_owner_credentials_reject_group_or_world_access(tmp_path: Path) -> None:
     path = tmp_path / "owner.credentials.json"
     path.write_text(
@@ -398,6 +405,7 @@ def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
     assert core.apim_resource_group_name == "turnstile-test"
 
 
+@POSIX_ONLY
 def test_temporary_parameter_file_is_private_and_deleted(tmp_path: Path) -> None:
     with temporary_parameter_file({"parameters": {}}, tmp_path) as path:
         assert path.is_file()
@@ -517,6 +525,7 @@ def test_observer_registry_scope_is_independent_of_reused_apim(
     assert document["parameters"]["apimResourceGroupName"]["value"] == "shared-apim"
 
 
+@POSIX_ONLY
 def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -939,6 +948,7 @@ def test_runtime_release_recycles_updated_apps_without_stale_api_health(
     ]
 
 
+@POSIX_ONLY
 def test_upgrade_files_are_private_and_concurrent_execution_is_rejected(tmp_path: Path) -> None:
     directory = tmp_path / "upgrade"
     path = directory / "journal.json"
@@ -1117,3 +1127,17 @@ def test_what_if_reads_root_level_changes_and_rejects_delete(tmp_path: Path) -> 
             {"parameters": {}},
             "test-deployment",
         )
+
+
+def test_upgrade_lock_rejects_a_second_holder(tmp_path: Path) -> None:
+    # Runs on Windows as well as POSIX: the lock is msvcrt there and fcntl here.
+    from scripts.deploy import _upgrade_lock
+
+    with (
+        _upgrade_lock(tmp_path / "upgrade"),
+        pytest.raises(DeploymentError, match="Another process owns"),
+        _upgrade_lock(tmp_path / "upgrade"),
+    ):
+        pass
+    with _upgrade_lock(tmp_path / "upgrade"):
+        pass
