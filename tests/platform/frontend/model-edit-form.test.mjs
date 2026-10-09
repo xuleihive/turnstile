@@ -366,7 +366,7 @@ function catalogResponse(overrides = {}) {
   }
 }
 
-function priceSourceHarness(response, model = savedModel()) {
+function priceSourceHarness(response, model = savedModel(), api = {}) {
   const slots = []
   const effects = []
   const pending = []
@@ -381,6 +381,11 @@ function priceSourceHarness(response, model = savedModel()) {
         return [slots[index], value => { slots[index] = typeof value === "function" ? value(slots[index]) : value }]
       },
       useMemo: callback => callback(),
+      useRef(initial) {
+        const index = cursor++
+        if (!(index in slots)) slots[index] = { current: initial }
+        return slots[index]
+      },
       useEffect(callback, dependencies) {
         const index = effectCursor++
         const previous = effects[index]
@@ -394,7 +399,7 @@ function priceSourceHarness(response, model = savedModel()) {
     },
     "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
     "./model-edit-form": modelEditForm,
-    "../../data-sources/apim/api": { dataSource: { priceCatalogOptions: async () => response } },
+    "../../data-sources/apim/api": { dataSource: { priceCatalogOptions: async () => response, ...api } },
   }
   const exports = {}
   runInNewContext(priceComponent, { exports, require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }) })
@@ -484,4 +489,76 @@ test("the selected region survives saving, discount changes, and reopening", asy
   reopened.all()
   await reopened.flush()
   assert.equal(reopened.find(node => node.type === "select").props.value, references.westus)
+})
+
+test("image pricing preserves its configured source and exposes the public controls", () => {
+  const model = savedModel({
+    capabilities: ["image_generation"], price_source: "models_dev",
+    price_reference: "models_dev:azure:gpt-image-2.5-flare",
+  })
+  assert.equal(createModelEditDraft(model).priceSource, "models_dev")
+  assert.ok(editorHarness(model).find(node => node.type === "ModelPriceSourceFields"))
+  const unconfigured = createModelEditDraft({ ...model, price_source_configured: false })
+  assert.equal(unconfigured.priceSource, "models_dev")
+  assert.equal(createModelEditDraft({ ...model, price_source: "manual" }).priceSource, "manual")
+})
+
+test("Azure search passes its source and rejects cross-source results and selections", async () => {
+  const publicModel = { key: "models_dev:nano-gpt:grok-4.7", label: "Grok 4.7", product: "NanoGPT", source: "models_dev" }
+  const calls = []
+  const response = catalogResponse()
+  const harness = priceSourceHarness(response, savedModel(), {
+    priceCatalogModels: async (query, source) => {
+      calls.push({ query, source })
+      return { models: [publicModel, response.model_entry], unavailable: [] }
+    },
+  })
+  await harness.find(node => node.type?.name === "ModelStep").props.onSearch()
+  assert.equal(calls[0].source, "azure_retail")
+  assert.deepEqual(harness.find(node => node.type?.name === "ModelStep").props.matches.map(item => item.source), ["azure_retail"])
+  const before = { ...harness.draft }
+  await harness.find(node => node.type?.name === "ModelStep").props.onChoose(publicModel)
+  assert.deepEqual(harness.draft, before)
+})
+
+test("switching official sources clears loaded details and late searches", async () => {
+  let finish
+  const harness = priceSourceHarness(catalogResponse(), savedModel(), {
+    priceCatalogModels: () => new Promise(resolve => { finish = resolve }),
+  })
+  const pending = harness.find(node => node.type?.name === "ModelStep").props.onSearch()
+  harness.find(node => node.type === "input" && node.props.value === "anthropic").props.onChange()
+  harness.all()
+  finish({ models: [catalogResponse().model_entry], unavailable: [] })
+  await pending
+  assert.equal(harness.draft.priceSource, "anthropic")
+  const step = harness.find(node => node.type?.name === "ModelStep")
+  assert.equal(step.props.matches, null)
+  assert.equal(step.props.chosen, null)
+  assert.equal(step.props.searching, false)
+})
+
+test("late options cannot switch a manual draft back to Azure or overwrite prices", async () => {
+  let finish
+  const response = catalogResponse()
+  const harness = priceSourceHarness(response, savedModel(), {
+    priceCatalogOptions: () => new Promise(resolve => { finish = resolve }),
+  })
+  const pending = harness.find(node => node.type?.name === "ModelStep").props.onChoose(response.model_entry)
+  harness.find(node => node.type === "input" && node.props.value === "manual").props.onChange()
+  harness.all()
+  const before = { ...harness.draft }
+  finish(response)
+  await pending
+  assert.equal(JSON.stringify(harness.draft), JSON.stringify(before))
+})
+
+test("selected source rejects options carrying a different source", async () => {
+  const response = catalogResponse()
+  const harness = priceSourceHarness({
+    ...response, model_entry: { ...response.model_entry, source: "models_dev" },
+  })
+  const before = { ...harness.draft }
+  await harness.find(node => node.type?.name === "ModelStep").props.onChoose(response.model_entry)
+  assert.deepEqual(harness.draft, before)
 })

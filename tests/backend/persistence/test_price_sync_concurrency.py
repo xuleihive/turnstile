@@ -75,7 +75,10 @@ def pricing_postgres() -> Iterator[tuple[str, Event]]:
             with psycopg.connect(info, autocommit=True) as connection:
                 connection.execute((root / "migrations/001_initial_schema.up.sql").read_text())
                 connection.execute("SET search_path TO public")
-                for name in ("007_model_price_source", "008_price_review_and_guard"):
+                for name in (
+                    "007_model_price_source", "008_price_review_and_guard",
+                    "010_models_dev_pricing",
+                ):
                     connection.execute((root / f"migrations/{name}.up.sql").read_text())
             yield info, waiting
         finally:
@@ -172,7 +175,10 @@ def test_sync_waits_for_edit_then_rechecks_configuration(
             changes.get("input_cost_per_million", 0.36)
         )
         assert saved["price_source"] == changes.get("price_source", "azure_retail")
-        assert saved["price_sync_status"] == "superseded"
+        if kind == "model":
+            assert saved["price_sync_status"] is None
+        else:
+            assert saved["price_sync_status"] == "superseded"
         assert saved["list_input_cost_per_million"] is None
     finally:
         editor_repository.close()

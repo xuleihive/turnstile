@@ -522,6 +522,7 @@ export type ManagedModel = {
   // Where the four rates above came from. "manual" means someone typed them and the price sync
   // leaves the row alone, which is what every model did before this existed.
   price_source: PriceSource
+  price_source_configured?: boolean
   price_reference: string | null
   // Percent of list price, overriding the connection's own figure. null inherits it.
   price_discount_percent: number | null
@@ -539,8 +540,39 @@ export type ManagedModel = {
   updated_at: string
 }
 
-export type PriceSource = "manual" | "azure_retail" | "anthropic"
-export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed"
+export type PriceSource = "models_dev" | "manual" | "azure_retail" | "anthropic"
+export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded" | "ambiguous" | "unsupported" | "deferred"
+export type PriceMatch = {
+  reference: string
+  provider_id: string
+  model_id: string
+  name: string
+  method: "exact" | "ai" | "manual" | "stored"
+  price_basis: "deployment" | "origin_reference"
+}
+export type PricePreviewRequest = {
+  model_id?: string
+  runtime_id?: string
+  price_source?: PriceSource
+  deployment_name?: string
+  upstream_model_id?: string
+  display_name?: string
+  model_key?: string
+  operation?: "chat" | "image_generation"
+  price_reference?: string | null
+  price_discount_percent?: number | null
+  refresh?: boolean
+  rematch?: boolean
+}
+export type PricePreviewResponse = {
+  status: "matched" | "unmapped" | "ambiguous" | "stale" | "unsupported" | "deferred"
+  match: PriceMatch | null
+  context_window: number | null
+  effective_prices: { input: number | null; output: number | null; cached: number | null; cache_write: number | null } | null
+  entry_digest: string | null
+  warnings: string[]
+  candidates: PriceMatch[]
+}
 
 /** One priceable model in a vendor's published list, named the way that vendor names it. */
 export type PriceCatalogModel = {
@@ -585,7 +617,8 @@ export type PriceCatalogOptionsResponse = {
 export type PriceSyncDetail = {
   model_id: string
   model_key: string
-  status: PriceSyncStatus
+  status: PriceSyncStatus | null
+  outcome: string | null
   message: string | null
 }
 
@@ -595,6 +628,14 @@ export type PriceSyncResponse = {
   unmapped: number
   review_needed: number
   stale: number
+  total: number
+  unchanged: number
+  skipped_manual: number
+  ambiguous: number
+  unsupported: number
+  superseded: number
+  deferred: number
+  partial_fields: number
   details: PriceSyncDetail[]
   registry: ModelRegistry
 }
@@ -665,6 +706,11 @@ export type GatewayPublicationCreate = {
     output_cost_per_million?: number | null
     cached_cost_per_million?: number | null
     cache_write_cost_per_million?: number | null
+    price_source?: PriceSource
+    price_reference?: string | null
+    price_discount_percent?: number | null
+    price_entry_digest?: string | null
+    allow_unpriced?: boolean
   }
 }
 

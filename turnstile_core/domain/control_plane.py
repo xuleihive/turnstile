@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid5
 
 from pydantic import (
@@ -22,6 +22,7 @@ from .runtime_models import (
     ModelFamilyKey,
     ModelVendorKey,
     OAuthClientCredentialsConfig,
+    PriceSource,
     ProviderKind,
     ProviderTarget,
     RuntimeKind,
@@ -176,6 +177,14 @@ class ModelTarget(StrictModel):
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
     assignment_required: bool = True
     image_profile: ImageGenerationProfile | None = None
+    price_configuration: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_pricing(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        values = handler(self)
+        if self.price_configuration is None:
+            values.pop("price_configuration", None)
+        return cast(dict[str, Any], values)
 
     @model_validator(mode="after")
     def validate_image_contract(self) -> ModelTarget:
@@ -203,6 +212,11 @@ class ModelCreateTarget(StrictModel):
     output_cost_per_million: float | None = Field(default=None, ge=0)
     cached_cost_per_million: float | None = Field(default=None, ge=0)
     cache_write_cost_per_million: float | None = Field(default=None, ge=0)
+    price_source: PriceSource | None = None
+    price_reference: str | None = Field(default=None, max_length=1500)
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
+    price_entry_digest: str | None = Field(default=None, max_length=64)
+    allow_unpriced: bool = False
 
     @model_validator(mode="after")
     def require_deployment_or_explicit_identity(self) -> ModelCreateTarget:

@@ -1217,6 +1217,7 @@ class InMemoryPublicationRepositoryMixin:
                 "cache_write_cost_per_million": model_spec.get("cache_write_cost_per_million"),
                 "allowed_roles": model_spec["allowed_roles"],
                 "publication_id": publication_id,
+                **(model_spec.get("price_configuration") or {}),
             },
         )
         model["publication_id"] = publication_id

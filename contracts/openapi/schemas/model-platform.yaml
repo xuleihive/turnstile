@@ -716,6 +716,14 @@ schemas:
     type: object
     additionalProperties: false
     properties:
+      price_source:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+        - type: 'null'
+      price_reference: {type: [string, 'null'], maxLength: 1500}
+      price_discount_percent: {type: [number, 'null'], exclusiveMinimum: 0, maximum: 100}
+      price_entry_digest: {type: [string, 'null'], maxLength: 64}
+      allow_unpriced: {type: boolean, default: false}
       operation:
         type: string
         enum: [chat, image_generation]

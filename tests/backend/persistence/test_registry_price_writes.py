@@ -113,8 +113,8 @@ def test_creating_a_model_keeps_the_price_fields_off_managed_model() -> None:
     assert recorder.writes_to("managed_model_price"), "the price row was never written"
 
 
-def test_creating_a_model_priced_by_hand_writes_no_price_row_at_all() -> None:
-    """An absent row *is* 'manual'. Writing one would make every existing model look edited."""
+def test_creating_a_model_priced_by_hand_records_the_explicit_choice() -> None:
+    """An absent row now follows the public default, so explicit manual must be persisted."""
     proxy, recorder = proxy_with([model_row(uuid4())])
 
     proxy.create_registry_item("model", {
@@ -128,7 +128,7 @@ def test_creating_a_model_priced_by_hand_writes_no_price_row_at_all() -> None:
         "price_discount_percent": None,
     })
 
-    assert recorder.writes_to("managed_model_price") == []
+    assert recorder.writes_to("managed_model_price")
 
 
 def test_creating_a_connection_keeps_the_discount_off_model_runtime() -> None:
@@ -294,7 +294,9 @@ def test_a_price_held_for_review_does_not_move_the_accepted_baseline() -> None:
     )])
 
     assert recorder.writes_to("managed_model") == []
-    statement = recorder.writes_to("managed_model_price")[0]
+    statement = next(
+        item for item in recorder.writes_to("managed_model_price") if "pending_list_price" in item
+    )
     assert "pending_list_price" in statement
     # The baseline columns appear, but only inside a CASE that leaves them alone unless the
     # price was accepted.
@@ -313,7 +315,9 @@ def test_the_proposal_parameter_is_cast_so_postgresql_can_type_it() -> None:
 
     proxy.apply_model_price_sync([sync_result()])
 
-    statement = recorder.writes_to("managed_model_price")[0]
+    statement = next(
+        item for item in recorder.writes_to("managed_model_price") if "pending_list_price" in item
+    )
     assert "%(pending_list_price)s::jsonb IS NOT NULL" in statement
     assert "THEN %(pending_list_price)s::jsonb" in statement
 

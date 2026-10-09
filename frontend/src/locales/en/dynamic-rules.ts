@@ -2,6 +2,9 @@ const plural = (value: string, singular: string, pluralForm = `${singular}s`) =>
   Number(value.replace(/,/g, "")) === 1 ? singular : pluralForm
 
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全部 (\d+) 个模型 · 已更新 (\d+) · 无变化 (\d+) · 手动跳过 (\d+)$/g,
+    (_match, total, updated, unchanged, manual) => `${total} models · ${updated} updated · ${unchanged} unchanged · ${manual} manual skipped`],
+  [/^同步全部 (\d+) 个已保存模型的定价$/g, (_match, count) => `Sync pricing for all ${count} saved models`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `Copy ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `Rotate ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `Rotate ${kind} Key?`],

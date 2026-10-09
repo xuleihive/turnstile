@@ -89,16 +89,19 @@ import { priceRequests } from "../lib/pricing"
 import { finopsKeys, finopsQueries } from "../data-sources/apim/queries"
 import { assistantSettingsKey } from "../components/assistant/queries"
 import { useTimezone } from "../providers/timezone-provider"
+import { useAuth } from "../providers/auth-provider"
 import {
   ModelPublicationDialog,
   publicationStatusLabel,
 } from "../components/model-management/model-publication-dialog"
 import { ConnectionDialog } from "../components/model-management/connection-dialog"
 import { ModelEditDialog } from "../components/model-management/model-edit-dialog"
+import { pricingSyncSummary } from "../components/model-management/model-edit-form"
 import type {
   GatewayPublication,
   GatewayProfile,
   ManagedModel,
+  PriceSyncResponse,
   ModelProvider,
   ModelRegistry,
   ModelConnectionUpdate,
@@ -277,6 +280,7 @@ function modelManagementTabFromUrl(): Tab {
 }
 
 export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+  const { user } = useAuth()
   const client = useQueryClient()
   const { data, isLoading, error } = useQuery(finopsQueries.registry())
   const [tab, setTab] = useState<Tab>(modelManagementTabFromUrl)
@@ -298,6 +302,17 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   // that was hardcoded green with a check mark, so a failed inference check announced
   // itself as a success -- the words said "failed" and everything around them said "ok".
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [syncResult, setSyncResult] = useState<PriceSyncResponse | null>(null)
+  const syncSummary = syncResult ? pricingSyncSummary(syncResult) : ""
+  const syncPrices = useMutation({
+    mutationFn: () => dataSource.syncPrices(),
+    onSuccess: result => {
+      client.setQueryData(finopsKeys.registry, result.registry)
+      void client.invalidateQueries({ queryKey: finopsKeys.all })
+      setSyncResult(result)
+    },
+    onError: failure => setNotice({ text: String(failure), ok: false }),
+  })
   const [runtimeDetailId, setRuntimeDetailId] = useState(() => new URL(window.location.href).searchParams.get("runtime"))
   const runtimeHealthWindow = useMemo(() => usageWindow(30), [])
   // One scoped page per runtime matches the detail view. Filtering the global 200-row page
@@ -651,7 +666,36 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       onToggleGateway={(gateway) => updateGateway(gateway, { enabled: !gateway.enabled })}
       onDefaultGateway={(gateway) => updateGateway(gateway, { is_default: true, enabled: true })}
       onDeleteGateway={setDeletingGateway}
+      canSyncPrices={user?.role === "owner"}
+      syncingPrices={syncPrices.isPending}
+      onSyncPrices={() => syncPrices.mutate()}
     />
+    {syncResult && <Dialog open onOpenChange={open => { if (!open) setSyncResult(null) }}>
+      <DialogContent className="registry-editor-dialog">
+        <div className="registry-editor">
+        <DialogHeader className="registry-editor-header"><DialogTitle>定价同步结果</DialogTitle>
+          <DialogDescription>{syncSummary}</DialogDescription>
+        </DialogHeader>
+        <div className="registry-editor-body"><div className="price-sync-results">
+          {syncResult.details.map(detail => <div className="price-sync-result" key={detail.model_id}>
+            <span data-no-localize>{detail.model_key}</span>
+            <b>{({ updated: "已更新", unchanged: "无变化", skipped_manual: "手动跳过",
+              unmapped: "未匹配", ambiguous: "待确认", stale: "来源失败",
+              review_needed: "待复核", superseded: "计划作废",
+              unsupported: "不支持", deferred: "未执行" } as Record<string, string>)[detail.outcome ?? ""] ?? detail.outcome}</b>
+            {detail.message && <small>{detail.message}</small>}
+            {detail.outcome !== "skipped_manual" && <Button type="button" variant="ghost" size="icon"
+              title="编辑模型" aria-label="编辑模型" onClick={() => {
+                const model = syncResult.registry.models.find(model => model.id === detail.model_id)
+                setSyncResult(null)
+                if (model) openModelEditor(model)
+              }}><Edit3 size={14} /></Button>}
+          </div>)}
+        </div></div>
+        <DialogFooter className="registry-editor-footer"><DialogClose>关闭</DialogClose></DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>}
     {overlays}
   </>
 }
@@ -1012,7 +1056,7 @@ function CredentialRotationDialog({ model, oauth = false, busy, error, onClose, 
   </Dialog>
 }
 
-function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId, loadingRuntimeHealthIds, removingModelKey, publications, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onToggleModel, onRotateCredential, onDeleteModel, onOpenPublication, onToggleRuntime, onDefaultRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway }: {
+function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId, loadingRuntimeHealthIds, removingModelKey, publications, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onToggleModel, onRotateCredential, onDeleteModel, onOpenPublication, onToggleRuntime, onDefaultRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway, canSyncPrices, syncingPrices, onSyncPrices }: {
   registry: ModelRegistry
   tab: Tab
   notice: Notice | null
@@ -1039,6 +1083,9 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId,
   onToggleGateway: (gateway: GatewayProfile) => void
   onDefaultGateway: (gateway: GatewayProfile) => void
   onDeleteGateway: (gateway: GatewayProfile) => void
+  canSyncPrices: boolean
+  syncingPrices: boolean
+  onSyncPrices: () => void
 }) {
   const activeTab: ModelTableTab = tab
   const [search, setSearch] = useState("")
@@ -1134,7 +1181,15 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId,
   return <div className="smh-workspace model-workspace">
     <header className="smh-page-header">
       <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{registry.models.length}</span></div>
-      {activeTab !== "gateways" && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
+      {activeTab !== "gateways" && <div className="smh-header-actions">
+        {activeTab === "models" && canSyncPrices && <button type="button"
+          title={`同步全部 ${registry.models.length} 个已保存模型的定价`}
+          disabled={busy || syncingPrices} onClick={onSyncPrices}>
+          <RefreshCw size={14} className={syncingPrices ? "spin" : undefined} />
+          {syncingPrices ? "正在同步" : "同步定价"}
+        </button>}
+        <button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button>
+      </div>}
     </header>
     <div className="model-toolbar">
       <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : "网关"}<span>{value === "connections" ? scopedConnections.length : registry[value].length}</span></button>)}</ButtonGroup>

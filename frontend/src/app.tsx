@@ -1472,7 +1472,7 @@ export function App() {
         onSelect={(id) => navigatePage(id as Page)}
       />
       <main>
-        {!workspacePage && (
+        {!workspacePage && page !== "settings" && (
           <header className="topbar settings-mobile-topbar">
             <div className="settings-mobile-topbar-actions">
               <Button
@@ -1497,7 +1497,7 @@ export function App() {
         <div
           className={`page ${page === "settings" ? "settings-host" : ""} ${page === "models" || page === "apim-native-routes" || page === "gateway-releases" || page === "applications" ? "registry-workspace-host" : ""} ${workspacePage ? "finops-workspace-host" : ""}`}
         >
-          {page === "settings" && <SettingsPage dataSource={selectedDataSource} />}
+          {page === "settings" && <SettingsPage key={selectedDataSource} dataSource={selectedDataSource} />}
           {selectedDataSource === "apim" && page === "models" && <ModelManagementPage onToggleSidebar={toggleSidebar} />}
           {selectedDataSource === "apim" && page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen={nativeRouteDrawerOpen} onRouteDrawerOpenChange={setNativeRouteDrawerOpen} addOpen={nativeRouteAddOpen} onAddOpenChange={setNativeRouteAddOpen} />}
           {selectedDataSource === "apim" && page === "gateway-releases" && <GatewayReleasesPage releaseDrawerOpen={gatewayReleaseDrawerOpen} onReleaseDrawerOpenChange={setGatewayReleaseDrawerOpen} />}

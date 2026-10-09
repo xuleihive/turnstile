@@ -9,6 +9,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from ..domain.models import ModelIdentity
+from ..domain.pricing import PriceConfigurationChanged
 from ..domain.runtime_models import apply_databricks_adoption
 
 
@@ -81,7 +82,11 @@ class PostgreSqlRegistryRepositoryMixin:
                                     -- A model with no price row was priced by hand, which is
                                     -- what 'manual' means, so the COALESCE is the whole
                                     -- backfill.
-                                    COALESCE(price.price_source, 'manual') AS price_source,
+                                    COALESCE(price.price_source, 'models_dev') AS price_source,
+                                    (price.model_id IS NOT NULL) AS price_source_configured,
+                                    price.updated_at AS price_config_updated_at,
+                                    price.match_metadata,
+                                    price.source_snapshot,
                                     price.price_reference,
                                     price.list_input_cost_per_million,
                                     price.list_output_cost_per_million,
@@ -132,17 +137,32 @@ class PostgreSqlRegistryRepositoryMixin:
     # made against and every write is guarded by it, so a result that is about to land on a
     # configuration that no longer exists lands nowhere instead.
     _PRICE_CONFIG_STILL_MATCHES = """
-        EXISTS (
-            SELECT 1 FROM managed_model_price guard
-            LEFT JOIN model_runtime runtime ON runtime.id = model.runtime_id
-            LEFT JOIN model_runtime_price runtime_price
-                ON runtime_price.runtime_id = runtime.id
-            WHERE guard.model_id = model.id
-              AND guard.price_source = %(expected_source)s
-              AND guard.price_reference IS NOT DISTINCT FROM %(expected_reference)s
-              AND COALESCE(
-                    guard.price_discount_percent, runtime_price.price_discount_percent
-                  ) IS NOT DISTINCT FROM %(expected_discount_percent)s
+        (%(expected_updated_at)s::timestamptz IS NULL
+            OR model.updated_at = %(expected_updated_at)s::timestamptz)
+        AND NOT EXISTS (
+            SELECT 1 FROM gateway_publication removing
+            WHERE removing.publication_kind = 'model_remove'
+              AND removing.status IN (
+                'queued','validating','provisioning','building_revision',
+                'verifying','promoting','rolling_back'
+              )
+              AND removing.desired_spec #>> '{removed_models,0,model_id}' = model.id::text
+        )
+        AND EXISTS (
+            SELECT 1 FROM model_runtime runtime
+            LEFT JOIN model_runtime_price runtime_price ON runtime_price.runtime_id = runtime.id
+            LEFT JOIN managed_model_price guard ON guard.model_id = model.id
+            WHERE runtime.id = model.runtime_id
+              AND (
+                (%(expected_configured)s AND guard.model_id IS NOT NULL
+                  AND guard.price_source = %(expected_source)s
+                  AND guard.price_reference IS NOT DISTINCT FROM %(expected_reference)s
+                  AND (%(expected_price_updated_at)s::timestamptz IS NULL
+                    OR guard.updated_at = %(expected_price_updated_at)s::timestamptz))
+                OR (NOT %(expected_configured)s AND guard.model_id IS NULL)
+              )
+              AND COALESCE(guard.price_discount_percent, runtime_price.price_discount_percent)
+                  IS NOT DISTINCT FROM %(expected_discount_percent)s::numeric
         )
     """
 
@@ -154,6 +174,17 @@ class PostgreSqlRegistryRepositoryMixin:
             )
             for update in updates:
                 parameters = dict(update)
+                parameters.setdefault("expected_configured", True)
+                parameters.setdefault("expected_updated_at", None)
+                parameters.setdefault("expected_price_updated_at", None)
+                parameters.setdefault("price_source", parameters.get("expected_source"))
+                parameters.setdefault("price_reference", parameters.get("expected_reference"))
+                parameters["match_metadata"] = (
+                    Jsonb(update["match_metadata"]) if update.get("match_metadata") else None
+                )
+                parameters["source_snapshot"] = (
+                    Jsonb(update["source_snapshot"]) if update.get("source_snapshot") else None
+                )
                 parameters["pending_list_price"] = (
                     Jsonb(update["pending_list_price"])
                     if update.get("pending_list_price") is not None
@@ -193,10 +224,22 @@ class PostgreSqlRegistryRepositoryMixin:
                                    '同步期间该模型的计价配置被改动，本次结果已作废，未写入',
                                price_synced_at = now(),
                                updated_at = now()
-                           WHERE model_id = %(model_id)s""",
+                           WHERE model_id = %(model_id)s
+                             AND price_source = %(expected_source)s
+                             AND price_reference IS NOT DISTINCT FROM %(expected_reference)s
+                             AND (%(expected_price_updated_at)s::timestamptz IS NULL
+                               OR updated_at = %(expected_price_updated_at)s::timestamptz)""",
                         parameters,
                     )
                     continue
+
+                if update.get("writes"):
+                    connection.execute(
+                        """INSERT INTO managed_model_price (
+                               model_id, price_source, price_reference
+                           ) VALUES (%(model_id)s, %(price_source)s, %(price_reference)s)
+                           ON CONFLICT (model_id) DO NOTHING""", parameters,
+                    )
 
                 # The outcome is recorded either way. On a skip the rates stay exactly as they
                 # are and only the record changes, so the registry can say why a model was
@@ -207,7 +250,15 @@ class PostgreSqlRegistryRepositoryMixin:
                 # review goes to pending_list_price, because a baseline that follows the price
                 # it is meant to gate agrees with it on the second run.
                 connection.execute(
-                    """UPDATE managed_model_price SET
+                    f"""UPDATE managed_model_price price SET
+                           price_source = CASE WHEN %(writes)s
+                               THEN %(price_source)s ELSE price.price_source END,
+                           price_reference = CASE WHEN %(writes)s
+                               THEN %(price_reference)s ELSE price.price_reference END,
+                           match_metadata = CASE WHEN %(writes)s
+                               THEN %(match_metadata)s::jsonb ELSE price.match_metadata END,
+                           source_snapshot = CASE WHEN %(writes)s
+                               THEN %(source_snapshot)s::jsonb ELSE price.source_snapshot END,
                            list_input_cost_per_million = CASE WHEN %(writes)s
                                THEN COALESCE(%(list_input_cost_per_million)s,
                                              list_input_cost_per_million)
@@ -241,9 +292,15 @@ class PostgreSqlRegistryRepositoryMixin:
                            price_sync_message = %(message)s,
                            price_synced_at = now(),
                            updated_at = now()
-                       WHERE model_id = %(model_id)s""",
+                       WHERE model_id = %(model_id)s
+                         AND (%(writes)s OR EXISTS (
+                           SELECT 1 FROM managed_model model
+                           WHERE model.id = price.model_id
+                             AND {self._PRICE_CONFIG_STILL_MATCHES}
+                         ))""",
                     parameters,
                 )
+        self._invalidate_identities()
         return written
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -356,28 +413,7 @@ class PostgreSqlRegistryRepositoryMixin:
                         metadata["publication_id"],
                     ),
                 )
-                price = {
-                    "price_source": values.get("price_source") or "manual",
-                    "price_reference": values.get("price_reference"),
-                    "price_discount_percent": values.get("price_discount_percent"),
-                }
-                # A row only when there is something to say. 'manual' with no reference and no
-                # override is exactly what an absent row means, and every model created before
-                # this migration has no row.
-                if price != {"price_source": "manual", "price_reference": None,
-                             "price_discount_percent": None}:
-                    connection.execute(
-                        """INSERT INTO managed_model_price (
-                               model_id, price_source, price_reference,
-                               price_discount_percent
-                           ) VALUES (%s, %s, %s, %s)""",
-                        (
-                            row["id"],
-                            price["price_source"],
-                            price["price_reference"],
-                            price["price_discount_percent"],
-                        ),
-                    )
+                price = self._write_price(connection, "model", row["id"], values)
                 row = {**row, **metadata, **price}
             else:
                 raise ValueError(f"Unsupported registry kind: {kind}")
@@ -643,7 +679,12 @@ class PostgreSqlRegistryRepositoryMixin:
         metadata_values = {key: values[key] for key in metadata_fields if key in values}
         price_fields = {
             "runtime": {"price_discount_percent"},
-            "model": {"price_source", "price_reference", "price_discount_percent"},
+            "model": {
+                "price_source", "price_reference", "price_discount_percent",
+                "list_input_cost_per_million", "list_output_cost_per_million",
+                "list_cached_cost_per_million", "list_cache_write_cost_per_million",
+                "match_metadata", "source_snapshot",
+            },
         }.get(kind, set())
         price_values = {key: values[key] for key in price_fields if key in values}
         if not assignments and not metadata_values and not price_values:
@@ -657,6 +698,13 @@ class PostgreSqlRegistryRepositoryMixin:
                 connection.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
                 )
+            if kind == "model" and values.get("pricing_expected_updated_at") is not None:
+                guard = connection.execute(
+                    "SELECT updated_at FROM managed_model WHERE id = %s FOR UPDATE",
+                    (item_id,),
+                ).fetchone()
+                if guard is None or guard["updated_at"] != values["pricing_expected_updated_at"]:
+                    raise PriceConfigurationChanged("模型在定价期间已修改，请刷新后重试")
             if kind == "model":
                 removing = connection.execute(
                     """SELECT id FROM gateway_publication
@@ -787,7 +835,7 @@ class PostgreSqlRegistryRepositoryMixin:
         ).fetchone()
         merged = {
             "price_source": values.get(
-                "price_source", current["price_source"] if current else "manual"
+                "price_source", current["price_source"] if current else "models_dev"
             ),
             "price_reference": values.get(
                 "price_reference", current["price_reference"] if current else None
@@ -801,20 +849,42 @@ class PostgreSqlRegistryRepositoryMixin:
         # that reads as "following gpt-4.1 mini" while charging whatever was typed.
         if merged["price_source"] == "manual":
             merged["price_reference"] = None
+        baseline_fields = (
+            "list_input_cost_per_million", "list_output_cost_per_million",
+            "list_cached_cost_per_million", "list_cache_write_cost_per_million",
+            "match_metadata", "source_snapshot",
+        )
+        reset = current is not None and any(
+            merged[field] != current.get(field) for field in ("price_source", "price_reference")
+        )
+        for field in baseline_fields:
+            merged[field] = values.get(
+                field, None if reset else current.get(field) if current else None,
+            )
+        baseline = {
+            field: Jsonb(merged[field]) if field in {"match_metadata", "source_snapshot"}
+            and merged[field] is not None else merged[field] for field in baseline_fields
+        }
         connection.execute(
-            """INSERT INTO managed_model_price (
-                   model_id, price_source, price_reference, price_discount_percent
-               ) VALUES (%s, %s, %s, %s)
+            f"""INSERT INTO managed_model_price (
+                   model_id, price_source, price_reference, price_discount_percent,
+                   {", ".join(baseline_fields)}
+               ) VALUES (%s, %s, %s, %s, {", ".join(["%s"] * len(baseline_fields))})
                ON CONFLICT (model_id) DO UPDATE SET
                  price_source = EXCLUDED.price_source,
                  price_reference = EXCLUDED.price_reference,
                  price_discount_percent = EXCLUDED.price_discount_percent,
+                 {", ".join(f"{field} = EXCLUDED.{field}" for field in baseline_fields)},
+                 pending_list_price = CASE WHEN %s
+                     THEN NULL ELSE managed_model_price.pending_list_price END,
                  updated_at = now()""",
             (
                 item_id,
                 merged["price_source"],
                 merged["price_reference"],
                 merged["price_discount_percent"],
+                *baseline.values(),
+                reset or values.get("source_snapshot") is not None,
             ),
         )
         return merged

@@ -289,7 +289,8 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def save_assistant_settings(
-        self, *, model_id: UUID | None, auto_title: bool, updated_by: str
+        self, *, model_id: UUID | None, auto_title: bool, updated_by: str,
+        api_format: str | None = None,
     ) -> dict[str, Any]: ...
 
     @abstractmethod

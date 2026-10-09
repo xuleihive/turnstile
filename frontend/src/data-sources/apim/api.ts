@@ -40,9 +40,12 @@ import type {
   ImageInvocationRequest,
   ImageInvocationResponse,
   ModelRegistry,
+  PriceCatalogModel,
   PriceCatalogModelsResponse,
   PriceCatalogOptionsResponse,
   PriceSyncResponse,
+  PricePreviewRequest,
+  PricePreviewResponse,
   OptimizationEvent,
   PeopleBudgetFilter,
   RunDetail,
@@ -344,8 +347,8 @@ export const dataSource = {
     { method: "DELETE" },
   ).then(normalizeRegistry),
   saveModel: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/models", value, id),
-  priceCatalogModels: (query: string) => request<PriceCatalogModelsResponse>(
-    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}`,
+  priceCatalogModels: (query: string, source: PriceCatalogModel["source"]) => request<PriceCatalogModelsResponse>(
+    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}`,
   ),
   priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
     `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,
@@ -356,6 +359,9 @@ export const dataSource = {
     "/api/v1/model-management/price-sync",
     { model_ids: modelIds ?? null },
   ).then((result) => ({ ...result, registry: normalizeRegistry(result.registry) })),
+  pricePreview: (value: PricePreviewRequest) => writeJson<PricePreviewResponse>(
+    "/api/v1/model-management/price-preview", value,
+  ),
   deleteModel: (id: string) => request<GatewayPublicationAccepted>(
     `/api/v1/model-management/models/${encodeURIComponent(id)}`,
     { method: "DELETE" },

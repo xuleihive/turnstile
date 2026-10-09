@@ -21,6 +21,7 @@ from turnstile_core.pricing.catalog import (
     _Fetched,
     parse_meter_name,
 )
+from turnstile_core.pricing.models_dev import ModelsDevCatalog
 
 
 def meter(name: str, price: float, region: str = "eastus",
@@ -47,6 +48,26 @@ class StubAzure(AzureRetailCatalog):
     def _fetch(self, filter_expression: str) -> Any:
         self.filters.append(filter_expression)
         return _Fetched(rows=self._rows, complete=self._complete)
+
+
+def test_source_filter_does_not_fetch_other_adapters_even_when_azure_is_empty() -> None:
+    def forbidden() -> dict[str, Any]:
+        pytest.fail("Azure search fetched the public catalog")
+
+    composite = CompositeCatalog([ModelsDevCatalog(fetch=forbidden), StubAzure([])])
+    result = composite.search_models("grok", source=PriceSource.AZURE_RETAIL)
+    assert not result.models and not result.unavailable
+    assert composite.options("azure_retail:Azure Grok:4.7") is None
+
+
+def test_unavailable_selected_source_does_not_fall_back_to_another_source() -> None:
+    class BrokenAzure(StubAzure):
+        def models(self) -> Any:
+            raise httpx.ConnectError("Azure unavailable")
+
+    composite = CompositeCatalog([BrokenAzure([]), StubAzure([])])
+    result = composite.search_models("grok", source=PriceSource.AZURE_RETAIL)
+    assert not result.models and result.unavailable == ("azure_retail",)
 
 
 # --------------------------------------------------------------------------------------------

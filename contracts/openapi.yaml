@@ -106,6 +106,14 @@ paths:
     $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1conversations~1{conversation_id}~1title
   /api/v1/model-management/connections:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections
+  /api/v1/model-management/price-preview:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-preview
+  /api/v1/model-management/price-sync:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-sync
+  /api/v1/model-management/price-catalog/models:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-catalog~1models
+  /api/v1/model-management/price-catalog/options:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-catalog~1options
   /api/v1/model-management/connections/{runtime_id}:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections~1{runtime_id}
   /api/v1/model-management/connections/{runtime_id}/adopt:
@@ -253,6 +261,20 @@ components:
     ErrorResponse:
       $ref: ./openapi/components/common.yaml#/responses/ErrorResponse
   schemas:
+    PriceSource:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSource
+    PricePreviewRequest:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PricePreviewRequest
+    PricePreviewResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PricePreviewResponse
+    PriceSyncRequest:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSyncRequest
+    PriceSyncResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSyncResponse
+    PriceCatalogModelsResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceCatalogModelsResponse
+    PriceCatalogOptionsResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceCatalogOptionsResponse
     GatewayApplicationUsage:
       $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationUsage
     GatewayApplicationUserUsage:

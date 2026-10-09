@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+import pytest
 
 from backend.data_sources.github_copilot.assistant import (
     COPILOT_AGENT_ID,
@@ -162,7 +163,12 @@ def answer() -> dict[str, Any]:
     }
 
 
-def test_copilot_assistant_uses_only_read_tools_and_an_isolated_namespace() -> None:
+@pytest.mark.parametrize("api_format", ["openai_chat", "openai_responses", "anthropic_messages"])
+def test_copilot_assistant_uses_only_read_tools_and_an_isolated_namespace(
+    api_format: str,
+) -> None:
+    responses_api = api_format == "openai_responses"
+    anthropic_api = api_format == "anthropic_messages"
     repository = InMemoryRepository()
     sent: list[dict[str, Any]] = []
     responses = [
@@ -184,6 +190,42 @@ def test_copilot_assistant_uses_only_read_tools_and_an_isolated_namespace() -> N
     )
     copilot = StubCopilotService()
     service = CopilotAssistantService(repository, runtime, copilot)  # type: ignore[arg-type]
+    reasoning = {
+        "type": "reasoning", "id": "rs-1", "summary": [], "encrypted_content": "opaque-copilot",
+    }
+    if responses_api or anthropic_api:
+        _, model_id, _ = service._select_model()
+        model = next(item for item in repository.models if item["id"] == model_id)
+        model["upstream_model_id"] = "claude-opus-5-5" if anthropic_api else "gpt-6.1-sol"
+        if anthropic_api:
+            model["family_key"] = "claude"
+        converted: list[dict[str, Any]] = []
+        for response in responses:
+            message = response["choices"][0]["message"]
+            output = [
+                {
+                    "type": "function_call", "call_id": call["id"],
+                    "name": call["function"]["name"], "arguments": call["function"]["arguments"],
+                }
+                for call in message.get("tool_calls", [])
+            ]
+            if message["content"]:
+                output.append({
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": message["content"]}],
+                })
+            if anthropic_api:
+                blocks = [
+                    {"type": "tool_use", "id": call["call_id"],
+                     "name": call["name"], "input": json.loads(call["arguments"])}
+                    for call in output if call["type"] == "function_call"
+                ]
+                if message["content"]:
+                    blocks.append({"type": "text", "text": message["content"]})
+                converted.append({"content": blocks})
+            else:
+                converted.append({"output": [reasoning, *output]})
+        responses = converted
 
     reply = asyncio.run(
         service.ask(
@@ -195,7 +237,10 @@ def test_copilot_assistant_uses_only_read_tools_and_an_isolated_namespace() -> N
         )
     )
 
-    offered = {tool["function"]["name"] for tool in sent[0]["tools"]}
+    offered = {
+        tool["name"] if responses_api or anthropic_api else tool["function"]["name"]
+        for tool in sent[0]["tools"]
+    }
     assert offered == {
         "query_copilot_overview",
         "query_copilot_members",
@@ -226,6 +271,15 @@ def test_copilot_assistant_uses_only_read_tools_and_an_isolated_namespace() -> N
     assert stored is not None
     assert repository.get_conversation(UUID(reply.conversation_id), USER_EMAIL) is None
     assert service.list_conversations(USER_EMAIL)[0].owner_id == owner
+    if responses_api:
+        assert sent[1]["input"][2] == reasoning
+        assert sent[2]["input"][2] == reasoning
+        assert sent[2]["input"][-1]["type"] == "function_call_output"
+        assert "opaque-copilot" not in json.dumps(stored, default=str)
+    if anthropic_api:
+        assert sent[1]["messages"][-1]["content"][0]["type"] == "tool_result"
+        assert sent[2]["messages"][-1]["content"][0]["tool_use_id"] == "call-2"
+        assert "input_schema" in sent[0]["tools"][0]
 
 
 def test_copilot_breakdown_tool_ranks_by_the_requested_metric() -> None:
@@ -267,3 +321,33 @@ def test_copilot_breakdown_tool_ranks_by_the_requested_metric() -> None:
     )
 
     assert outcome.payload["items"][0]["key"] == "acceptance-leader"
+
+
+def test_copilot_tool_limit_does_not_present_claude_planning_as_an_answer() -> None:
+    repository = InMemoryRepository()
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"content": [
+            {"type": "text", "text": "Still checking."},
+            {"type": "tool_use", "id": "toolu-1", "name": "query_copilot_overview", "input": {}},
+        ], "stop_reason": "tool_use"})
+
+    runtime = ModelRuntimeService(
+        repository, Settings(),
+        GatewayRouter(httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+    service = CopilotAssistantService(
+        repository, runtime, StubCopilotService(),  # type: ignore[arg-type]
+    )
+    _, model_id, _ = service._select_model()
+    model = next(item for item in repository.models if item["id"] == model_id)
+    model.update(family_key="claude", upstream_model_id="claude-opus-5-5")
+    reply = asyncio.run(service.ask(
+        AssistantAskRequest(question="Keep checking."),
+        user_uuid=USER_ID, user_email=USER_EMAIL, user_name="Member", role="member",
+    ))
+    assert len(sent) == 4
+    assert len(reply.steps) == 4
+    assert reply.message == "Too many analysis steps. Please narrow the question."

@@ -29,6 +29,9 @@ import {
 } from "../ui/dialog"
 import { Input } from "../ui/input"
 import { Progress } from "../ui/progress"
+import { emptyPricingDraft, PublicModelPricing } from "./public-model-pricing"
+import { DiscountField } from "./model-price-source"
+import { resolveDiscount } from "./model-edit-form"
 import {
   Select,
   SelectContent,
@@ -231,11 +234,18 @@ export function ModelPublicationDialog({
   const [modelKey, setModelKey] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [upstreamModelId, setUpstreamModelId] = useState("")
-  const [contextWindow, setContextWindow] = useState("")
-  const [inputPrice, setInputPrice] = useState("")
-  const [outputPrice, setOutputPrice] = useState("")
-  const [cacheReadPrice, setCacheReadPrice] = useState("")
-  const [cacheWritePrice, setCacheWritePrice] = useState("")
+  const [pricingDraft, setPricingDraft] = useState(emptyPricingDraft)
+  const [pricingOpen, setPricingOpen] = useState(true)
+  const { contextWindow, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice } = pricingDraft
+  const setContextWindow = (value: string) => setPricingDraft(current => ({ ...current, contextWindow: value }))
+  const setInputPrice = (value: string) => setPricingDraft(current => ({ ...current, inputPrice: value }))
+  const setOutputPrice = (value: string) => setPricingDraft(current => ({ ...current, outputPrice: value }))
+  const setCacheReadPrice = (value: string) => setPricingDraft(current => ({ ...current, cacheReadPrice: value }))
+  const setCacheWritePrice = (value: string) => setPricingDraft(current => ({ ...current, cacheWritePrice: value }))
+  const followingPublicPrice = pricingDraft.priceSource === "models_dev"
+  useEffect(() => {
+    setPricingDraft(current => ({ ...current, priceReference: "", priceEntryDigest: "", allowUnpriced: false }))
+  }, [runtimeId, foundryDeployment, upstreamModelId, modelKey, modelOperation])
   const [formError, setFormError] = useState<string | null>(null)
   const [publishError, setPublishError] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
@@ -294,6 +304,10 @@ export function ModelPublicationDialog({
   }
 
   const validate = () => {
+    if (followingPublicPrice && !pricingDraft.priceReference
+      && (imageGeneration || !pricingDraft.allowUnpriced)) {
+      return "请同步定价或明确确认暂不计价。"
+    }
     if (!selectedGateway) return "没有可用的 Azure API Management 网关。"
     if (!selectedRuntime || !selectedProvider) return "请选择当前网关下的可用连接。"
     if (requiredCredentialMissing) return selectedRuntimeUsesOAuth
@@ -338,6 +352,11 @@ export function ModelPublicationDialog({
           output_cost_per_million: numberOrNull(outputPrice),
           cached_cost_per_million: numberOrNull(cacheReadPrice),
           cache_write_cost_per_million: imageGeneration ? null : numberOrNull(cacheWritePrice),
+          price_source: pricingDraft.priceSource,
+          price_reference: followingPublicPrice ? pricingDraft.priceReference || null : null,
+          price_entry_digest: followingPublicPrice ? pricingDraft.priceEntryDigest || null : null,
+          allow_unpriced: pricingDraft.allowUnpriced,
+          price_discount_percent: pricingDraft.discountPercent.trim() ? Number(pricingDraft.discountPercent) : null,
         },
       }
       const accepted = await dataSource.publishModel(request)
@@ -574,17 +593,42 @@ export function ModelPublicationDialog({
               </>}
             </section>
             {imageGeneration && !imageConfigurationSupported && <div className="registry-error" role="alert">后端尚未支持图像参数透传</div>}
-            <details className="simple-pricing" open={imageGeneration || undefined}>
+            <details className="simple-pricing" open={pricingOpen}
+              onToggle={event => setPricingOpen(event.currentTarget.open)}>
               <summary><span>价格与限制</span><span className="publication-pricing-status">{pricingStatus}</span></summary>
               <div className="simple-pricing-fields">
+                <div className="model-price-source">
+                  <span className="registry-field-label">价格来源</span>
+                  <div className="model-price-source-choice" role="radiogroup" aria-label="价格来源">
+                    {(["models_dev", "manual"] as const).map(source => <label className="model-editor-checkbox" key={source}>
+                      <input type="radio" name="publication-price-source" value={source}
+                        checked={pricingDraft.priceSource === source} disabled={publishing}
+                        onChange={() => setPricingDraft(current => ({
+                          ...current, priceSource: source, priceReference: "", priceEntryDigest: "", allowUnpriced: false,
+                        }))} />
+                      <span>{source === "models_dev" ? "从公网同步定价" : "手工填写"}</span>
+                    </label>)}
+                  </div>
+                  {followingPublicPrice && <PublicModelPricing
+                    request={{ runtime_id: runtimeId, operation: imageGeneration ? "image_generation" : "chat",
+                      deployment_name: foundry ? foundryDeployment : undefined,
+                      upstream_model_id: foundry ? undefined : upstreamModelId,
+                      model_key: foundry ? undefined : effectiveModelKey,
+                      display_name: foundry ? undefined : effectiveDisplayName }}
+                    draft={pricingDraft} onChange={setPricingDraft} busy={publishing} />}
+                  {followingPublicPrice && <DiscountField draft={pricingDraft}
+                    busy={publishing} connectionDiscount={selectedRuntime?.price_discount_percent ?? null}
+                    discount={resolveDiscount(pricingDraft, selectedRuntime?.price_discount_percent ?? null)}
+                    setDraft={updater => setPricingDraft(current => ({ ...current, ...updater(current) }))} />}
+                </div>
                 <div className={imageGeneration ? "form-grid" : "form-grid three"}>
-                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input id="publication-context-window" type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>}
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "文字输入 $/M" : "输入 $/M"}</span><Input id="publication-input-price" type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "图像输出 $/M" : "输出 $/M"}</span><Input id="publication-output-price" type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input id="publication-context-window" type="number" min="1" value={contextWindow} onChange={(event) => setPricingDraft(current => ({ ...current, contextWindow: event.target.value, contextOrigin: "user" }))} disabled={publishing} /></label>}
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "文字输入 $/M" : "输入 $/M"}</span><Input id="publication-input-price" type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing || followingPublicPrice} required={imageGeneration} /></label>
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "图像输出 $/M" : "输出 $/M"}</span><Input id="publication-output-price" type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing || followingPublicPrice} required={imageGeneration} /></label>
                 </div>
                 <div className="form-grid">
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "缓存文字输入 $/M" : "缓存读取 $/M"}</span><Input id="publication-cache-read-price" type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
-                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input id="publication-cache-write-price" type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label>}
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "缓存文字输入 $/M" : "缓存读取 $/M"}</span><Input id="publication-cache-read-price" type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing || followingPublicPrice} required={imageGeneration} /></label>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input id="publication-cache-write-price" type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing || followingPublicPrice} /></label>}
                 </div>
               </div>
             </details>

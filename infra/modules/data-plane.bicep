@@ -28,6 +28,7 @@ param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
 param gatewayApplicationKeyManagementEnabled bool = false
 param gatewayApplicationProvisioningEnabled bool = false
+param imageGenerationEnabled bool = false
 param databricksOAuthEnabled bool = false
 @minValue(1)
 param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
@@ -659,6 +660,7 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APIM_DASHBOARD_SUBSCRIPTION_KEY', value: apimSubscriptionKey }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(gatewayReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(gatewayApplicationProvisioningEnabled) }
+        { name: 'IMAGE_GENERATION_ENABLED', value: string(imageGenerationEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(gatewayApplicationDefaultMonthlyTokenLimit) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(gatewayApplicationDefaultTokensPerMinute) }
         { name: 'LEDGER_SYNC_ENABLED', value: 'true' }

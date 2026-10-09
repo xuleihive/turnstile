@@ -367,7 +367,9 @@ def test_a_result_planned_before_an_edit_does_not_land_after_it(
     assert stored["input_cost_per_million"] == pytest.approx(
         edit.get("input_cost_per_million", 7.0)
     ), "the rate the person is looking at has to survive"
-    assert stored["price_sync_status"] == "superseded"
+    assert stored.get("price_sync_status") is None, (
+        "do not stamp an old result on new configuration"
+    )
 
 
 def test_an_unchanged_configuration_still_lets_the_write_through() -> None:
