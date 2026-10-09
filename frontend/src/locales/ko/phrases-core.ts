@@ -1,4 +1,7 @@
 export const KOREAN_CORE_PHRASES: Record<string, string> = {
+  "实际接口：": "실제 API: ",
+  "指定协议已不可用，当前使用自动匹配的接口。": "선택한 프로토콜을 사용할 수 없어 자동으로 선택된 API를 사용합니다.",
+  "助手设置保存失败": "어시스턴트 설정을 저장하지 못했습니다",
   "Databricks 认证方式": "Databricks 인증 방식",
   "同一 Microsoft Entra 租户": "동일한 Microsoft Entra 테넌트",
   "Databricks 服务主体": "Databricks 서비스 주체",

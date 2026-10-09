@@ -32,7 +32,8 @@ from turnstile_core.domain.runtime_models import (
     ToolDefinition,
     ToolFunctionDefinition,
 )
-from turnstile_core.integrations.gateway import elapsed_ms, supports_tool_calling
+from turnstile_core.integrations.gateway import elapsed_ms
+from turnstile_core.integrations.gateway_protocol import invocation_api_paths, registry_model_route
 
 from ...services.assistant_shared import (
     ANSWER_LANGUAGE,
@@ -182,7 +183,6 @@ class CopilotAssistantService:
             runtime.id
             for runtime in registry.runtimes
             if runtime.enabled
-            and supports_tool_calling(runtime.runtime_kind.value, runtime.config)
         }
         models = [
             model
@@ -190,6 +190,8 @@ class CopilotAssistantService:
             if model.enabled
             and "tools" in model.capabilities
             and model.runtime_id in runtimes
+            and "image_generation" not in model.capabilities
+            and invocation_api_paths(registry_model_route(registry, model))
         ]
         models.sort(key=lambda model: (not model.is_default, model.display_name))
         if not models:
@@ -278,13 +280,7 @@ class CopilotAssistantService:
             answer = response.content
             if not response.tool_calls:
                 break
-            messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=response.content or None,
-                    tool_calls=response.tool_calls,
-                )
-            )
+            messages.append(response.assistant_message())
             for call in response.tool_calls:
                 if dashboard is None:
                     dashboard = await self._copilot.dashboard(
@@ -309,7 +305,7 @@ class CopilotAssistantService:
                     )
                 )
         else:
-            answer = answer or "Too many analysis steps. Please narrow the question."
+            answer = "Too many analysis steps. Please narrow the question."
 
         reply = AssistantReply(
             conversation_id=conversation_id,

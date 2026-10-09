@@ -7,7 +7,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, HttpUrl, SecretStr, model_validator
+from pydantic import Field, HttpUrl, PrivateAttr, SecretStr, model_validator
 
 from .image_profiles import ImageGenerationLimits, ImageGenerationProfile
 from .models import StrictModel
@@ -212,6 +212,12 @@ class GatewayKind(StrEnum):
     APIM = "apim"
     LITELLM = "litellm"
     DIRECT = "direct"
+
+
+class InvocationApiFormat(StrEnum):
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
 
 
 class RuntimeKind(StrEnum):
@@ -680,6 +686,9 @@ class ChatMessage(StrictModel):
     content: str | None = Field(default=None, max_length=200_000)
     tool_calls: list[ToolCall] | None = Field(default=None, max_length=20)
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=255)
+    # Opaque reasoning and output items live only within the current tool loop.
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def check_shape_matches_role(self) -> ChatMessage:
@@ -712,6 +721,7 @@ class ModelInvocationRequest(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     response_format: Literal["json_object"] | None = None
     stream: bool = False
+    api_format: InvocationApiFormat | None = None
 
 
 class InvocationUsage(StrictModel):
@@ -740,6 +750,18 @@ class ModelInvocationResponse(StrictModel):
     latency_ms: int = Field(ge=0)
     usage: InvocationUsage | None
     estimated_cost: float | None = Field(default=None, ge=0)
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
+
+    def assistant_message(self) -> ChatMessage:
+        message = ChatMessage(
+            role="assistant",
+            content=self.content or None,
+            tool_calls=self.tool_calls,
+        )
+        message._responses_output = self._responses_output
+        message._anthropic_content = self._anthropic_content
+        return message
 
 
 class TrafficGenerationRequest(StrictModel):

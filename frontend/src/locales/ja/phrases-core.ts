@@ -1,4 +1,7 @@
 export const JAPANESE_CORE_PHRASES: Record<string, string> = {
+  "实际接口：": "実際の API：",
+  "指定协议已不可用，当前使用自动匹配的接口。": "選択したプロトコルは利用できません。自動選択された API を使用しています。",
+  "助手设置保存失败": "アシスタント設定を保存できませんでした",
   "Databricks 认证方式": "Databricks 認証方式",
   "同一 Microsoft Entra 租户": "同じ Microsoft Entra テナント",
   "Databricks 服务主体": "Databricks サービスプリンシパル",

@@ -22,7 +22,7 @@ git diff --check
 
 ## Database validation
 
-For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, and `008_price_review_and_guard`), then run the command again and verify that no migration is reapplied.
+For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, `008_price_review_and_guard`, and `009_assistant_api_format`), then run the command again and verify that no migration is reapplied.
 
 The initial schema contains no users, credentials, provider connections, runtimes, business models, usage events, or customer data.
 
@@ -56,6 +56,23 @@ In a separately authorized PostgreSQL/Table/Log Analytics environment, verify ex
 For API and browser checks, distinguish a missing snapshot from zero pending usage. Verify that available Tokens subtract both pending reservations and finalized upper bounds. Recovery records have no model pricing or cache classification; they must not invent prices, latency or per-user cache measurements. Unit tests and SQL source checks do not establish live data-plane or migration correctness.
 
 ## Browser validation
+
+### Assistant API protocols
+
+Apply `009_assistant_api_format` before deploying the updated API. Existing model and title
+settings remain unchanged and the new nullable protocol defaults to automatic selection.
+The initial migration and historical conversations must not be rewritten.
+
+Local gateway and assistant tests use mocked provider responses. They cover model-specific
+protocol selection, Claude tool definitions and parallel tool results, private reasoning
+continuity, optional protocol persistence, incompatible overrides, fallback visibility,
+usage, correlation IDs and API error propagation. Frontend tests cover protocol resets on
+model changes and preservation on title-toggle changes. None establishes live APIM routing.
+
+In an authorized deployed environment, verify the active APIM revision includes the selected
+model alias on its Messages or Responses operation, its backend path and provider credential.
+Test a real two-round analysis question, attribution and measured usage, then reopen its
+history. Ordinary text publication probes are not evidence of successful tool calling.
 
 ### Governed image generation and evidence v2
 

@@ -1,4 +1,7 @@
 export const ENGLISH_CORE_PHRASES: Record<string, string> = {
+  "实际接口：": "Effective API: ",
+  "指定协议已不可用，当前使用自动匹配的接口。": "The selected protocol is no longer available. Using the automatically matched API.",
+  "助手设置保存失败": "Could not save assistant settings",
   "Databricks 认证方式": "Databricks authentication",
   "同一 Microsoft Entra 租户": "Same Microsoft Entra tenant",
   "Databricks 服务主体": "Databricks service principal",

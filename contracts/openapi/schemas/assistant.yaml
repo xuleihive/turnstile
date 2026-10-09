@@ -215,6 +215,11 @@ schemas:
           thread; switching it off leaves the first question as the title.
 
           '
+      api_format:
+        type: [string, 'null']
+        enum: [openai_chat, openai_responses, anthropic_messages, null]
+        default: null
+        description: Optional API protocol. Null automatically matches the model and gateway route.
   AssistantSettings:
     allOf:
     - $ref: ../../openapi.yaml#/components/schemas/AssistantSettingsWrite
@@ -238,6 +243,21 @@ schemas:
             fallen back to automatic selection. True whenever nothing is pinned.
 
             '
+        api_available:
+          type: boolean
+          default: true
+          description: False when a saved protocol no longer matches the effective model route.
+        effective_api_format:
+          type: [string, 'null']
+          enum: [openai_chat, openai_responses, anthropic_messages, null]
+        effective_api_path:
+          type: [string, 'null']
+          description: The public gateway path used by the effective API protocol.
+        available_api_formats:
+          type: array
+          items:
+            type: string
+            enum: [openai_chat, openai_responses, anthropic_messages]
         available_models:
           type: array
           description: 'The models the assistant may be pointed at. Served rather than derived by
@@ -286,3 +306,8 @@ schemas:
         type:
         - number
         - 'null'
+      api_formats:
+        type: array
+        items:
+          type: string
+          enum: [openai_chat, openai_responses, anthropic_messages]

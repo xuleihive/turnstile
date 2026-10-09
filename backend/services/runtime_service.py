@@ -61,6 +61,7 @@ from turnstile_core.domain.runtime_models import (
     openai_compatible_runtime_name,
 )
 from turnstile_core.integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
+from turnstile_core.integrations.gateway_protocol import model_protocol_route
 from turnstile_core.persistence.repository import QueryRepository
 from turnstile_core.pricing.catalog import CompositeCatalog, build_default_catalog
 from turnstile_core.pricing.sync import plan_price_sync
@@ -1127,7 +1128,15 @@ class ModelRuntimeService:
             and self._settings.apim_gateway_url
         ):
             route["gateway_base_url"] = self._settings.apim_gateway_url
-        route = self._model_protocol_route(route)
+        try:
+            route = model_protocol_route(
+                route, request.api_format,
+                tools=bool(request.tools) or any(
+                    message.tool_calls or message.role == "tool" for message in request.messages
+                ),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         if self._settings.production and route.get("gateway_implementation") != GatewayKind.APIM:
             raise HTTPException(
                 status_code=409,
@@ -1170,7 +1179,7 @@ class ModelRuntimeService:
         latency_ms = elapsed_ms(started)
         correlation_id = result.correlation_id or request_id
         estimated_cost = self._estimated_cost(route, result.usage)
-        return ModelInvocationResponse(
+        response = ModelInvocationResponse(
             request_id=request_id,
             correlation_id=correlation_id,
             content=result.content,
@@ -1183,6 +1192,9 @@ class ModelRuntimeService:
             usage=result.usage,
             estimated_cost=estimated_cost,
         )
+        response._responses_output = result.responses_output
+        response._anthropic_content = result.anthropic_content
+        return response
 
     def generate_image(
         self, request: ImageInvocationRequest, *, role: str
@@ -1331,20 +1343,7 @@ class ModelRuntimeService:
 
     @staticmethod
     def _model_protocol_route(route: dict[str, Any]) -> dict[str, Any]:
-        if (
-            route.get("provider_kind") != ProviderKind.MICROSOFT_FOUNDRY
-            or route.get("model_family_key") != ModelFamilyKey.CLAUDE
-        ):
-            return route
-        return {
-            **route,
-            "runtime_config": {
-                **dict(route.get("runtime_config") or {}),
-                "path": "/v1/messages",
-                "api_format": "anthropic_messages",
-                "anthropic_version": "2023-06-01",
-            },
-        }
+        return model_protocol_route(route)
 
     def _save(self, kind: str, values: dict[str, Any], item_id: UUID | None) -> None:
         try:

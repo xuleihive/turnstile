@@ -2,6 +2,7 @@ import { request } from "../../api/client"
 import type {
   AssistantReply,
   AssistantSettings,
+  AssistantSettingsWrite,
   AssistantSource,
   AssistantTurn,
   ChartSpec,
@@ -56,7 +57,7 @@ export const assistantApi = {
     { method: "DELETE" },
   ),
   settings: () => request<AssistantSettings>("/api/v1/assistant/settings"),
-  saveSettings: (body: { model_id: string | null; auto_title: boolean }) =>
+  saveSettings: (body: AssistantSettingsWrite) =>
     request<AssistantSettings>("/api/v1/assistant/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },

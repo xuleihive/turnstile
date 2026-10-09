@@ -317,11 +317,13 @@ class InMemoryAssistantRepositoryMixin:
         return dict(self.assistant_setting)
 
     def save_assistant_settings(
-        self, *, model_id: UUID | None, auto_title: bool, updated_by: str
+        self, *, model_id: UUID | None, auto_title: bool, updated_by: str,
+        api_format: str | None = None,
     ) -> dict[str, Any]:
         self.assistant_setting = {
             "model_id": model_id,
             "auto_title": auto_title,
+            "api_format": api_format,
             "updated_at": datetime.now(UTC),
             "updated_by": updated_by,
         }

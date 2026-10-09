@@ -405,6 +405,41 @@
 .model-row-actions .toggle { flex: 0 0 auto; }
 .model-table-footer { flex: 0 0 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 72px 0 16px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 11px; }
 
+/* Settings shares the model workspace header, segmented navigation and footer. */
+.app-shell > main > .settings-host { min-height: 0; overflow: hidden; }
+.settings-workspace { min-width: 0; }
+.settings-toolbar { flex: 0 0 auto; padding: 10px 16px; }
+.settings-tabs { width: fit-content; max-width: 100%; gap: 2px; }
+.settings-tabs button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.settings-tabs button[data-active] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px oklch(0 0 0 / 9%); }
+.settings-tabs button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.settings-workspace-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.settings-workspace .settings-content { width: min(800px, 100%); padding: 18px 24px 32px; }
+.settings-workspace .settings-content[hidden] { display: none; }
+.settings-workspace .settings-section { gap: 12px; padding-bottom: 28px; }
+.settings-workspace .settings-section + .settings-section { padding-top: 24px; }
+.settings-workspace .settings-section:last-child { padding-bottom: 0; }
+.settings-workspace .settings-section p,
+.settings-workspace .settings-section > small { overflow-wrap: anywhere; }
+.settings-save-actions { min-width: 0; gap: 12px; }
+.settings-save-status { color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
+.smh-header-actions.settings-save-actions > button { min-width: 64px; }
+.settings-save-actions > button:disabled { opacity: .5; cursor: default; }
+.settings-save-actions > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.settings-audit-footer { flex-basis: auto; min-height: 36px; padding-block: 8px; gap: 8px; line-height: 16px; overflow-wrap: anywhere; }
+.settings-audit-footer > span { min-width: 0; text-align: right; }
+
+@media (max-width: 760px) {
+	.settings-workspace { min-height: 100dvh; height: auto; }
+	.settings-workspace .smh-page-header { position: sticky; top: 0; z-index: 2; }
+	.settings-workspace-scroll { overflow: visible; }
+	.settings-workspace .settings-content { padding: 16px 16px 28px; }
+	.settings-toolbar { padding-inline: 14px; }
+	.settings-save-actions { gap: 8px; }
+	.smh-header-actions.settings-save-actions > button { min-width: 32px; height: 32px; }
+	.settings-audit-footer { margin-top: auto; padding-left: 16px; padding-right: 64px; }
+}
+
 .registry-editor-dialog.model-edit-dialog { width: min(680px, calc(100vw - 24px)); max-height: min(840px, calc(100dvh - 24px)); }
 .model-edit-dialog .simple-model-form { max-height: min(820px, calc(100vh - 32px)); }
 .model-edit-dialog .simple-model-body { gap: 10px; }
