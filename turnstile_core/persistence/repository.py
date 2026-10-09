@@ -20,6 +20,7 @@ from ..domain.models import (
     ReconciledUsage,
     TokenUsageRecord,
 )
+from .personal_usage import PostgreSqlPersonalUsageRepositoryMixin
 from .repository_applications import PostgreSqlApplicationRepositoryMixin
 from .repository_assistant import PostgreSqlAssistantRepositoryMixin
 from .repository_billable_requests import PostgreSqlBillableRequestRepositoryMixin
@@ -60,6 +61,7 @@ _IDENTITY_CACHE_SECONDS = 60.0
 
 
 class PostgreSqlOpsDbProxy(
+    PostgreSqlPersonalUsageRepositoryMixin,
     PostgreSqlAssistantRepositoryMixin,
     PostgreSqlApplicationRepositoryMixin,
     PostgreSqlBudgetRepositoryMixin,

@@ -326,12 +326,19 @@ class QueryRepository(ABC):
     def create_optimization(self, create: OptimizationEventCreate) -> dict[str, Any]: ...
 
     @abstractmethod
-    def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]: ...
+    def list_token_budgets(
+        self, period_start: date, user_id: str | None = None
+    ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self, from_: datetime, to: datetime, user_id: str | None = None
     ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def personal_usage(
+        self, user_id: str, from_: datetime, to: datetime, interval: str, timezone: str
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
     def upsert_token_budget(

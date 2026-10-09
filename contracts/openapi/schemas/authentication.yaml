@@ -58,3 +58,6 @@ schemas:
       session_expires_at:
         type: string
         format: date-time
+      avatar_url:
+        type: [string, 'null']
+        description: Private current-account avatar URL for password sessions; null for Microsoft sessions.

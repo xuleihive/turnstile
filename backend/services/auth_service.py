@@ -29,7 +29,7 @@ import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import jwt
@@ -50,6 +50,17 @@ SESSION_TOKEN_BYTES = 32
 
 class AuthError(Exception):
     """Sign-in was refused. The message is safe to show a caller."""
+
+
+@dataclass(frozen=True)
+class SessionIdentity:
+    id: str
+    email: str
+    name: str | None
+    role: Literal["owner", "member"]
+    method: Literal["password", "entra"]
+    session_expires_at: datetime
+    avatar_url: str | None = None
 
 
 def _b64(raw: bytes) -> str:

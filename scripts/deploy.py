@@ -317,7 +317,7 @@ def owner_credentials_password(path: Path, expected_email: str) -> str:
     if not isinstance(email, str) or email.strip().lower() != expected_email:
         raise DeploymentError("Owner credentials email does not match bootstrapOwnerEmail")
     if not isinstance(password, str) or len(password) < 12:
-        raise DeploymentError("Initial Owner password must be at least 12 characters")
+        raise DeploymentError("Owner password must be at least 12 characters")
     return password
 
 
@@ -344,7 +344,7 @@ def load_or_create_secret_material(
         ):
             raise DeploymentError(f"Secret state is incomplete: {state_path}")
         if require_owner_password:
-            owner_password = read_password("Initial Owner password for verification: ")
+            owner_password = read_password("Owner password for verification: ")
         return SecretMaterial(dict(values), owner_password)
 
     owner_password = _read_owner_password(read_password)
@@ -1750,7 +1750,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--owner-credentials",
         type=Path,
-        help="Optional private 0600 JSON file containing the Owner email and password.",
+        help="Optional private 0600 JSON file containing the Owner email and current password.",
     )
     parser.add_argument("--yes", action="store_true")
     parser.add_argument(

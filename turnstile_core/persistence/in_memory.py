@@ -26,6 +26,7 @@ from .in_memory_billable_requests import InMemoryBillableRequestRepositoryMixin
 from .in_memory_budgets import InMemoryBudgetRepositoryMixin
 from .in_memory_publications import InMemoryPublicationRepositoryMixin
 from .in_memory_registry import InMemoryRegistryRepositoryMixin
+from .personal_usage import InMemoryPersonalUsageRepositoryMixin
 from .repository import (
     CACHE_DIMENSION_FIELDS,
     QueryRepository,
@@ -77,6 +78,7 @@ def metric(et: float, input_: int, cached: int, output: int, calls: int) -> dict
 
 
 class InMemoryRepository(
+    InMemoryPersonalUsageRepositoryMixin,
     InMemoryRegistryRepositoryMixin,
     InMemoryApplicationRepositoryMixin,
     InMemoryPublicationRepositoryMixin,

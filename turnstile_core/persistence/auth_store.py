@@ -11,13 +11,28 @@ force a fake into the tree and let a misconfiguration silently select it.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+
+class AccountSessionInvalid(ValueError):
+    pass
+
+
+class PasswordMismatch(ValueError):
+    pass
+
+
+class PasswordRateLimited(ValueError):
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("Too many password verification failures")
+        self.retry_after = retry_after
 
 
 class AuthStore:
@@ -122,9 +137,7 @@ class AuthStore:
         """Create the first account only while the user table is empty."""
         with self._connection() as connection, connection.transaction():
             connection.execute("LOCK TABLE app_user IN SHARE ROW EXCLUSIVE MODE")
-            if connection.execute("SELECT EXISTS (SELECT 1 FROM app_user)").fetchone()[
-                "exists"
-            ]:
+            if connection.execute("SELECT EXISTS (SELECT 1 FROM app_user)").fetchone()["exists"]:
                 return None
             row = connection.execute(
                 """INSERT INTO app_user (email, password_hash, role)
@@ -149,8 +162,25 @@ class AuthStore:
         method: str,
         authenticated_at: datetime,
         expires_at: datetime,
-    ) -> None:
-        with self._connection() as connection:
+        expected_password_hash: str | None = None,
+    ) -> bool:
+        with self._connection() as connection, connection.transaction():
+            user = connection.execute(
+                "SELECT password_hash, enabled FROM app_user WHERE id = %s FOR UPDATE",
+                (user_id,),
+            ).fetchone()
+            if (
+                not user
+                or not user["enabled"]
+                or (
+                    method == "password"
+                    and (
+                        not expected_password_hash
+                        or user["password_hash"] != expected_password_hash
+                    )
+                )
+            ):
+                return False
             connection.execute(
                 """
                 INSERT INTO user_session (
@@ -166,6 +196,7 @@ class AuthStore:
                     expires_at,
                 ),
             )
+        return True
 
     def session_owner(self, token_sha256: str) -> dict[str, Any] | None:
         """Who a cookie belongs to, or None.
@@ -185,9 +216,11 @@ class AuthStore:
                     u.role,
                     s.method,
                     s.created_at,
-                    s.expires_at
+                    s.expires_at,
+                    CASE WHEN s.method = 'password' THEN avatar.revision END AS avatar_revision
                 FROM user_session AS s
                 JOIN app_user AS u ON u.id = s.user_id
+                LEFT JOIN app_user_avatar avatar ON avatar.app_user_id = u.id
                 WHERE s.token_sha256 = %s
                   AND s.expires_at > now()
                   AND u.enabled
@@ -196,15 +229,120 @@ class AuthStore:
             ).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def _locked_account(connection: Any, user_id: UUID, token_sha256: str) -> dict[str, Any]:
+        # Account-row locking shares the same ordering as login and password replacement.
+        user = connection.execute(
+            "SELECT id, password_hash FROM app_user WHERE id = %s AND enabled FOR UPDATE",
+            (user_id,),
+        ).fetchone()
+        session = connection.execute(
+            """SELECT 1 FROM user_session
+               WHERE user_id = %s AND token_sha256 = %s
+                 AND method = 'password' AND expires_at > clock_timestamp()""",
+            (user_id, token_sha256),
+        ).fetchone()
+        if not user or not session:
+            raise AccountSessionInvalid("Session is no longer valid")
+        return dict(user)
+
+    @staticmethod
+    def _record_event(connection: Any, user_id: UUID, action: str) -> None:
+        connection.execute(
+            "INSERT INTO account_security_event(app_user_id, action) VALUES (%s, %s)",
+            (user_id, action),
+        )
+
+    def update_display_name(
+        self, user_id: UUID, token_sha256: str, display_name: str | None
+    ) -> None:
+        with self._connection() as connection, connection.transaction():
+            self._locked_account(connection, user_id, token_sha256)
+            changed = connection.execute(
+                """UPDATE app_user SET display_name = %s
+                   WHERE id = %s AND display_name IS DISTINCT FROM %s RETURNING id""",
+                (display_name, user_id, display_name),
+            ).fetchone()
+            if changed:
+                self._record_event(connection, user_id, "display_name_updated")
+
+    def avatar(self, user_id: UUID) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM app_user_avatar WHERE app_user_id = %s", (user_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_avatar(
+        self, user_id: UUID, token_sha256: str, media_type: str | None, image_bytes: bytes | None
+    ) -> dict[str, Any] | None:
+        if (media_type is None) != (image_bytes is None):
+            raise ValueError("Avatar media type and image must be set together")
+        with self._connection() as connection, connection.transaction():
+            self._locked_account(connection, user_id, token_sha256)
+            if image_bytes is None:
+                removed = connection.execute(
+                    "DELETE FROM app_user_avatar WHERE app_user_id = %s RETURNING app_user_id",
+                    (user_id,),
+                ).fetchone()
+                if removed:
+                    self._record_event(connection, user_id, "avatar_removed")
+                return None
+            row = connection.execute(
+                """INSERT INTO app_user_avatar(app_user_id, media_type, image_bytes, revision)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT(app_user_id) DO UPDATE SET media_type = EXCLUDED.media_type,
+                     image_bytes = EXCLUDED.image_bytes, revision = EXCLUDED.revision,
+                     updated_at = clock_timestamp()
+                   RETURNING revision, updated_at""",
+                (user_id, media_type, image_bytes, uuid4()),
+            ).fetchone()
+            self._record_event(connection, user_id, "avatar_updated")
+        return dict(row) if row else None
+
+    def change_password(
+        self,
+        user_id: UUID,
+        token_sha256: str,
+        current_password: str,
+        new_password: str,
+        verifier: Callable[[str, str | None], bool],
+        hasher: Callable[[str], str],
+    ) -> None:
+        mismatch = False
+        with self._connection() as connection, connection.transaction():
+            user = self._locked_account(connection, user_id, token_sha256)
+            attempts = connection.execute(
+                """SELECT count(*) AS failures,
+                     ceil(extract(epoch FROM (
+                       min(created_at) + interval '15 minutes' - clock_timestamp()
+                     )))::int AS retry_after
+                   FROM account_security_event
+                   WHERE app_user_id = %s AND action = 'password_verification_failed'
+                     AND created_at > clock_timestamp() - interval '15 minutes'""",
+                (user_id,),
+            ).fetchone()
+            if attempts["failures"] >= 5:
+                raise PasswordRateLimited(max(1, attempts["retry_after"]))
+            if not verifier(current_password, user["password_hash"]):
+                self._record_event(connection, user_id, "password_verification_failed")
+                mismatch = True
+            else:
+                connection.execute(
+                    "UPDATE app_user SET password_hash = %s WHERE id = %s",
+                    (hasher(new_password), user_id),
+                )
+                connection.execute("DELETE FROM user_session WHERE user_id = %s", (user_id,))
+                self._record_event(connection, user_id, "password_changed")
+        # Incorrect-password attempts must commit before returning the HTTP error.
+        if mismatch:
+            raise PasswordMismatch("Current password is incorrect")
+
     def delete_session(self, token_sha256: str) -> None:
         with self._connection() as connection:
-            connection.execute(
-                "DELETE FROM user_session WHERE token_sha256 = %s", (token_sha256,)
-            )
+            connection.execute("DELETE FROM user_session WHERE token_sha256 = %s", (token_sha256,))
 
     def delete_expired_sessions(self) -> int:
         with self._connection() as connection:
-            cursor = connection.execute(
-                "DELETE FROM user_session WHERE expires_at <= now()"
-            )
+            cursor = connection.execute("DELETE FROM user_session WHERE expires_at <= now()")
             return cursor.rowcount or 0

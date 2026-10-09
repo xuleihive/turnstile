@@ -57,28 +57,42 @@ class PostgreSqlBudgetRepositoryMixin:
             if mismatch is not None:
                 raise ValueError("Budget reservation admission is immutable")
 
-    def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]:
+    def list_token_budgets(
+        self, period_start: date, user_id: str | None = None
+    ) -> Sequence[dict[str, Any]]:
+        personal = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT period_start, scope_type, scope_id, parent_scope_id,
+                f"""SELECT period_start, scope_type, scope_id, parent_scope_id,
                           token_limit, warning_threshold_percent, updated_at, updated_by
                    FROM token_budget
-                   WHERE period_start = %s
+                   WHERE period_start = %s{personal}
                    ORDER BY scope_type, scope_id""",
-                (period_start,),
+                (period_start, user_id) if user_id is not None else (period_start,),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self, from_: datetime, to: datetime, user_id: str | None = None
     ) -> Sequence[dict[str, Any]]:
+        usage_person = " AND usage.user_id = %s" if user_id is not None else ""
+        recovery_person = " AND recovery.scope_id = %s" if user_id is not None else ""
+        evidence_person = " AND scope_id = %s" if user_id is not None else ""
+        result_person = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
+        parameters: list[Any] = []
+        for _ in range(4):
+            parameters.extend([from_, to])
+            if user_id is not None:
+                parameters.append(user_id)
+        if user_id is not None:
+            parameters.append(user_id)
         with self._connection() as connection:
             rows = connection.execute(
-                """WITH period_usage AS (
+                f"""WITH period_usage AS (
                        SELECT organization_id, department_id, user_id,
                               input_tokens + cached_tokens + output_tokens AS total_tokens
                        FROM token_usage usage
-                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'{usage_person}
                        AND EXISTS (
                        SELECT 1 FROM budget_legacy_usage legacy
                        WHERE legacy.scope_type = 'person'
@@ -105,7 +119,7 @@ class PostgreSqlBudgetRepositoryMixin:
                        AND department.scope_id = person.parent_scope_id
                        WHERE recovery.scope_type = 'person'
                        AND recovery.reservation_created_at >= %s
-                       AND recovery.reservation_created_at < %s
+                       AND recovery.reservation_created_at < %s{recovery_person}
                        AND EXISTS (
                        SELECT 1 FROM budget_legacy_usage legacy
                        WHERE legacy.scope_type = recovery.scope_type
@@ -116,12 +130,13 @@ class PostgreSqlBudgetRepositoryMixin:
                        SELECT organization_id, department_id, scope_id, total_tokens
                        FROM budget_evidence_selected
                        WHERE scope_type = 'person' AND admitted_at >= %s AND admitted_at < %s
+                       {evidence_person}
                        UNION ALL
                        SELECT 'unattributed', 'unattributed', scope_id, effective_tokens
                        FROM billable_request_effective_v1
                        WHERE scope_type = 'person' AND effective_state = 'exact'
                        AND NOT strict_budget_evidence(created_at)
-                       AND period_start >= %s::date AND period_start < %s::date
+                       AND period_start >= %s::date AND period_start < %s::date{evidence_person}
                    ), scoped_usage AS (
                        SELECT 'organization'::TEXT AS scope_type,
                               organization_id AS scope_id,
@@ -137,8 +152,8 @@ class PostgreSqlBudgetRepositoryMixin:
                    )
                    SELECT scope_type, scope_id, used_tokens
                    FROM scoped_usage
-                   WHERE scope_id <> 'unattributed'""",
-                (from_, to, from_, to, from_, to, from_, to),
+                   WHERE scope_id <> 'unattributed'{result_person}""",
+                tuple(parameters),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 

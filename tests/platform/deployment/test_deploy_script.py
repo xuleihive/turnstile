@@ -96,6 +96,33 @@ def test_secret_state_is_private_stable_and_excludes_plaintext(tmp_path: Path) -
     assert stat.S_IMODE(inputs.state_path.stat().st_mode) == 0o600
 
 
+def test_existing_state_accepts_changed_owner_password_without_resetting_secrets(
+    tmp_path: Path,
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription", _parameters(tmp_path / "parameters.json"), tmp_path / "state.json",
+    )
+    first = load_or_create_secret_material(
+        inputs, read_password=lambda _: "original-owner-password", require_owner_password=True,
+    )
+    original_state = inputs.state_path.read_bytes()
+    prompts: list[str] = []
+
+    def current_password(prompt: str) -> str:
+        prompts.append(prompt)
+        return "changed-owner-password"
+
+    resumed = load_or_create_secret_material(
+        inputs, read_password=current_password, require_owner_password=True,
+    )
+
+    assert resumed.owner_password == "changed-owner-password"
+    assert resumed.values == first.values
+    assert inputs.state_path.read_bytes() == original_state
+    assert prompts == ["Owner password for verification: "]
+    assert "changed-owner-password" not in original_state.decode()
+
+
 def test_public_parameter_file_rejects_secure_values(tmp_path: Path) -> None:
     path = _parameters(tmp_path / "parameters.json")
     document = json.loads(path.read_text(encoding="utf-8"))

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   PublicClientApplication,
@@ -27,6 +27,11 @@ type AuthContextValue = {
   signInWithPassword: (email: string, password: string) => Promise<void>
   signInWithEntra: () => Promise<void>
   signOut: () => Promise<void>
+  updateProfile: (profile: AuthUser, preserveAvatar?: boolean) => void
+  updateAvatar: (avatarUrl: string | null) => void
+  refreshProfile: () => Promise<void>
+  endSession: (notice?: string) => void
+  loginNotice: string | null
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -168,12 +173,14 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
  *  Returns null for every failure -- no account, no consent, no photo set, Graph
  *  unreachable. None of them are conditions the person can act on, and the initial-letter
  *  avatar is a complete answer in all of them. */
-async function fetchEntraPhoto(): Promise<string | null> {
-  const cached = sessionStorage.getItem(PHOTO_CACHE_KEY)
+async function fetchEntraPhoto(email: string): Promise<string | null> {
+  const cacheKey = `${PHOTO_CACHE_KEY}:${email}`
+  let cached: string | null = null
+  try { cached = sessionStorage.getItem(cacheKey) } catch { /* Storage can be disabled. */ }
   if (cached) return cached === PHOTO_NONE ? null : cached
 
   await initialiseMsal()
-  const account = msal.getAllAccounts()[0]
+  const account = msal.getAllAccounts().find((item) => item.username.toLowerCase() === email.toLowerCase())
   // No MSAL account means this tab was opened fresh against a still-valid session cookie:
   // the app's own session outlives MSAL's sessionStorage. Signed in, but with nothing to
   // call Graph with, so the letter stands in until the next Microsoft sign-in.
@@ -191,12 +198,14 @@ async function fetchEntraPhoto(): Promise<string | null> {
   }).catch(() => null)
   // 404 is the ordinary answer for somebody who has never set a photo, not an error.
   if (!response?.ok) {
-    sessionStorage.setItem(PHOTO_CACHE_KEY, PHOTO_NONE)
+    try { sessionStorage.setItem(cacheKey, PHOTO_NONE) } catch { /* Optional photo cache. */ }
     return null
   }
 
   const dataUrl = await readBlobAsDataUrl(await response.blob()).catch(() => null)
-  if (dataUrl) sessionStorage.setItem(PHOTO_CACHE_KEY, dataUrl)
+  if (dataUrl) {
+    try { sessionStorage.setItem(cacheKey, dataUrl) } catch { /* Keep the in-memory photo. */ }
+  }
   return dataUrl
 }
 
@@ -206,14 +215,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [photo, setPhoto] = useState<string | null>(null)
   const [entraError, setEntraError] = useState<string | null>(null)
+  const [loginNotice, setLoginNotice] = useState<string | null>(null)
+  const identityVersion = useRef(0)
+  const activeUser = useRef<AuthUser | null>(null)
 
   const expireLocalSession = useCallback(() => {
+    identityVersion.current += 1
+    activeUser.current = null
     queryClient.clear()
     setUser(null)
     setStatus("anonymous")
     setPhoto(null)
     setEntraError(null)
-    sessionStorage.removeItem(PHOTO_CACHE_KEY)
+    try {
+      Object.keys(sessionStorage).filter((key) => key.startsWith(PHOTO_CACHE_KEY))
+        .forEach((key) => sessionStorage.removeItem(key))
+    } catch { /* Session cleanup must work when browser storage is disabled. */ }
+    setLoginNotice(null)
     identity = null
   }, [queryClient])
 
@@ -221,6 +239,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false
     void resolveIdentity().then((profile) => {
       if (cancelled) return
+      activeUser.current = profile
       setUser(profile)
       setStatus(profile ? "authenticated" : "anonymous")
       setEntraError(entraRejection)
@@ -263,9 +282,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // decoration; making the dashboard wait on a Graph round trip to render would trade a
   // visible delay for an avatar nobody is waiting to see. It appears a moment later.
   useEffect(() => {
-    if (user?.method !== "entra") return
+    setPhoto(null)
+    if (!user) return
     let cancelled = false
-    void fetchEntraPhoto()
+    const loadPhoto = user.method === "entra"
+      ? fetchEntraPhoto(user.email)
+      : user.avatar_url
+        ? authApi.avatar(user.avatar_url).then((blob) => blob ? readBlobAsDataUrl(blob) : null)
+        : Promise.resolve(null)
+    void loadPhoto
       .catch(() => null)
       .then((found) => {
         if (!cancelled) setPhoto(found)
@@ -273,12 +298,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [user?.method])
+  }, [user?.id, user?.method, user?.email, user?.avatar_url])
+
+  const updateProfile = useCallback((profile: AuthUser, preserveAvatar = false) => {
+    const next = preserveAvatar
+      ? { ...profile, avatar_url: activeUser.current?.avatar_url ?? null }
+      : profile
+    if (activeUser.current?.id !== next.id || activeUser.current.method !== next.method) return
+    identityVersion.current += 1
+    activeUser.current = next
+    identity = Promise.resolve(next)
+    setUser(next)
+  }, [])
+
+  const updateAvatar = useCallback((avatarUrl: string | null) => {
+    const current = activeUser.current
+    if (!current || current.method !== "password") return
+    identityVersion.current += 1
+    const next = { ...current, avatar_url: avatarUrl }
+    activeUser.current = next
+    identity = Promise.resolve(next)
+    setUser(next)
+  }, [])
+
+  const refreshProfile = useCallback(async () => {
+    const version = identityVersion.current
+    const next = await authApi.profile()
+    if (version !== identityVersion.current) return
+    if (!next) { expireLocalSession(); return }
+    if (activeUser.current?.id !== next.id || activeUser.current.method !== next.method) {
+      queryClient.clear()
+      setPhoto(null)
+      identityVersion.current += 1
+      activeUser.current = next
+      identity = Promise.resolve(next)
+      setUser(next)
+      return
+    }
+    updateProfile(next)
+  }, [expireLocalSession, queryClient, updateProfile])
+
+  const endSession = useCallback((notice?: string) => {
+    expireLocalSession()
+    setLoginNotice(notice ?? null)
+  }, [expireLocalSession])
 
   const adopt = useCallback((next: AuthUser) => {
+    identityVersion.current += 1
+    activeUser.current = next
     // Query data contains organisation-wide usage and is not keyed by reader. A second
     // account in the same tab must never inherit the previous account's in-memory view.
     queryClient.clear()
+    setPhoto(null)
+    setLoginNotice(null)
+    identity = Promise.resolve(next)
     setUser(next)
     setStatus("authenticated")
   }, [queryClient])
@@ -324,8 +397,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [expireLocalSession])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut }),
-    [status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut],
+    () => ({ status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut,
+      updateProfile, updateAvatar, refreshProfile, endSession, loginNotice }),
+    [status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut,
+      updateProfile, updateAvatar, refreshProfile, endSession, loginNotice],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>

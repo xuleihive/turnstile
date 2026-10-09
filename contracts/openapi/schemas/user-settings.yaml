@@ -1,0 +1,534 @@
+schemas:
+  AccountEntity:
+    properties:
+      id:
+        type: string
+        title: Id
+      name:
+        type: string
+        title: Name
+    additionalProperties: false
+    type: object
+    required:
+    - id
+    - name
+    title: AccountEntity
+  AccountInformation:
+    properties:
+      account_id:
+        type: string
+        format: uuid
+        title: Account Id
+      permission_groups:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PermissionGroup
+        type: array
+        title: Permission Groups
+      organization:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/AccountEntity
+        - type: 'null'
+      department:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/AccountEntity
+        - type: 'null'
+      membership_source:
+        type: string
+        enum:
+        - catalog
+        - observed_usage
+        - owner_default
+        - unlinked
+        title: Membership Source
+      editable:
+        $ref: ../../openapi.yaml#/components/schemas/EditableProfile
+      generated_at:
+        type: string
+        format: date-time
+        title: Generated At
+    additionalProperties: false
+    type: object
+    required:
+    - account_id
+    - permission_groups
+    - organization
+    - department
+    - membership_source
+    - editable
+    - generated_at
+    title: AccountInformation
+  AvatarUpdate:
+    properties:
+      avatar_data_url:
+        anyOf:
+        - type: string
+          maxLength: 90000
+        - type: 'null'
+        title: Avatar Data Url
+    additionalProperties: false
+    type: object
+    required:
+    - avatar_data_url
+    title: AvatarUpdate
+  EditableProfile:
+    properties:
+      avatar:
+        type: boolean
+        title: Avatar
+      display_name:
+        type: boolean
+        title: Display Name
+      password:
+        type: boolean
+        title: Password
+    additionalProperties: false
+    type: object
+    required:
+    - avatar
+    - display_name
+    - password
+    title: EditableProfile
+  HTTPValidationError:
+    properties:
+      detail:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/ValidationError
+        type: array
+        title: Detail
+    type: object
+    title: HTTPValidationError
+  PasswordUpdate:
+    properties:
+      current_password:
+        type: string
+        maxLength: 256
+        minLength: 1
+        format: password
+        title: Current Password
+        writeOnly: true
+      new_password:
+        type: string
+        maxLength: 256
+        minLength: 12
+        format: password
+        title: New Password
+        writeOnly: true
+      confirm_password:
+        type: string
+        maxLength: 256
+        minLength: 12
+        format: password
+        title: Confirm Password
+        writeOnly: true
+    additionalProperties: false
+    type: object
+    required:
+    - current_password
+    - new_password
+    - confirm_password
+    title: PasswordUpdate
+  PermissionGroup:
+    properties:
+      key:
+        type: string
+        enum:
+        - owner
+        - member
+        title: Key
+      name:
+        type: string
+        title: Name
+      source:
+        type: string
+        const: turnstile
+        title: Source
+        default: turnstile
+    additionalProperties: false
+    type: object
+    required:
+    - key
+    - name
+    title: PermissionGroup
+  PersonalAvatar:
+    properties:
+      avatar_url:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Avatar Url
+      updated_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+        title: Updated At
+    additionalProperties: false
+    type: object
+    required:
+    - avatar_url
+    - updated_at
+    title: PersonalAvatar
+  PersonalBudget:
+    properties:
+      period:
+        type: string
+        title: Period
+      period_start:
+        type: string
+        format: date
+        title: Period Start
+      period_end:
+        type: string
+        format: date
+        title: Period End
+      min_period:
+        type: string
+        title: Min Period
+      max_period:
+        type: string
+        title: Max Period
+      token_limit:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Token Limit
+      used_tokens:
+        type: integer
+        title: Used Tokens
+      remaining_tokens:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Remaining Tokens
+      warning_threshold_percent:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Warning Threshold Percent
+      usage_percent:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Usage Percent
+      forecast_tokens:
+        type: integer
+        title: Forecast Tokens
+      forecast_percent:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Forecast Percent
+      status:
+        type: string
+        enum:
+        - unallocated
+        - healthy
+        - warning
+        - exceeded
+        title: Status
+      enforcement_mode:
+        anyOf:
+        - type: string
+          enum:
+          - audit
+          - block
+        - type: 'null'
+        title: Enforcement Mode
+      enforcement_department_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Enforcement Department Id
+      basis:
+        type: string
+        const: budget_evidence
+        title: Basis
+        default: budget_evidence
+      generated_at:
+        type: string
+        format: date-time
+        title: Generated At
+    additionalProperties: false
+    type: object
+    required:
+    - period
+    - period_start
+    - period_end
+    - min_period
+    - max_period
+    - token_limit
+    - used_tokens
+    - remaining_tokens
+    - warning_threshold_percent
+    - usage_percent
+    - forecast_tokens
+    - forecast_percent
+    - status
+    - enforcement_mode
+    - enforcement_department_id
+    - generated_at
+    title: PersonalBudget
+  PersonalModel:
+    properties:
+      id:
+        type: string
+        format: uuid
+        title: Id
+      name:
+        type: string
+        title: Name
+      model_key:
+        type: string
+        title: Model Key
+      provider_name:
+        type: string
+        title: Provider Name
+      context_window:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Context Window
+      capabilities:
+        items:
+          type: string
+        type: array
+        title: Capabilities
+      access_source:
+        type: string
+        enum:
+        - explicit
+        - legacy_compatibility
+        title: Access Source
+      runtime_status:
+        type: string
+        enum:
+        - available
+        - unavailable
+        - unknown
+        title: Runtime Status
+    additionalProperties: false
+    type: object
+    required:
+    - id
+    - name
+    - model_key
+    - provider_name
+    - context_window
+    - capabilities
+    - access_source
+    - runtime_status
+    title: PersonalModel
+  PersonalModelList:
+    properties:
+      policy_state:
+        type: string
+        enum:
+        - unconfigured
+        - assigned
+        - deny_all
+        title: Policy State
+      items:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PersonalModel
+        type: array
+        title: Items
+      generated_at:
+        type: string
+        format: date-time
+        title: Generated At
+    additionalProperties: false
+    type: object
+    required:
+    - policy_state
+    - items
+    - generated_at
+    title: PersonalModelList
+  PersonalModelUsage:
+    properties:
+      model_id:
+        type: string
+        title: Model Id
+      model_name:
+        type: string
+        title: Model Name
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/PersonalUsageTotals
+    additionalProperties: false
+    type: object
+    required:
+    - model_id
+    - model_name
+    - totals
+    title: PersonalModelUsage
+  PersonalUsage:
+    properties:
+      period:
+        type: string
+        title: Period
+      from:
+        type: string
+        format: date-time
+        title: From
+      to:
+        type: string
+        format: date-time
+        title: To
+      interval:
+        type: string
+        enum:
+        - hour
+        - day
+        title: Interval
+      timezone:
+        type: string
+        title: Timezone
+      usage_domain:
+        type: string
+        const: apim
+        title: Usage Domain
+        default: apim
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/PersonalUsageTotals
+      points:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PersonalUsagePoint
+        type: array
+        title: Points
+      models:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PersonalModelUsage
+        type: array
+        title: Models
+      generated_at:
+        type: string
+        format: date-time
+        title: Generated At
+      last_observed_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+        title: Last Observed At
+      demo:
+        type: boolean
+        title: Demo
+        default: false
+    additionalProperties: false
+    type: object
+    required:
+    - period
+    - from
+    - to
+    - interval
+    - timezone
+    - totals
+    - points
+    - models
+    - generated_at
+    - last_observed_at
+    title: PersonalUsage
+  PersonalUsagePoint:
+    properties:
+      bucket_start:
+        type: string
+        format: date-time
+        title: Bucket Start
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/PersonalUsageTotals
+    additionalProperties: false
+    type: object
+    required:
+    - bucket_start
+    - totals
+    title: PersonalUsagePoint
+  PersonalUsageTotals:
+    properties:
+      requests:
+        type: integer
+        title: Requests
+        default: 0
+      input_tokens:
+        type: integer
+        title: Input Tokens
+        default: 0
+      output_tokens:
+        type: integer
+        title: Output Tokens
+        default: 0
+      cache_read_tokens:
+        type: integer
+        title: Cache Read Tokens
+        default: 0
+      cache_write_tokens:
+        type: integer
+        title: Cache Write Tokens
+        default: 0
+      total_tokens:
+        type: integer
+        title: Total Tokens
+        default: 0
+      error_rate:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Error Rate
+      average_latency_ms:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Average Latency Ms
+      estimated_cost_usd:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Estimated Cost Usd
+      cost_state:
+        type: string
+        enum:
+        - priced
+        - partial
+        - unpriced
+        title: Cost State
+        default: unpriced
+    additionalProperties: false
+    type: object
+    title: PersonalUsageTotals
+  ProfileUpdate:
+    properties:
+      display_name:
+        anyOf:
+        - type: string
+          maxLength: 160
+        - type: 'null'
+        title: Display Name
+    additionalProperties: false
+    type: object
+    required:
+    - display_name
+    title: ProfileUpdate
+  ValidationError:
+    properties:
+      loc:
+        items:
+          anyOf:
+          - type: string
+          - type: integer
+        type: array
+        title: Location
+      msg:
+        type: string
+        title: Message
+      type:
+        type: string
+        title: Error Type
+      input:
+        title: Input
+      ctx:
+        type: object
+        title: Context
+    type: object
+    required:
+    - loc
+    - msg
+    - type
+    title: ValidationError

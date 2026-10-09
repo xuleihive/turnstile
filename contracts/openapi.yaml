@@ -47,6 +47,8 @@ tags:
   description: Authenticated, assigned and budget-governed internal model invocation.
 - name: Model Router
   description: User-scoped model routing drafts, validation, version publication, and lifecycle.
+- name: User Settings
+  description: Private current-account self service.
 paths:
   /api/v1/model-gateway/images/generations:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-gateway~1images~1generations
@@ -204,6 +206,20 @@ paths:
     $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1audit-findings~1{finding_id}
   /api/v1/observability/optimization-events:
     $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1optimization-events
+  /api/v1/user-settings/me/account:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1account
+  /api/v1/user-settings/me/budget:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1budget
+  /api/v1/user-settings/me/models:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1models
+  /api/v1/user-settings/me/usage:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1usage
+  /api/v1/user-settings/me/profile:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1profile
+  /api/v1/user-settings/me/avatar:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1avatar
+  /api/v1/user-settings/me/password:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1password
 components:
   securitySchemes:
     sessionCookie:
@@ -597,6 +613,40 @@ components:
       $ref: ./openapi/schemas/assistant.yaml#/schemas/AssistantModelChoice
     Error:
       $ref: ./openapi/schemas/common.yaml#/schemas/Error
+    AccountEntity:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountEntity
+    AccountInformation:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountInformation
+    AvatarUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AvatarUpdate
+    EditableProfile:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/EditableProfile
+    HTTPValidationError:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/HTTPValidationError
+    PasswordUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PasswordUpdate
+    PermissionGroup:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PermissionGroup
+    PersonalAvatar:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalAvatar
+    PersonalBudget:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalBudget
+    PersonalModel:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModel
+    PersonalModelList:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelList
+    PersonalModelUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelUsage
+    PersonalUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsage
+    PersonalUsagePoint:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsagePoint
+    PersonalUsageTotals:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsageTotals
+    ProfileUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/ProfileUpdate
+    ValidationError:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/ValidationError
 x-event-contracts:
   usage-event:
     transport: Azure Event Hubs

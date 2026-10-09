@@ -1,4 +1,5 @@
 import { JAPANESE_CORE_PHRASES } from "./ja/phrases-core"
+import { USER_SETTINGS_PHRASES } from "./ja/phrases-user-settings"
 import { JAPANESE_COPILOT_PHRASES } from "./ja/phrases-copilot"
 import { JAPANESE_AUTH_PHRASES } from "./ja/phrases-auth"
 import { IMAGE_GENERATION_PHRASES } from "./ja/phrases-image-generation"
@@ -6,6 +7,7 @@ import { DYNAMIC_RULES } from "./ja/dynamic-rules"
 
 const JAPANESE_PHRASES: Record<string, string> = {
   ...JAPANESE_CORE_PHRASES,
+  ...USER_SETTINGS_PHRASES,
   ...JAPANESE_COPILOT_PHRASES,
   ...JAPANESE_AUTH_PHRASES,
   ...IMAGE_GENERATION_PHRASES,

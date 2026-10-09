@@ -191,6 +191,10 @@ The command prompts for the initial Owner password, runs a subscription-scope wh
 
 For automation, copy `infra/owner.credentials.example.json` to `.turnstile/owner.credentials.json`, set the same email as `bootstrapOwnerEmail`, choose the password, run `chmod 600` on the file, and add `--owner-credentials .turnstile/owner.credentials.json`. Plaintext never enters Bicep or deployment state; only its scrypt hash is deployed.
 
+After the Owner changes their password in User settings, supply the current password
+for rerun verification or update that private credentials file. Keep the original
+deployment state and bootstrap hash; reruns do not reset the existing account.
+
 Use `scripts.deploy plan` for a preview without creating resources. See [Deployment](docs/deployment.md) for prerequisites, reruns, and recovery.
 
 ## Post-deployment model onboarding

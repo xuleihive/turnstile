@@ -32,14 +32,20 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
     user_model_access_audit: list[dict[str, Any]]
     user_model_policies: dict[str, dict[str, Any]]
 
-    def list_token_budgets(self, period_start: date) -> list[dict[str, Any]]:
+    def list_token_budgets(
+        self, period_start: date, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         return [
             row
-            for (row_period, _, _), row in self.token_budgets.items()
-            if row_period == period_start
+            for (row_period, scope_type, scope_id), row in self.token_budgets.items()
+            if row_period == period_start and (
+                user_id is None or (scope_type == "user" and scope_id == user_id)
+            )
         ]
 
-    def token_usage_by_budget_scope(self, from_: datetime, to: datetime) -> list[dict[str, Any]]:
+    def token_usage_by_budget_scope(
+        self, from_: datetime, to: datetime, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         totals: dict[tuple[str, str], int] = {}
         users = {record.user_id for record in self.usage_records if record.usage_domain == "apim"}
         users.update(
@@ -50,12 +56,14 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         users.update(
             item.scope_id for item in self.billable_requests.values() if item.scope_type == "person"
         )
-        for user_id in users:
-            for row in self._confirmed_budget_usage("person", user_id):
+        for person_id in users:
+            if user_id is not None and person_id != user_id:
+                continue
+            for row in self._confirmed_budget_usage("person", person_id):
                 if not from_ <= row["ts"] < to:
                     continue
                 period = row["ts"].astimezone(UTC).date().replace(day=1)
-                person = self.token_budgets.get((period, "user", user_id), {})
+                person = self.token_budgets.get((period, "user", person_id), {})
                 department_id = (
                     row.get("department_id") or person.get("parent_scope_id") or "unattributed"
                 )
@@ -69,7 +77,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
                 for scope_type, scope_id in (
                     ("organization", organization_id),
                     ("department", department_id),
-                    ("user", user_id),
+                    ("user", person_id),
                 ):
                     if scope_id != "unattributed":
                         key = (scope_type, scope_id)
@@ -77,6 +85,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         return [
             {"scope_type": scope_type, "scope_id": scope_id, "used_tokens": used_tokens}
             for (scope_type, scope_id), used_tokens in totals.items()
+            if user_id is None or (scope_type == "user" and scope_id == user_id)
         ]
 
     def upsert_token_budget(

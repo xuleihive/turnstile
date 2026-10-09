@@ -99,6 +99,7 @@ import { ApimNativeRoutesPage } from "./pages/apim-native-routes-page";
 import { GatewayReleasesPage } from "./pages/gateway-releases-page";
 import { ApplicationsPage } from "./pages/applications-page";
 import { SettingsPage } from "./pages/settings-page";
+import { UserSettingsPage } from "./pages/user-settings-page";
 import type {
   AuditFinding,
   AuditStatus,
@@ -110,6 +111,7 @@ import type {
 
 type Page =
   | "settings"
+  | "user-settings"
   | "models"
   | "apim-native-routes"
   | "gateway-releases"
@@ -130,6 +132,7 @@ type Page =
 type DataSource = "apim" | "github-copilot";
 
 function normalizePageForSource(source: DataSource, page: Page): Page {
+  if (page === "user-settings") return page;
   return (source === "github-copilot"
     ? normalizeGithubCopilotPage(page)
     : normalizeApimPage(page)) as Page;
@@ -147,6 +150,7 @@ function dataSourceFromStorage(): DataSource {
 }
 const pageIds: Page[] = [
   "settings",
+  "user-settings",
   "models",
   "apim-native-routes",
   "gateway-releases",
@@ -900,7 +904,7 @@ export function App() {
   const sidebarFilters = useMemo(() => usageWindow(30), []);
   const anomalyQuery = useQuery({
     ...finopsQueries.anomalies(sidebarFilters),
-    enabled: selectedDataSource === "apim",
+    enabled: selectedDataSource === "apim" && page !== "user-settings",
     refetchInterval: 5 * 60_000,
   });
   const anomalyCount = anomalyQuery.data?.length ?? 0;
@@ -921,13 +925,14 @@ export function App() {
   }, [page]);
   const pinnedCharts = useQuery({
     ...pinnedChartsQuery(assistantOwner),
-    enabled: selectedDataSource === "apim" && Boolean(assistantOwner),
+    enabled: selectedDataSource === "apim" && page !== "user-settings" && Boolean(assistantOwner),
   });
   // Open by default, matching SmartHive's `<Collapsible defaultOpen>`. Not persisted for
   // the same reason it is not there: the group is small and re-expanding is one click,
   // whereas a remembered collapse can hide reports a person forgot they had.
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const prefetchNavigation = (nextPage: Page) => {
+    if (nextPage === "user-settings") return;
     if (selectedDataSource === "github-copilot") {
       prefetchGithubCopilotPage(queryClient, nextPage);
       return;
@@ -1159,7 +1164,7 @@ export function App() {
   // must not add the 24px page padding the card-based routes need. Leaving the assistant
   // out of this put a 24px inset around its whole two-pane surface, which pushed the
   // thread rail's border away from the card wall it is supposed to sit against.
-  const workspacePage = finopsPage || page === "models" || page === "budgets" || page.startsWith("copilot-") || page === "pinned-report" || page === "assistant";  type NavGroup = {
+  const workspacePage = finopsPage || page === "models" || page === "budgets" || page.startsWith("copilot-") || page === "pinned-report" || page === "assistant" || page === "user-settings";  type NavGroup = {
     label: string;
     items: Array<{
       label: string;
@@ -1199,6 +1204,7 @@ export function App() {
     // this array is derived from navGroups, and both of those live outside them, so
     // neither would otherwise be findable in the palette.
     { id: "assistant" as Page, label: "FinOps Assistant", icon: Sparkles },
+    { id: "user-settings" as Page, label: "用户设置", icon: Settings },
     ...navGroups.flatMap((group) => group.items.map((item) => ({ id: item.page, label: item.label, icon: item.icon }))),
     ...(selectedDataSource === "apim"
       ? [{ id: "finops-invoke" as Page, label: "调用测试", icon: Zap }]
@@ -1438,6 +1444,10 @@ export function App() {
                     </span>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" side="top" sideOffset={8} className="sidebar-help-menu">
+                    <DropdownMenuItem onClick={() => { navigatePage("user-settings"); setSidebarOpenMobile(false); }}>
+                      <Settings size={16} />
+                      <span>用户设置</span>
+                    </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => void signOut()}>
                       <LogOut size={16} />
                       <span>退出登录</span>
@@ -1498,6 +1508,7 @@ export function App() {
           className={`page ${page === "settings" ? "settings-host" : ""} ${page === "models" || page === "apim-native-routes" || page === "gateway-releases" || page === "applications" ? "registry-workspace-host" : ""} ${workspacePage ? "finops-workspace-host" : ""}`}
         >
           {page === "settings" && <SettingsPage dataSource={selectedDataSource} />}
+          {page === "user-settings" && <UserSettingsPage onToggleSidebar={toggleSidebar} />}
           {selectedDataSource === "apim" && page === "models" && <ModelManagementPage onToggleSidebar={toggleSidebar} />}
           {selectedDataSource === "apim" && page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen={nativeRouteDrawerOpen} onRouteDrawerOpenChange={setNativeRouteDrawerOpen} addOpen={nativeRouteAddOpen} onAddOpenChange={setNativeRouteAddOpen} />}
           {selectedDataSource === "apim" && page === "gateway-releases" && <GatewayReleasesPage releaseDrawerOpen={gatewayReleaseDrawerOpen} onReleaseDrawerOpenChange={setGatewayReleaseDrawerOpen} />}

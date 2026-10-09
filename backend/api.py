@@ -4,9 +4,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from turnstile_core.config import get_settings
@@ -42,6 +44,8 @@ from .http.service_dependencies import (
 )
 from .http.session import require_allowed_write_origin, require_authenticated_session
 from .http.static_files import validate_production_web_dist
+from .http.user_settings import UserSettingsBodyLimit
+from .http.user_settings import router as user_settings_router
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,23 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Token Observability API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(UserSettingsBodyLimit)
+
+
+@app.exception_handler(RequestValidationError)
+async def private_validation_errors(
+    request: Request, error: RequestValidationError
+) -> Response:
+    if request.url.path.startswith(("/api/v1/user-settings/", "/api/v1/auth/")):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [
+                {"loc": item["loc"], "msg": item["msg"], "type": item["type"]}
+                for item in error.errors()
+            ]},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await request_validation_exception_handler(request, error)
 protected = APIRouter(
     dependencies=[
         Depends(require_authenticated_session),
@@ -97,6 +118,7 @@ app.include_router(assistant_title_router)
 app.include_router(model_platform_publication_router)
 app.include_router(github_copilot_router)
 app.include_router(authentication_router)
+app.include_router(user_settings_router)
 
 
 # Registered after every real API route and before the single-page-application

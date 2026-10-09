@@ -88,6 +88,61 @@ Control-plane and explicit consent for paid probes. Publication probes also cons
 requests; include them when choosing a validation budget. Never enable an upstream provider's
 local-key authentication or weaken networking merely to complete installation.
 
+### User settings database upgrade
+
+The user-settings API requires `migrations/011_user_settings_profile.up.sql`. It adds
+`app_user_avatar` for private normalized avatars and `account_security_event` for account
+change auditing and password-verification throttling. It does not rewrite existing accounts,
+sessions, budgets or usage, and needs no infrastructure changes or new Graph permissions.
+The migration number avoids the assistant-protocol and pricing upgrades; it does not depend
+on `009_assistant_api_format` or `010_models_dev_pricing`.
+
+For a fresh deployment, the existing API staging step includes all numbered migrations,
+including `011`. App Service runs migration, initial-Owner bootstrap and API startup in
+that order with `&&`; migration failure prevents bootstrap and API startup. No new Bicep
+parameter, Owner field, Graph scope, Blob Storage resource or deployment mode is required.
+The explicit pre-deployment migration procedure below is for an existing installation.
+
+No second SQL upgrade script is required: clean installs and existing installations use
+the same numbered migration through `backend.migrate`. If `011` is already recorded with
+the matching checksum, leave it unchanged and let the runner skip it. A later schema change
+needs a new numbered migration; do not add a second script that recreates these tables.
+
+Use the installation's actual backup capabilities. Azure PostgreSQL Burstable does not
+support customer on-demand backups; do not change its SKU or network rules just to run an
+upgrade. Verify existing automatic backups and recovery retention, and use a compatible
+`pg_dump --format=custom` in the authorized database environment when a fresh logical
+backup is needed. Encrypt the backup, restrict its permissions, and retain its recovery key
+outside Git. `pg_restore --list` validates the archive catalog, not a successful restore;
+test restoration separately against an explicitly authorized isolated database.
+Deployment-state secrets and installation-specific SCM/backup helpers remain private.
+
+1. Back up the existing database and record its `schema_migration` versions and checksums.
+   Use the installation's existing secret configuration and authorized migration environment;
+   do not put `DATABASE_URL` or credentials into Git or the command line.
+2. Before deploying the new API, apply pending migrations through the existing runner:
+
+   ```bash
+   uv run python -m backend.migrate
+   ```
+
+   The runner applies each pending file transactionally and verifies existing checksums.
+   Rerunning it skips applied files; do not run the SQL directly or edit an applied file.
+   The API startup migration check does not replace this pre-deployment step. Run it in
+   the existing authorized database environment without exposing credentials or temporarily
+   opening the database firewall.
+3. Confirm `011_user_settings_profile` appears once in `schema_migration`, both new tables
+   exist, and earlier checksums and account/budget/usage data are unchanged. Deploy the
+   matching API and frontend packages through the existing deployment process.
+4. Verify password-account display-name and avatar updates, wrong-password rejection,
+   password replacement followed by reauthentication, and read-only Microsoft profiles.
+   A successful password change revokes all existing Turnstile sessions for that account.
+
+For an application rollback, restore the previous API/frontend packages and retain the
+additive tables and migration ledger entry. Do not drop audit or avatar data or rewrite
+migration history. Rolling back packages does not restore changed passwords or revoked
+sessions; database restoration requires a separately reviewed recovery procedure.
+
 ### Immediate model-access upgrade
 
 The API also needs network reachability to the ledger. With the default private ledger,
@@ -279,11 +334,18 @@ need `Microsoft.ApiManagement/service/apis/operations/write`.
 
 The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account. Enabled Owner accounts are immediately listed in People under the default AI Platform department so the bootstrap Owner can assign model access before generating gateway traffic. Member department placement still comes from attributed gateway usage.
 
-To rotate a password later, run the existing account command from an authorized application execution context:
+Password users can change their own password in User settings. Operators can also use
+the existing account command from an authorized application execution context:
 
 ```bash
 python -m backend.accounts <owner-email> --role owner
 ```
+
+After changing the Owner password, use the current password for deployment verification.
+Update any private `--owner-credentials` file used by automation, retaining mode `0600`.
+Do not replace the deployment state, platform keys or stored bootstrap hash: that hash
+creates an Owner only while the account table is empty. Existing accounts and their
+display names/passwords remain unchanged by restarts and repeated bootstrap attempts.
 
 ## Customer Foundry onboarding
 

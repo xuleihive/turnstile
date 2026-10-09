@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 from functools import lru_cache
-from typing import Annotated, Literal
+from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
@@ -11,6 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from turnstile_core.config import Settings, get_settings
 from turnstile_core.persistence.auth_store import AuthStore
 
+from ..services.auth_service import SessionIdentity as SessionIdentity
 from ..services.auth_service import hash_session_token
 
 
@@ -24,16 +23,6 @@ def get_auth_store() -> AuthStore:
 
 Store = Annotated[AuthStore, Depends(get_auth_store)]
 Config = Annotated[Settings, Depends(get_settings)]
-
-
-@dataclass(frozen=True)
-class SessionIdentity:
-    id: str
-    email: str
-    name: str | None
-    role: Literal["owner", "member"]
-    method: Literal["password", "entra"]
-    session_expires_at: datetime
 
 
 def require_authenticated_session(
@@ -58,6 +47,10 @@ def require_authenticated_session(
         role=role,  # type: ignore[arg-type]
         method=method,  # type: ignore[arg-type]
         session_expires_at=owner["expires_at"],
+        avatar_url=(
+            f"/api/v1/user-settings/me/avatar?v={owner['avatar_revision']}"
+            if method == "password" and owner.get("avatar_revision") else None
+        ),
     )
 
 

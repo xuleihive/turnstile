@@ -22,13 +22,45 @@ git diff --check
 
 ## Database validation
 
-For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, and `008_price_review_and_guard`), then run the command again and verify that no migration is reapplied.
+For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, `008_price_review_and_guard`, and `011_user_settings_profile`), then run the command again and verify that no migration is reapplied.
 
 The initial schema contains no users, credentials, provider connections, runtimes, business models, usage events, or customer data.
 
 For an existing installation, run the same migration command to apply only pending upgrades. Verify that the initial migration checksum and existing usage rows are unchanged. Migration `002` replaces the unique caller-request index with a non-unique `(request_id, ts DESC)` index; it does not rewrite historical usage. Apply it before running the updated telemetry consumer, and drain older telemetry consumers before enabling the new version. Do not overlap consumers that use the old and new identity rules. Index replacement takes a table lock, so schedule the upgrade for an appropriate maintenance window. Migration `007` only adds nullable columns and defaults every existing model to `price_source = 'manual'`, so rates already in the registry are left exactly as they were and the price sync skips those rows until someone opts a model in.
 
 Request-attempt validation must prove that two APIM attempts with the same `request_id` and different `correlation_id` values both persist, while redelivery of one attempt is idempotent. Replay a pre-upgrade event whose stored primary key differs from its correlation ID: the existing primary key and Application attribution must remain unchanged, an estimated record may gain exact usage, and an already exact record must not be charged again. Detail lookup prefers an exact `correlation_id`; a legacy `request_id` selects the latest matching APIM attempt. Verify both lookups and confirm that Copilot records remain excluded. Isolated unit and migration-source tests do not substitute for this database validation.
+
+### Personal user settings
+
+Apply `011_user_settings_profile` before deploying the updated authentication API, following
+the [upgrade procedure](deployment.md#user-settings-database-upgrade). Personal avatars are
+private PostgreSQL records; Microsoft sessions continue to use Graph photos.
+Only password sessions can update the current account's name, avatar, or password. Successful
+password changes revoke all Turnstile sessions without changing Microsoft credentials.
+
+The reproducible migration suite starts and stops only its own local PostgreSQL 16+
+cluster, using a private Unix socket and rejecting TCP connections. It does not read
+`DATABASE_URL` or `TEST_USER_SETTINGS_DATABASE_URL` as a target. With `initdb` and
+`postgres` available on `PATH`, run:
+
+```bash
+uv run pytest -q tests/backend/persistence/test_user_settings_migration.py
+```
+
+It covers fresh installation through `011`, upgrade with historical account/session/budget/
+usage preservation, unchanged migration checksums and timestamps on rerun, rejection of
+applied-file changes, and schema/ledger rollback on failure. Missing or older PostgreSQL
+tools explicitly skip these tests; a skipped run is not migration evidence.
+The fresh-Owner case exercises migration followed by real bootstrap, session issuance
+with the new avatar schema, display-name/password updates and a restart-style rerun
+that must preserve the new name/password and the existing migration ledger.
+
+Run the self-service API and UI source checks with the ordinary suite. To exercise real
+transaction locking, rollback, avatar persistence, audit and password attempt limiting,
+explicitly set `TEST_USER_SETTINGS_DATABASE_URL` to an isolated, migrated PostgreSQL database
+and run `tests/backend/persistence/test_user_settings_store.py`. Never point this test
+variable at a shared or deployed database. Tests create temporary accounts and delete only
+those accounts during teardown.
 
 ### Ledger upgrade validation
 
