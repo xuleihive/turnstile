@@ -361,14 +361,16 @@ def validate_parent_policy(
     canonical_parent: str,
     profiles: Sequence[ImageGenerationProfile] = (),
 ) -> str:
+    from .apim_directory_policy import strip_validated_directory_identity_policy
+
     def without_slots(value: str) -> str:
         return value.replace("__LEGACY_PROVIDER_ROUTING__", "").replace(
             "__USAGE_OBSERVER_HEADERS__", ""
         )
 
     root, template = (
-        parse_policy(without_slots(source)),
-        parse_policy(without_slots(canonical_parent)),
+        parse_policy(without_slots(strip_validated_directory_identity_policy(source))),
+        parse_policy(without_slots(strip_validated_directory_identity_policy(canonical_parent))),
     )
     for policy in (root, template):
         if policy.tag != "policies" or [

@@ -38,9 +38,9 @@ def test_subscriptions_are_a_model_platform_domain() -> None:
     page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
     assert '| "applications"' in app
     assert 'label: "模型平台"' in app
-    assert '{ label: "订阅", icon: KeyRound, page: "applications" }' in app
+    assert '{ label: "订阅管理", icon: KeyRound, page: "applications" }' in app
     assert app.index('label: "模型平台"') < app.index(
-        '{ label: "订阅", icon: KeyRound, page: "applications" }'
+        '{ label: "订阅管理", icon: KeyRound, page: "applications" }'
     )
     assert 'page === "applications" && <ApplicationsPage' in app
     assert 'page === "applications" && <ApplicationsPage />' in app

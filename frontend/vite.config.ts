@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       port: 5173,
+      watch: { usePolling: env.CHOKIDAR_USEPOLLING === "1" },
       proxy: {
         // `cookieDomainRewrite` is what lets the session cookie survive the hop. Without
         // it the backend's Set-Cookie carries whatever host it saw -- and against a cloud

@@ -30,6 +30,12 @@ export type AssistantStep = {
 
 export type AssistantTurn = { role: "user" | "assistant"; content: string }
 export type AssistantSource = "apim" | "github-copilot"
+export type AssistantApiFormat = "openai_chat" | "openai_responses" | "anthropic_messages"
+export type AssistantSettingsWrite = {
+  model_id: string | null
+  auto_title: boolean
+  api_format?: AssistantApiFormat | null
+}
 
 export type AssistantReply = {
   conversation_id: string
@@ -99,11 +105,17 @@ export type AssistantModelChoice = {
   runtime_name: string
   input_cost_per_million: number | null
   output_cost_per_million: number | null
+  api_formats?: AssistantApiFormat[]
 }
 
 export type AssistantSettings = {
   model_id: string | null
   auto_title: boolean
+  api_format?: AssistantApiFormat | null
+  api_available?: boolean
+  effective_api_format?: AssistantApiFormat | null
+  effective_api_path?: string | null
+  available_api_formats?: AssistantApiFormat[]
   effective_model_id: string | null
   effective_model_name: string | null
   model_available: boolean

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time as clock
 from collections.abc import Mapping, Sequence
@@ -13,13 +14,16 @@ from psycopg_pool import ConnectionPool
 
 from ..domain.anomaly_engine import evaluate_anomaly_rules
 from ..domain.application_access import UsageApplicationAttribution
+from ..domain.enterprise import historical_entity_catalog
 from ..domain.models import (
     ApimCacheReadBucket,
     ModelIdentity,
     ModelPrice,
     ReconciledUsage,
     TokenUsageRecord,
+    UsageQueryEntityCatalog,
 )
+from .personal_usage import PostgreSqlPersonalUsageRepositoryMixin
 from .repository_applications import PostgreSqlApplicationRepositoryMixin
 from .repository_assistant import PostgreSqlAssistantRepositoryMixin
 from .repository_billable_requests import PostgreSqlBillableRequestRepositoryMixin
@@ -60,6 +64,7 @@ _IDENTITY_CACHE_SECONDS = 60.0
 
 
 class PostgreSqlOpsDbProxy(
+    PostgreSqlPersonalUsageRepositoryMixin,
     PostgreSqlAssistantRepositoryMixin,
     PostgreSqlApplicationRepositoryMixin,
     PostgreSqlBudgetRepositoryMixin,
@@ -300,9 +305,7 @@ class PostgreSqlOpsDbProxy(
                 values,
             )
             if application is not None:
-                self._write_usage_application_attribution(
-                    connection, values["id"], application
-                )
+                self._write_usage_application_attribution(connection, values["id"], application)
 
     def model_prices(self) -> dict[str, ModelPrice]:
         """Registry unit prices keyed by both registry id and model key.
@@ -578,7 +581,7 @@ class PostgreSqlOpsDbProxy(
             rows = connection.execute(
                 f"""SELECT dimension_value, SUM(cache_read_tokens)::BIGINT AS cache_read_tokens
                     FROM apim_cache_read_hourly
-                    WHERE {' AND '.join(clauses)}
+                    WHERE {" AND ".join(clauses)}
                     GROUP BY dimension_value""",
                 parameters,
             ).fetchall()
@@ -730,8 +733,7 @@ class PostgreSqlOpsDbProxy(
             parameters,
         ).fetchall()
         return {
-            (row["bucket_start"], str(row["dimension_value"])): int(row["delta"])
-            for row in rows
+            (row["bucket_start"], str(row["dimension_value"])): int(row["delta"]) for row in rows
         }
 
     def overview(self, timezone: str) -> dict[str, Any]:
@@ -745,6 +747,32 @@ class PostgreSqlOpsDbProxy(
     def _filter_sql(filters: UsageFilters, *, alias: str = "usage") -> tuple[str, list[Any]]:
         clauses = [f"{alias}.usage_domain = 'apim'"]
         parameters: list[Any] = []
+        if filters.allowed_department_ids is not None:
+            clauses.append(f"{alias}.department_id = ANY(%s)")
+            parameters.append(list(filters.allowed_department_ids))
+        if filters.data_scope is not None:
+            clauses.append(f"({alias}.department_id=ANY(%s) OR {alias}.user_id=ANY(%s))")
+            parameters.extend([
+                list(filters.data_scope.department_ids), list(filters.data_scope.user_ids),
+            ])
+        if filters.directory_scope is not None:
+            scope = filters.directory_scope
+            clauses.append(
+                f"""(CASE
+                  WHEN {alias}.organization_id='unattributed'
+                    OR {alias}.department_id='unattributed' THEN 'unattributed'
+                  WHEN {alias}.organization_id=ANY(%s) OR {alias}.department_id=ANY(%s)
+                    OR {alias}.user_id=ANY(%s) THEN 'archived'
+                  WHEN {alias}.organization_id=ANY(%s)
+                    AND (%s::jsonb ->> {alias}.department_id)={alias}.organization_id
+                    THEN 'active'
+                  ELSE 'historical' END)=ANY(%s)"""
+            )
+            parameters.extend([
+                list(scope.archived_organizations), list(scope.archived_departments),
+                list(scope.archived_users), list(scope.active_organizations),
+                json.dumps(dict(scope.active_departments)), list(scope.statuses),
+            ])
         for column, value in (
             ("organization_id", filters.organization_id),
             ("department_id", filters.department_id),
@@ -887,7 +915,7 @@ class PostgreSqlOpsDbProxy(
                     )
                     SELECT
                         {id_field} AS id,
-                        {name_field} AS name,
+                        (array_agg({name_field} ORDER BY ts DESC, scoped.id DESC))[1] AS name,
                         SUM(input_tokens + cached_tokens + output_tokens)::BIGINT AS total_tokens,
                         SUM(GREATEST(cached_tokens - cache_write_tokens, 0))::BIGINT
                             AS cache_read_tokens,
@@ -902,7 +930,7 @@ class PostgreSqlOpsDbProxy(
                             ROUND(100.0 * SUM(estimated_cost) / total.cost, 2)
                         END::DOUBLE PRECISION AS share_percent
                     FROM scoped CROSS JOIN total
-                    GROUP BY {id_field}, {name_field}, total.cost
+                    GROUP BY {id_field}, total.cost
                     ORDER BY total_tokens DESC, name
                     LIMIT 100""",
                     [from_, to, *filter_parameters],
@@ -931,13 +959,13 @@ class PostgreSqlOpsDbProxy(
                 f"""SELECT
                         {id_field} AS parent_id,
                         {split_id} AS id,
-                        {split_name} AS name,
+                        (array_agg({split_name} ORDER BY usage.ts DESC, usage.id DESC))[1] AS name,
                         SUM(input_tokens + cached_tokens + output_tokens)::BIGINT AS total_tokens,
                         COUNT(*)::BIGINT AS total_requests
                     FROM token_usage usage
                     WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}
                         AND {id_field} = ANY(%s)
-                    GROUP BY 1, 2, 3
+                    GROUP BY 1, 2
                     ORDER BY total_tokens DESC""",
                 [from_, to, *filter_parameters, [str(row["id"]) for row in rows]],
             ).fetchall()
@@ -1018,6 +1046,35 @@ class PostgreSqlOpsDbProxy(
                 (request_id, request_id, request_id),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def historical_entities(
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+    ) -> UsageQueryEntityCatalog:
+        filter_sql, parameters = self._filter_sql(filters)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT ON (dimension.scope_type,dimension.scope_id,
+                                         dimension.parent_scope_id)
+                      dimension.scope_type,dimension.scope_id,dimension.scope_name,
+                      dimension.parent_scope_id,usage.ts AS observed_at,usage.id AS observation_id
+                    FROM token_usage usage CROSS JOIN LATERAL (VALUES
+                      ('organization',usage.organization_id,usage.organization,NULL::text),
+                      ('department',usage.department_id,usage.department,usage.organization_id),
+                      ('project',usage.project_id,usage.project,usage.department_id),
+                      ('agent',usage.agent_id,usage.agent,usage.project_id),
+                      ('user',usage.user_id,usage.user_ref,usage.department_id)
+                    ) dimension(scope_type,scope_id,scope_name,parent_scope_id)
+                    WHERE usage.ts>=%s AND usage.ts<%s{filter_sql}
+                    ORDER BY dimension.scope_type,dimension.scope_id,dimension.parent_scope_id,
+                             usage.ts DESC,usage.id DESC""",
+                [from_, to, *parameters],
+            ).fetchall()
+        return historical_entity_catalog(sorted(
+            rows, key=lambda row: (row["observed_at"], row["observation_id"]), reverse=True,
+        ))
 
     def observed_users(self) -> Sequence[dict[str, Any]]:
         """People who actually called the gateway, newest attribution wins.

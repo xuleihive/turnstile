@@ -2,42 +2,51 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query"
 
 import { cachePolicies } from "../../api/cache-policies"
 import { resolveTimezone } from "../../lib/timezone"
+import { usageFacetWindow, usageSelection } from "../../lib/usage-filter-scope"
 import { dataSource, usageWindow } from "./api"
 import type {
   DistributionDimension,
   PeopleBudgetFilter,
   TrendDimension,
   UsageFilters,
+  UsageDirectoryStatus,
 } from "./types"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
 type UsageScope = {
   days: number
-  organizationId: string | null
-  departmentId: string | null
-  projectId: string | null
-  agentId: string | null
-  modelId: string | null
-  userId: string | null
+  organizationId: string[] | null
+  departmentId: string[] | null
+  projectId: string[] | null
+  agentId: string[] | null
+  modelId: string[] | null
+  userId: string[] | null
   runtime: string[] | null
   statusCode: number | null
+  directoryStatus: UsageDirectoryStatus[] | null
 }
 
 function scopeFromFilters(filters: UsageFilters): UsageScope {
   const duration = Date.parse(filters.to) - Date.parse(filters.from)
+  const selection = (value: string | string[] | undefined) => {
+    const normalized = usageSelection(value)
+    return normalized.length ? normalized : null
+  }
   return {
     days: Math.max(1, Math.round(duration / DAY_MS)),
-    organizationId: filters.organization_id ?? null,
-    departmentId: filters.department_id ?? null,
-    projectId: filters.project_id ?? null,
-    agentId: filters.agent_id ?? null,
-    modelId: filters.model_id ?? null,
-    userId: filters.user_id ?? null,
+    organizationId: selection(filters.organization_id),
+    departmentId: selection(filters.department_id),
+    projectId: selection(filters.project_id),
+    agentId: selection(filters.agent_id),
+    modelId: selection(filters.model_id),
+    userId: selection(filters.user_id),
     // Sorted so two selections of the same channel share one cache entry regardless of the
     // order the registry happened to return its runtimes in.
     runtime: filters.runtime?.length ? [...filters.runtime].sort() : null,
     statusCode: filters.status_code ?? null,
+    directoryStatus: filters.directory_status?.length
+      ? [...new Set(filters.directory_status)].sort() : null,
   }
 }
 
@@ -52,6 +61,7 @@ function filtersFromScope(scope: UsageScope): UsageFilters {
     user_id: scope.userId ?? undefined,
     runtime: scope.runtime ?? undefined,
     status_code: scope.statusCode ?? undefined,
+    directory_status: scope.directoryStatus ?? undefined,
   }
 }
 
@@ -66,14 +76,15 @@ export function withWindowDays(filters: UsageFilters, days: number): UsageFilter
 // production traffic, 98.8% of tokens have no project, so ranking by it ranks 1.2% of the
 // spend. The filter and the column stay in the data path for customers who do send it.
 export function trendDimensionForFilters(filters: UsageFilters): TrendDimension {
-  if (filters.agent_id || filters.user_id) return "model"
-  if (filters.department_id) return "agent"
+  if (usageSelection(filters.agent_id).length || usageSelection(filters.user_id).length) return "model"
+  if (usageSelection(filters.department_id).length) return "agent"
   return "department"
 }
 
 export const finopsKeys = {
   all: ["finops"] as const,
   entities: ["reference", "enterprise-entities"] as const,
+  queryEntities: (filters: UsageFilters) => ["reference", "enterprise-query-entities", scopeFromFilters(usageFacetWindow(filters))] as const,
   registry: ["reference", "model-registry"] as const,
   modelBackendPool: (id: string) => ["model-platform", "model-backend-pool", id] as const,
   gatewayPublications: ["control-plane", "gateway-publications"] as const,
@@ -119,6 +130,11 @@ export const finopsQueries = {
   entities: () => queryOptions({
     queryKey: finopsKeys.entities,
     queryFn: dataSource.entities,
+    ...cachePolicies.reference,
+  }),
+  queryEntities: (filters: UsageFilters) => queryOptions({
+    queryKey: finopsKeys.queryEntities(filters),
+    queryFn: () => dataSource.queryEntities(usageFacetWindow(filters)),
     ...cachePolicies.reference,
   }),
   registry: () => queryOptions({

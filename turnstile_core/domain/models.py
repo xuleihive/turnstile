@@ -249,6 +249,21 @@ class EnterpriseEntityCatalog(StrictModel):
     invocation_testers: list[EnterpriseEntity] = Field(default_factory=list)
 
 
+class UsageQueryEntity(EnterpriseEntity):
+    directory_status: Literal["active", "archived", "historical", "unattributed"]
+    source: Literal["directory", "historical"]
+    parent_ids: list[str] = Field(default_factory=list)
+
+
+class UsageQueryEntityCatalog(StrictModel):
+    organizations: list[UsageQueryEntity]
+    departments: list[UsageQueryEntity]
+    projects: list[UsageQueryEntity]
+    agents: list[UsageQueryEntity]
+    users: list[UsageQueryEntity]
+    invocation_testers: list[EnterpriseEntity] = Field(default_factory=list)
+
+
 BudgetScopeType = Literal["organization", "department", "user"]
 BudgetStatus = Literal["unallocated", "healthy", "warning", "exceeded"]
 PeopleBudgetFilter = Literal["all", "assigned", "unallocated", "healthy", "warning", "exceeded"]
@@ -345,6 +360,7 @@ class DepartmentEnforcementAuditEvent(StrictModel):
 
 
 class TokenBudgetResponse(StrictModel):
+    coverage: Literal["global", "department"] = "global"
     period: str
     period_start: date
     period_end: date

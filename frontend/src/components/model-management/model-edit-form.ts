@@ -1,8 +1,13 @@
-import type { ManagedModel, PriceCatalogOption, PriceSource } from "../../data-sources/apim/types"
+import type { ManagedModel, PriceCatalogOption, PriceSource, PriceSyncResponse } from "../../data-sources/apim/types"
+
+export function pricingSyncSummary(result: PriceSyncResponse): string {
+  return `全部 ${result.total} 个模型 · 已更新 ${result.updated} · 无变化 ${result.unchanged} · 手动跳过 ${result.skipped_manual}`
+}
 
 export type ModelEditDraft = {
   displayName: string
   contextWindow: string
+  contextOrigin?: "user" | "catalog"
   inputPrice: string
   outputPrice: string
   cacheReadPrice: string
@@ -17,6 +22,8 @@ export type ModelEditDraft = {
   // Blank inherits the connection's discount. Kept as a string so an empty box stays empty
   // instead of becoming a zero.
   discountPercent: string
+  priceEntryDigest: string
+  allowUnpriced: boolean
 }
 
 export type ModelEditError =
@@ -38,9 +45,11 @@ export function createModelEditDraft(model: ManagedModel): ModelEditDraft {
     allowedRoles: [...model.allowed_roles],
     enabled: model.enabled,
     isDefault: model.is_default,
-    priceSource: model.price_source ?? "manual",
+    priceSource: model.price_source_configured === false ? "models_dev" : model.price_source ?? "models_dev",
     priceReference: model.price_reference ?? "",
     discountPercent: model.price_discount_percent?.toString() ?? "",
+    priceEntryDigest: "",
+    allowUnpriced: false,
   }
 }
 
@@ -96,6 +105,7 @@ export function applyCatalogOption(
  */
 export function modelKeyFromReference(reference: string): string | null {
   const parts = reference.split(":")
+  if (parts[0] === "models_dev" && parts.length === 3) return reference
   return parts.length === 5 ? parts.slice(0, 3).join(":") : null
 }
 
@@ -110,7 +120,7 @@ export function discountedRate(listPrice: number, percent: number | null): numbe
  * which of the two it used.
  */
 export function resolveDiscount(
-  draft: ModelEditDraft,
+  draft: Pick<ModelEditDraft, "discountPercent">,
   connectionPercent: number | null,
 ): { percent: number | null; inherited: boolean } {
   const own = draft.discountPercent.trim()
@@ -119,10 +129,10 @@ export function resolveDiscount(
 }
 
 export function modelEditHasChanges(initial: ModelEditDraft, draft: ModelEditDraft): boolean {
-  const comparable = (value: ModelEditDraft) => ({
-    ...value,
-    allowedRoles: [...value.allowedRoles].sort(),
-  })
+  const comparable = (value: ModelEditDraft) => {
+    const { contextOrigin: _contextOrigin, ...fields } = value
+    return { ...fields, allowedRoles: [...value.allowedRoles].sort() }
+  }
   return JSON.stringify(comparable(initial)) !== JSON.stringify(comparable(draft))
 }
 
@@ -137,7 +147,8 @@ export function validateModelEdit(draft: ModelEditDraft): ModelEditError | null 
   if (prices.some((value) => value.trim() && (!Number.isFinite(Number(value)) || Number(value) < 0))) {
     return "prices"
   }
-  if (draft.priceSource !== "manual" && !draft.priceReference.trim()) return "price_reference"
+  if (draft.priceSource !== "manual" && !draft.priceReference.trim()
+    && !(draft.priceSource === "models_dev" && draft.allowUnpriced)) return "price_reference"
   const discount = draft.discountPercent.trim()
   if (discount && (!Number.isFinite(Number(discount)) || Number(discount) <= 0 || Number(discount) > 100)) {
     return "discount"
@@ -173,5 +184,9 @@ export function modelEditPayload(model: ManagedModel, draft: ModelEditDraft) {
     price_source: draft.priceSource,
     price_reference: draft.priceSource === "manual" ? null : draft.priceReference.trim(),
     price_discount_percent: optionalNumber(draft.discountPercent),
+    ...(draft.priceSource === "models_dev" ? {
+      price_entry_digest: draft.priceEntryDigest || null,
+      allow_unpriced: draft.allowUnpriced,
+    } : {}),
   }
 }

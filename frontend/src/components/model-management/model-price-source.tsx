@@ -1,5 +1,5 @@
 import { AlertTriangle, LoaderCircle, RefreshCw, Search } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { dataSource } from "../../data-sources/apim/api"
 import type {
@@ -11,6 +11,7 @@ import type {
 import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { FieldHelp } from "./field-help"
+import { PublicModelPricing } from "./public-model-pricing"
 import {
   applyCatalogOption,
   discountedRate,
@@ -20,6 +21,7 @@ import {
 } from "./model-edit-form"
 
 const SOURCE_LABEL: Record<string, string> = {
+  models_dev: "从公网同步定价",
   manual: "手工填写",
   azure_retail: "Azure 零售价",
   anthropic: "Anthropic 列表价",
@@ -66,27 +68,48 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   // picker and a stored reference and helpfully puts the old choice straight back, so the button
   // appears to do nothing.
   const [reselecting, setReselecting] = useState(false)
+  const generation = useRef({ search: 0, options: 0 })
+  const currentSource = useRef(draft.priceSource)
+  currentSource.current = draft.priceSource
+  const imageGeneration = model.capabilities.includes("image_generation")
 
-  const following = draft.priceSource !== "manual"
+  const following = draft.priceSource !== "manual" && draft.priceSource !== "models_dev"
   const discount = resolveDiscount(draft, connectionDiscount)
   const storedModelKey = draft.priceReference ? modelKeyFromReference(draft.priceReference) : null
+
+  useEffect(() => {
+    setMatches(null)
+    setChosenModel(null)
+    setDetails(null)
+    setError(null)
+    setSearching(false)
+    setLoadingOptions(false)
+    setReselecting(false)
+    return () => {
+      generation.current.search++
+      generation.current.options++
+    }
+  }, [draft.priceSource, model.id])
 
   // Reopening the dialog on a model that already follows a list price should show what it
   // follows, not an empty picker.
   useEffect(() => {
-    if (!following || chosenModel || !storedModelKey || details || reselecting) return
+    if (!following || chosenModel || !storedModelKey || details || reselecting
+      || !storedModelKey.startsWith(`${draft.priceSource}:`)) return
     let cancelled = false
+    const source = draft.priceSource
     setLoadingOptions(true)
     dataSource.priceCatalogOptions(storedModelKey)
       .then((response) => {
-        if (cancelled) return
+        if (cancelled || currentSource.current !== source
+          || response.model_entry.source !== source) return
         setChosenModel(response.model_entry)
         setDetails(response)
       })
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setLoadingOptions(false) })
     return () => { cancelled = true }
-  }, [following, storedModelKey, chosenModel, details, reselecting])
+  }, [following, draft.priceSource, storedModelKey, chosenModel, details, reselecting])
 
   // A stored reference names one region, while an option covers every region charging alike, so
   // matching on the option's own reference alone would fail to recognise a saved choice that is
@@ -110,29 +133,41 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   // Re-pricing on a discount change keeps the rates honest while the dialog is open; without it
   // the box would say 66% while the rates below still showed the old figures.
   useEffect(() => {
-    if (!following || !selectedOption || !chosenModel || !details?.complete) return
-    setDraft((current) =>
-      applyCatalogOption(current, chosenModel.source, selectedOption, discount.percent))
+    if (!following || !selectedOption || !chosenModel || !details?.complete
+      || chosenModel.source !== draft.priceSource) return
+    setDraft((current) => current.priceSource === chosenModel.source
+      ? applyCatalogOption(current, current.priceSource, selectedOption, discount.percent) : current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.discountPercent])
 
   const search = async () => {
+    const source = draft.priceSource
+    const token = ++generation.current.search
+    const active = () => token === generation.current.search && currentSource.current === source
     setSearching(true)
     setError(null)
     try {
-      const response = await dataSource.priceCatalogModels(query)
-      setMatches(response.models)
-      if (response.unavailable.length) {
-        setError(`这些来源暂时读不到：${response.unavailable.join("、")}`)
+      const response = await dataSource.priceCatalogModels(query, source)
+      if (!active()) return
+      setMatches(response.models.filter(candidate => candidate.source === source))
+      const unavailable = response.unavailable.filter(value => value === source)
+      if (unavailable.length) {
+        setError(`这些来源暂时读不到：${unavailable.join("、")}`)
       }
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "价目表读取失败")
+      if (active()) setError(failure instanceof Error ? failure.message : "价目表读取失败")
     } finally {
-      setSearching(false)
+      if (active()) setSearching(false)
     }
   }
 
   const chooseModel = async (candidate: PriceCatalogModel) => {
+    const source = draft.priceSource
+    if (candidate.source !== source || !candidate.key.startsWith(`${source}:`)) return
+    const token = ++generation.current.options
+    const active = () => token === generation.current.options && currentSource.current === source
+    generation.current.search++
+    setSearching(false)
     setReselecting(false)
     setChosenModel(candidate)
     setDetails(null)
@@ -141,48 +176,75 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
     setError(null)
     try {
       const response = await dataSource.priceCatalogOptions(candidate.key)
+      if (!active() || response.model_entry.source !== source
+        || response.model_entry.key !== candidate.key) return
       setDetails(response)
       const first = response.options[0]
-      if (response.complete && first) {
-        setDraft((current) =>
-          applyCatalogOption(current, candidate.source, first, discount.percent))
+      if (response.complete && first?.reference.startsWith(`${source}:`)) {
+        setDraft((current) => current.priceSource === source
+          ? applyCatalogOption(current, source, first, discount.percent) : current)
       }
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "价目表读取失败")
+      if (active()) setError(failure instanceof Error ? failure.message : "价目表读取失败")
     } finally {
-      setLoadingOptions(false)
+      if (active()) setLoadingOptions(false)
     }
   }
 
   const chooseOption = (option: PriceCatalogOption) => {
-    if (!chosenModel || !details?.complete) return
-    setDraft((current) =>
-      applyCatalogOption(current, chosenModel.source, option, discount.percent))
+    if (!chosenModel || !details?.complete || chosenModel.source !== draft.priceSource
+      || !option.reference.startsWith(`${draft.priceSource}:`)) return
+    setDraft((current) => current.priceSource === chosenModel.source
+      ? applyCatalogOption(current, current.priceSource, option, discount.percent) : current)
   }
 
   return <div className="model-price-source">
     <div className="registry-field-label-row">
       <span className="registry-field-label">价格来源</span>
       <FieldHelp>
-        「跟随官方价」按 官方价 × 折扣 自动维护单价；折扣由你维护，不会被任何来源覆盖。
+        {draft.priceSource === "models_dev"
+          ? "公开参考价用于费用估算，不代表实际账单。"
+          : "「跟随官方价」按 官方价 × 折扣 自动维护单价；折扣由你维护，不会被任何来源覆盖。"}
       </FieldHelp>
     </div>
     <div className="model-price-source-choice" role="radiogroup" aria-label="价格来源">
-      {(["manual", "azure_retail", "anthropic"] as const).map((source) => (
+      {(imageGeneration ? ["models_dev", "manual"] as const
+        : ["models_dev", "manual", "azure_retail", "anthropic"] as const).map((source) => (
         <label key={source} className="model-editor-checkbox">
           <input type="radio" name="price-source" value={source} disabled={busy}
             checked={draft.priceSource === source}
-            onChange={() => setDraft((current) => ({ ...current, priceSource: source }))} />
+            onChange={() => {
+              generation.current.search++
+              generation.current.options++
+              currentSource.current = source
+              setDraft((current) => ({
+                ...current, priceSource: source,
+                priceReference: source === current.priceSource ? current.priceReference : "",
+                priceEntryDigest: "", allowUnpriced: false,
+              }))
+            }} />
           <span>{SOURCE_LABEL[source]}</span>
         </label>
       ))}
     </div>
+    {draft.priceSource === "models_dev" && <PublicModelPricing
+      request={{ model_id: model.id, runtime_id: model.runtime_id,
+        operation: imageGeneration ? "image_generation" : "chat" }}
+      draft={draft} busy={busy}
+      onChange={updater => setDraft(current => ({ ...current, ...updater(current) }))} />}
+    {draft.priceSource === "models_dev" && <DiscountField
+      draft={draft} busy={busy} connectionDiscount={connectionDiscount} discount={discount}
+      setDraft={updater => setDraft(current => ({ ...current, ...updater(current) }))} />}
 
     {following && <div className="model-price-follow">
       <ModelStep
         busy={busy} query={query} setQuery={setQuery} searching={searching}
         matches={matches} chosen={chosenModel} onSearch={search} onChoose={chooseModel}
         onClear={() => {
+          generation.current.options++
+          generation.current.search++
+          setLoadingOptions(false)
+          setSearching(false)
           setReselecting(true)
           setChosenModel(null); setDetails(null); setMatches(null)
         }} />
@@ -201,7 +263,8 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
         busy={busy || !details?.complete} onChoose={chooseOption} />}
 
       <DiscountField
-        draft={draft} setDraft={setDraft} busy={busy || details?.complete === false}
+        draft={draft} setDraft={updater => setDraft(current => ({ ...current, ...updater(current) }))}
+        busy={busy || details?.complete === false}
         connectionDiscount={connectionDiscount} discount={discount} />
 
       <PriceArithmetic model={model} draft={draft} percent={discount.percent}
@@ -345,9 +408,9 @@ function RegionStep({ peers, selected, busy, onChoose }: {
   </div>
 }
 
-function DiscountField({ draft, setDraft, busy, connectionDiscount, discount }: {
-  draft: ModelEditDraft
-  setDraft: (updater: (current: ModelEditDraft) => ModelEditDraft) => void
+export function DiscountField({ draft, setDraft, busy, connectionDiscount, discount }: {
+  draft: Pick<ModelEditDraft, "discountPercent"> & Partial<Pick<ModelEditDraft, "priceSource">>
+  setDraft: (updater: (current: Pick<ModelEditDraft, "discountPercent">) => Pick<ModelEditDraft, "discountPercent">) => void
   busy: boolean
   connectionDiscount: number | null
   discount: { percent: number | null; inherited: boolean }
@@ -357,7 +420,9 @@ function DiscountField({ draft, setDraft, busy, connectionDiscount, discount }: 
       <label htmlFor="model-discount" className="registry-field-label">折扣</label>
       <span className="model-editor-unit" data-no-localize>%</span>
       <FieldHelp>
-        官方价乘以这个百分比得到实际单价。90 表示九折。留空则继承连接的折扣。
+        {draft.priceSource === "models_dev"
+          ? "参考价乘以此百分比。留空继承连接折扣。"
+          : "官方价乘以这个百分比得到实际单价。90 表示九折。留空则继承连接的折扣。"}
       </FieldHelp>
     </div>
     <Input id="model-discount" type="number" inputMode="decimal" min={0} max={100} step="any"
@@ -368,7 +433,7 @@ function DiscountField({ draft, setDraft, busy, connectionDiscount, discount }: 
         setDraft((current) => ({ ...current, discountPercent: event.target.value }))} />
     <p className="publication-form-note">
       {discount.percent === null
-        ? "当前按官方价原价计费。"
+        ? draft.priceSource === "models_dev" ? "当前按公开参考原价计费。" : "当前按官方价原价计费。"
         : discount.inherited
           ? `当前继承连接折扣 ${discount.percent}%。`
           : `当前使用本模型单独设置的 ${discount.percent}%。`}

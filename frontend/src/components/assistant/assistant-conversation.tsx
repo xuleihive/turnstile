@@ -102,7 +102,7 @@ export function AssistantConversation({ controller, onPin }: {
             </>
             : <>
               <p>✨ 它了解你的组织——<b>部门、项目、智能体、模型。</b></p>
-              <p>让它排一份成本榜、看看趋势，或把图表固定到导航栏。</p>
+              <p>成本排名、用量趋势与预算分析</p>
             </>}
         </div>
         <div className="assistant-starters">
@@ -175,7 +175,7 @@ export function AssistantConversation({ controller, onPin }: {
             to ask. */}
         <span className="assistant-agent-chip">
           <Sparkles size={12} />
-          <span>FinOps Assistant</span>
+          <span>FinOps助手</span>
         </span>
         <button
           type="button"

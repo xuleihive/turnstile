@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -8,9 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from turnstile_core.domain.enterprise import (
     configured_invocation_testers,
-    enterprise_catalog,
-    merge_application_owners,
-    merge_observed_users,
 )
 from turnstile_core.domain.models import (
     AuditFinding,
@@ -30,15 +27,27 @@ from turnstile_core.domain.models import (
     TrendResponse,
     UsageAnomaly,
     UsageAnomalyListResponse,
+    UsageQueryEntityCatalog,
     UsageRequestDetail,
     UsageRequestListResponse,
     UsageRequestSummary,
 )
 from turnstile_core.persistence.repository import UsageFilters
+from turnstile_core.persistence.repository_support import (
+    USAGE_DIRECTORY_STATUSES,
+    UsageDirectoryStatus,
+)
+from turnstile_core.services.directory_catalog import catalog_for
+from turnstile_core.services.usage_directory import (
+    scoped_usage_catalog,
+    usage_directory_scope,
+    usage_query_catalog,
+)
 
 from .dependencies import Repository
 from .session import (
     Config,
+    CurrentSession,
     OwnerSession,
     require_allowed_write_origin,
     require_authenticated_session,
@@ -53,24 +62,43 @@ router = APIRouter(
 
 
 def usage_filters(
-    organization_id: str | None = None,
-    department_id: str | None = None,
-    project_id: str | None = None,
-    agent_id: str | None = None,
-    model_id: str | None = None,
-    user_id: str | None = None,
+    identity: CurrentSession,
+    repository: Repository,
+    settings: Config,
+    organization_id: Annotated[list[str] | None, Query(max_length=100)] = None,
+    department_id: Annotated[list[str] | None, Query(max_length=100)] = None,
+    project_id: Annotated[list[str] | None, Query(max_length=100)] = None,
+    agent_id: Annotated[list[str] | None, Query(max_length=100)] = None,
+    model_id: Annotated[list[str] | None, Query(max_length=100)] = None,
+    user_id: Annotated[list[str] | None, Query(max_length=100)] = None,
     runtime: Annotated[list[str] | None, Query()] = None,
     status_code: Annotated[int | None, Query(ge=100, le=599)] = None,
+    directory_status: Annotated[list[UsageDirectoryStatus] | None, Query(max_length=4)] = None,
 ) -> UsageFilters:
+    directory_scope = None
+    if directory_status and set(directory_status) != set(USAGE_DIRECTORY_STATUSES):
+        allowed = None if identity.data_scope is not None else identity.directory_department_ids
+        current = scoped_usage_catalog(
+            catalog_for(repository, settings, allowed_department_ids=allowed), allowed,
+        )
+        complete = scoped_usage_catalog(catalog_for(
+            repository, settings, include_inactive=True, allowed_department_ids=allowed,
+        ), allowed)
+        directory_scope = usage_directory_scope(current, complete, tuple(directory_status))
     return UsageFilters(
-        organization_id=organization_id,
-        department_id=department_id,
-        project_id=project_id,
-        agent_id=agent_id,
-        model_id=model_id,
-        user_id=user_id,
+        organization_id=tuple(sorted(set(organization_id))) if organization_id else None,
+        department_id=tuple(sorted(set(department_id))) if department_id else None,
+        project_id=tuple(sorted(set(project_id))) if project_id else None,
+        agent_id=tuple(sorted(set(agent_id))) if agent_id else None,
+        model_id=tuple(sorted(set(model_id))) if model_id else None,
+        user_id=tuple(sorted(set(user_id))) if user_id else None,
         runtime=tuple(runtime) if runtime else None,
         status_code=status_code,
+        allowed_department_ids=(
+            None if identity.data_scope is not None else identity.directory_department_ids
+        ),
+        directory_scope=directory_scope,
+        data_scope=identity.data_scope,
     )
 
 
@@ -79,12 +107,30 @@ UsageFilterSet = Annotated[UsageFilters, Depends(usage_filters)]
 
 @router.get("/api/v1/enterprise/entities", response_model=EnterpriseEntityCatalog)
 def get_enterprise_entities(
-    repository: Repository, settings: Config
+    repository: Repository,
+    settings: Config,
+    identity: CurrentSession,
 ) -> EnterpriseEntityCatalog:
-    catalog = merge_application_owners(
-        merge_observed_users(enterprise_catalog(), repository.observed_users()),
-        repository.application_owners(),
-    )
+    catalog = catalog_for(repository, settings)
+    if identity.directory_department_ids is not None and identity.data_scope is None:
+        allowed = set(identity.directory_department_ids)
+        departments = [row for row in catalog.departments if row.id in allowed]
+        organization_ids = {row.parent_id for row in departments}
+        projects = [row for row in catalog.projects if row.parent_id in allowed]
+        project_ids = {row.id for row in projects}
+        catalog = catalog.model_copy(
+            update={
+                "organizations": [
+                    row for row in catalog.organizations if row.id in organization_ids
+                ],
+                "departments": departments,
+                "projects": projects,
+                "agents": [row for row in catalog.agents if row.parent_id in project_ids],
+                "users": [row for row in catalog.users if row.parent_id in allowed],
+            }
+        )
+    if identity.data_scope is not None:
+        catalog = identity.data_scope.filter_catalog(catalog)
     return catalog.model_copy(
         update={
             "invocation_testers": configured_invocation_testers(
@@ -92,6 +138,37 @@ def get_enterprise_entities(
             )
         }
     )
+
+
+@router.get("/api/v1/enterprise/query-entities", response_model=UsageQueryEntityCatalog)
+def get_query_entities(
+    repository: Repository,
+    settings: Config,
+    identity: CurrentSession,
+    filters: UsageFilterSet,
+    from_: Annotated[datetime, Query(alias="from")],
+    to: datetime,
+    directory_status: Annotated[list[UsageDirectoryStatus] | None, Query(max_length=4)] = None,
+) -> UsageQueryEntityCatalog:
+    if from_.tzinfo is None or to.tzinfo is None or to <= from_ or to - from_ > timedelta(days=366):
+        raise HTTPException(
+            status_code=422, detail="Select an aware query window of at most 366 days"
+        )
+    allowed = None if identity.data_scope is not None else identity.directory_department_ids
+    current = scoped_usage_catalog(
+        catalog_for(repository, settings, allowed_department_ids=allowed), allowed,
+    )
+    complete = scoped_usage_catalog(catalog_for(
+        repository, settings, include_inactive=True, allowed_department_ids=allowed,
+    ), allowed)
+    historical = repository.historical_entities(from_, to, filters)
+    # Query-only snapshots never become selectable invocation identities.
+    result = usage_query_catalog(
+        current, complete, historical, tuple(directory_status or USAGE_DIRECTORY_STATUSES),
+    )
+    if identity.data_scope is not None:
+        result = identity.data_scope.filter_catalog(result)
+    return result
 
 
 @router.get(
@@ -121,9 +198,7 @@ def get_distribution(
         "organization", "department", "project", "agent", "model", "user", "runtime"
     ],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    split_by: Literal[
-        "organization", "department", "project", "agent", "model", "user", "runtime"
-    ]
+    split_by: Literal["organization", "department", "project", "agent", "model", "user", "runtime"]
     | None = None,
 ) -> DistributionResponse:
     return DistributionResponse.model_validate(
@@ -131,9 +206,7 @@ def get_distribution(
             "from": from_,
             "to": to,
             "dimension": dimension,
-            "items": repository.distribution(
-                from_, to, dimension, filters, limit, split_by
-            ),
+            "items": repository.distribution(from_, to, dimension, filters, limit, split_by),
         }
     )
 
@@ -156,9 +229,21 @@ def list_usage_requests(
 
 
 @router.get("/api/v1/observability/requests/{request_id}", response_model=UsageRequestDetail)
-def get_usage_request(request_id: str, repository: Repository) -> UsageRequestDetail:
+def get_usage_request(
+    request_id: str,
+    repository: Repository,
+    identity: CurrentSession,
+) -> UsageRequestDetail:
     row = repository.get_usage_request(request_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Usage request not found")
+    if (
+        identity.data_scope is not None
+        and not identity.data_scope.allows(row["department_id"], row["user_id"])
+    ) or (
+        identity.data_scope is None and identity.directory_department_ids is not None
+        and row["department_id"] not in identity.directory_department_ids
+    ):
         raise HTTPException(status_code=404, detail="Usage request not found")
     return UsageRequestDetail.model_validate(row)
 
@@ -180,7 +265,13 @@ def list_usage_anomalies(
 
 
 @router.get("/api/v1/observability/overview", response_model=OverviewResponse)
-def get_overview(repository: Repository, timezone: str = "UTC") -> dict[str, object]:
+def get_overview(
+    repository: Repository,
+    identity: CurrentSession,
+    timezone: str = "UTC",
+) -> dict[str, object]:
+    if identity.directory_department_ids is not None:
+        raise HTTPException(status_code=403, detail="Use scoped executive overview")
     return repository.overview(timezone)
 
 
@@ -211,10 +302,16 @@ def get_trends(
 @router.get("/api/v1/observability/runs", response_model=RunListResponse)
 def list_runs(
     repository: Repository,
+    identity: CurrentSession,
     from_: Annotated[datetime, Query(alias="from")],
     to: datetime,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> RunListResponse:
+    if identity.directory_department_ids is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Run collections are not available to scoped viewers",
+        )
     rows = repository.list_runs(from_, to, limit)
     summaries = [{key: value for key, value in row.items() if key != "turns"} for row in rows]
     return RunListResponse(
@@ -224,7 +321,16 @@ def list_runs(
 
 
 @router.get("/api/v1/observability/runs/{run_id}", response_model=RunDetail)
-def get_run(run_id: str, repository: Repository) -> RunDetail:
+def get_run(
+    run_id: str,
+    repository: Repository,
+    identity: CurrentSession,
+) -> RunDetail:
+    if identity.directory_department_ids is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Run collections are not available to scoped viewers",
+        )
     row = repository.get_run(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -234,10 +340,13 @@ def get_run(run_id: str, repository: Repository) -> RunDetail:
 @router.get("/api/v1/observability/audit-findings", response_model=AuditFindingListResponse)
 def list_findings(
     repository: Repository,
+    identity: CurrentSession,
     from_: Annotated[datetime, Query(alias="from")],
     to: datetime,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> AuditFindingListResponse:
+    if identity.directory_department_ids is not None:
+        raise HTTPException(status_code=403, detail="Use scoped anomaly queries")
     rows = repository.list_findings(from_, to, limit)
     return AuditFindingListResponse(
         items=[AuditFinding.model_validate(row) for row in rows], page=PageInfo(next_cursor=None)
@@ -262,8 +371,12 @@ def update_finding(
     response_model=OptimizationEventListResponse,
 )
 def list_optimizations(
-    repository: Repository, limit: Annotated[int, Query(ge=1, le=200)] = 50
+    repository: Repository,
+    identity: CurrentSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> OptimizationEventListResponse:
+    if identity.directory_department_ids is not None:
+        raise HTTPException(status_code=403, detail="Optimization history is Owner-scoped")
     rows = repository.list_optimizations(limit)
     return OptimizationEventListResponse(
         items=[OptimizationEvent.model_validate(row) for row in rows],

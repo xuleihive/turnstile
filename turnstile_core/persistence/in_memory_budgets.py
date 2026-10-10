@@ -32,14 +32,33 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
     user_model_access_audit: list[dict[str, Any]]
     user_model_policies: dict[str, dict[str, Any]]
 
-    def list_token_budgets(self, period_start: date) -> list[dict[str, Any]]:
+    def list_token_budgets(
+        self,
+        period_start: date,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         return [
             row
-            for (row_period, _, _), row in self.token_budgets.items()
+            for (row_period, scope_type, scope_id), row in self.token_budgets.items()
             if row_period == period_start
+            and (user_id is None or (scope_type == "user" and scope_id == user_id))
+            and (
+                allowed_department_ids is None
+                or (scope_type == "department" and scope_id in allowed_department_ids)
+                or (scope_type == "user" and row["parent_scope_id"] in allowed_department_ids)
+            )
         ]
 
-    def token_usage_by_budget_scope(self, from_: datetime, to: datetime) -> list[dict[str, Any]]:
+    def token_usage_by_budget_scope(
+        self,
+        from_: datetime,
+        to: datetime,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         totals: dict[tuple[str, str], int] = {}
         users = {record.user_id for record in self.usage_records if record.usage_domain == "apim"}
         users.update(
@@ -50,15 +69,22 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         users.update(
             item.scope_id for item in self.billable_requests.values() if item.scope_type == "person"
         )
-        for user_id in users:
-            for row in self._confirmed_budget_usage("person", user_id):
+        for person_id in users:
+            if user_id is not None and person_id != user_id:
+                continue
+            for row in self._confirmed_budget_usage("person", person_id):
                 if not from_ <= row["ts"] < to:
                     continue
                 period = row["ts"].astimezone(UTC).date().replace(day=1)
-                person = self.token_budgets.get((period, "user", user_id), {})
+                person = self.token_budgets.get((period, "user", person_id), {})
                 department_id = (
                     row.get("department_id") or person.get("parent_scope_id") or "unattributed"
                 )
+                if (
+                    allowed_department_ids is not None
+                    and department_id not in allowed_department_ids
+                ):
+                    continue
                 department = self.token_budgets.get((period, "department", department_id), {})
                 organization_id = (
                     row.get("organization_id")
@@ -69,7 +95,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
                 for scope_type, scope_id in (
                     ("organization", organization_id),
                     ("department", department_id),
-                    ("user", user_id),
+                    ("user", person_id),
                 ):
                     if scope_id != "unattributed":
                         key = (scope_type, scope_id)
@@ -77,6 +103,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         return [
             {"scope_type": scope_type, "scope_id": scope_id, "used_tokens": used_tokens}
             for (scope_type, scope_id), used_tokens in totals.items()
+            if user_id is None or (scope_type == "user" and scope_id == user_id)
         ]
 
     def upsert_token_budget(
@@ -195,10 +222,30 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         }
         return dict(self.budget_roll_forward[period_start])
 
-    def list_token_budget_audit(self, period_start: date, limit: int) -> list[dict[str, Any]]:
-        return [row for row in self.token_budget_audit if row["period_start"] == period_start][
-            :limit
-        ]
+    def list_token_budget_audit(
+        self,
+        period_start: date,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            row
+            for row in self.token_budget_audit
+            if row["period_start"] == period_start
+            and (
+                allowed_department_ids is None
+                or (row["scope_type"] == "department" and row["scope_id"] in allowed_department_ids)
+                or (
+                    row["scope_type"] == "user"
+                    and self.token_budgets.get(
+                        (period_start, "user", row["scope_id"]),
+                        {},
+                    ).get("parent_scope_id")
+                    in allowed_department_ids
+                )
+            )
+        ][:limit]
 
     def list_user_model_policies(self, user_ids: Sequence[str]) -> list[dict[str, Any]]:
         return [
@@ -221,12 +268,17 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
             if row["user_id"] in selected and from_ <= row["changed_at"] < to
         ][:limit]
 
-    def list_department_enforcement(self) -> list[dict[str, Any]]:
+    def list_department_enforcement(
+        self,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         return [
             dict(row)
             for row in sorted(
                 self.department_enforcement.values(), key=lambda r: r["department_id"]
             )
+            if allowed_department_ids is None or row["department_id"] in allowed_department_ids
         ]
 
     def set_department_enforcement(self, department_id: str, mode: str, changed_by: str) -> bool:
@@ -255,12 +307,18 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         return True
 
     def list_department_enforcement_audit(
-        self, from_: datetime, to: datetime, limit: int
+        self,
+        from_: datetime,
+        to: datetime,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         return [
             dict(row)
             for row in self.department_enforcement_audit
             if from_ <= row["changed_at"] < to
+            and (allowed_department_ids is None or row["department_id"] in allowed_department_ids)
         ][:limit]
 
     def budget_ledger_people(self, period_start: date) -> list[dict[str, Any]]:

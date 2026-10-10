@@ -352,6 +352,11 @@ schemas:
     - history
     - enforcement
     properties:
+      coverage:
+        type: string
+        enum: [global, department]
+        default: global
+        description: Department-scoped organization rows are visible subtotals, not global limits or usage.
       period:
         type: string
         pattern: ^\d{4}-(0[1-9]|1[0-2])$

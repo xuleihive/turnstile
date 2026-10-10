@@ -66,21 +66,30 @@ def staging_root(tmp_path: Path) -> Path:
     root = tmp_path / "repository"
     for relative in (
         "backend",
+        "backend/http",
         "turnstile_core",
         "frontend/dist",
         "migrations",
         "functions/telemetry",
         "functions/control_plane",
         "infra/policies",
+        "scripts",
         "tests/platform",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
     files = {
         "backend/api.py": "app = object()\n",
         "backend/migrate.py": "def migrate(): return []\n",
+        "backend/bootstrap.py": "def main(): return 0\n",
+        "backend/http/user_settings.py": "router = object()\n",
+        "scripts/__init__.py": "",
+        "scripts/directory_upgrade.py": "def main(): pass\n",
         "turnstile_core/config.py": "class Settings: pass\n",
         "frontend/dist/index.html": "<!doctype html>\n",
         "migrations/001_token_observability.up.sql": "SELECT 1;\n",
+        "migrations/011_user_settings_profile.up.sql": (
+            REPOSITORY_ROOT / "migrations/011_user_settings_profile.up.sql"
+        ).read_text(encoding="utf-8"),
         "migrations/040_latest.up.sql": "SELECT 1;\n",
         "functions/telemetry/function_app.py": "app = object()\n",
         "functions/telemetry/host.json": "{}\n",
@@ -164,9 +173,14 @@ def test_api_staging_contains_runtime_contract(tmp_path: Path, staging_root: Pat
 
     assert (destination / "backend/api.py").is_file()
     assert (destination / "backend/migrate.py").is_file()
+    assert (destination / "backend/bootstrap.py").is_file()
+    assert (destination / "backend/http/user_settings.py").is_file()
     assert (destination / "turnstile_core/config.py").is_file()
     assert (destination / "frontend/dist/index.html").is_file()
     assert (destination / "migrations/001_token_observability.up.sql").is_file()
+    assert (destination / "migrations/011_user_settings_profile.up.sql").read_bytes() == (
+        REPOSITORY_ROOT / "migrations/011_user_settings_profile.up.sql"
+    ).read_bytes()
     assert list((destination / "migrations").glob("040_*.up.sql"))
     assert not list(destination.rglob("__pycache__"))
     assert not list(destination.rglob("*.pyc"))
@@ -197,7 +211,7 @@ def test_function_staging_contains_runtime_contract(
 
 @pytest.mark.parametrize(
     ("target", "expected_functions"),
-    (("telemetry", 4), ("control-plane", 2)),
+    (("telemetry", 4), ("control-plane", 4)),
 )
 def test_staged_function_indexes_without_backend(
     tmp_path: Path,

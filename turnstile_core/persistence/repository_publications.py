@@ -1329,6 +1329,12 @@ class PostgreSqlPublicationRepositoryMixin:
                         publication_id,
                     ),
                 )
+                if pricing := model_spec.get("price_configuration"):
+                    from .repository_registry import PostgreSqlRegistryRepositoryMixin
+
+                    PostgreSqlRegistryRepositoryMixin._write_price(
+                        connection, "model", model["id"], pricing,
+                    )
             row = self._complete_gateway_activation(
                 connection, publication, publication_id, actor
             )

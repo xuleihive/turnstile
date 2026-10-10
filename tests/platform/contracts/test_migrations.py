@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 
 from backend.migrate import migration_files
@@ -33,8 +34,39 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "006_versioned_budget_evidence.up.sql",
         "007_model_price_source.up.sql",
         "008_price_review_and_guard.up.sql",
+        "009_assistant_api_format.up.sql",
+        "010_models_dev_pricing.up.sql",
+        "011_user_settings_profile.up.sql",
+        "012_organization_directory.up.sql",
+        "013_menu_permission_groups.up.sql",
+        "014_multiple_menu_permission_groups.up.sql",
+        "015_scoped_menu_administrators.up.sql",
+        "016_organization_members.up.sql",
+        "017_department_memberships.up.sql",
+        "018_permission_management.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
+
+
+def test_assistant_api_upgrade_defaults_to_automatic_without_rewriting_settings() -> None:
+    sql = (MIGRATIONS / "009_assistant_api_format.up.sql").read_text()
+    assert "ADD COLUMN api_format TEXT" in sql
+    assert "'openai_chat', 'openai_responses', 'anthropic_messages'" in sql
+    assert "NULL selects" in sql
+    assert not re.search(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b", sql, re.MULTILINE)
+
+
+def test_user_settings_upgrade_is_additive_and_keeps_private_data_bounded() -> None:
+    sql = (MIGRATIONS / "011_user_settings_profile.up.sql").read_text(encoding="utf-8")
+    assert hashlib.sha256(sql.encode()).hexdigest() == (
+        "c830385df79834f2730450365cc2fe3b590f325ea2ca550fd0906c4579747fa5"
+    )
+    assert table_names(sql) == {"app_user_avatar", "account_security_event"}
+    assert sql.count("REFERENCES app_user(id) ON DELETE CASCADE") == 2
+    assert "octet_length(image_bytes) BETWEEN 1 AND 65536" in sql
+    assert "media_type IN ('image/png', 'image/jpeg', 'image/webp')" in sql
+    assert "ON account_security_event(app_user_id, action, created_at)" in sql
+    assert not re.search(r"^\s*(ALTER|INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b", sql, re.MULTILINE)
 
 
 def test_the_review_baseline_and_the_pending_price_are_separate_columns() -> None:

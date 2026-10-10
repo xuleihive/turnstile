@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+
+from turnstile_core.config import core_runtime_digest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ("api", "telemetry", "control-plane")
@@ -61,6 +64,9 @@ def _stage_api(root: Path, destination: Path) -> None:
     _copy_tree(root, "backend", destination)
     _copy_tree(root, "turnstile_core", destination)
     _copy_tree(root, "migrations", destination)
+    (destination / "scripts").mkdir()
+    _copy_file(root, "scripts/__init__.py", destination / "scripts")
+    _copy_file(root, "scripts/directory_upgrade.py", destination / "scripts")
     (destination / "frontend").mkdir()
     shutil.copytree(root / "frontend/dist", destination / "frontend/dist")
     for source in ("requirements.txt", "pyproject.toml", "uv.lock"):
@@ -94,6 +100,18 @@ def stage_deployment(target: str, destination: Path, root: Path = REPOSITORY_ROO
         _stage_function(root, destination, "telemetry")
     else:
         _stage_function(root, destination, "control_plane")
+    (destination / "directory-runtime-manifest.json").write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "target": target,
+                "core_digest": core_runtime_digest(destination / "turnstile_core"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:

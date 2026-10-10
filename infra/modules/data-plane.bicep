@@ -28,6 +28,7 @@ param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
 param gatewayApplicationKeyManagementEnabled bool = false
 param gatewayApplicationProvisioningEnabled bool = false
+param imageGenerationEnabled bool = false
 param databricksOAuthEnabled bool = false
 @minValue(1)
 param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
@@ -38,6 +39,8 @@ param entraAllowedEmailDomains array = []
 param bootstrapOwnerEmail string
 @secure()
 param bootstrapOwnerPasswordHash string
+param directoryEmptyInitializationAllowed bool = false
+param directoryExpectedCoreDigest string = ''
 
 var storageName = 'st${resourcePrefix}${take(suffix, 10)}'
 var ledgerStorageName = 'st${resourcePrefix}ledger${take(suffix, 4)}'
@@ -659,6 +662,7 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APIM_DASHBOARD_SUBSCRIPTION_KEY', value: apimSubscriptionKey }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(gatewayReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(gatewayApplicationProvisioningEnabled) }
+        { name: 'IMAGE_GENERATION_ENABLED', value: string(imageGenerationEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(gatewayApplicationDefaultMonthlyTokenLimit) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(gatewayApplicationDefaultTokensPerMinute) }
         { name: 'LEDGER_SYNC_ENABLED', value: 'true' }
@@ -670,6 +674,12 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'BOOTSTRAP_OWNER_EMAIL', value: bootstrapOwnerEmail }
         { name: 'BOOTSTRAP_OWNER_PASSWORD_HASH', value: bootstrapOwnerPasswordHash }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directoryEmptyInitializationAllowed ? 'database' : 'legacy' }
+        { name: 'DIRECTORY_EMPTY_INITIALIZATION_ALLOWED', value: string(directoryEmptyInitializationAllowed) }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'ORGANIZATION_MANAGEMENT_ENABLED', value: string(directoryEmptyInitializationAllowed) }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'TRAFFIC_GENERATION_BUDGET_USD', value: '20' }
         { name: 'WEB_DIST_DIR', value: 'frontend/dist' }
@@ -736,6 +746,10 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'DATABASE_URL', value: postgresConnectionString }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directoryEmptyInitializationAllowed ? 'database' : 'legacy' }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: workspace.properties.customerId }
         { name: 'APIM_API_ID', value: apimApiId }
         { name: 'CACHE_READ_BACKFILL_HOURS', value: '720' }

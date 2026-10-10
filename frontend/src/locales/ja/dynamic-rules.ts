@@ -1,4 +1,7 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全部 (\d+) 个模型 · 已更新 (\d+) · 无变化 (\d+) · 手动跳过 (\d+)$/g,
+    (_match, total, updated, unchanged, manual) => `${total} モデル · 更新 ${updated} · 変更なし ${unchanged} · 手動スキップ ${manual}`],
+  [/^同步全部 (\d+) 个已保存模型的定价$/g, (_match, count) => `保存済み ${count} モデルの価格を同期`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key をコピー`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key をローテーション`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `${kind} Key をローテーションしますか？`],

@@ -28,7 +28,8 @@ IMAGE_OPERATION_PROPERTIES: dict[str, Any] = {
     "urlTemplate": "/images/generations",
     "templateParameters": [],
     "request": {
-        "queryParameters": [], "headers": [],
+        "queryParameters": [],
+        "headers": [],
         "representations": [{"contentType": "application/json"}],
     },
     "responses": [],
@@ -51,7 +52,8 @@ def operation_definition(value: dict[str, Any]) -> dict[str, Any]:
     def normalize(item: Any) -> Any:
         if isinstance(item, dict):
             return {
-                key: normalize(child) for key, child in item.items()
+                key: normalize(child)
+                for key, child in item.items()
                 if not (key == "description" and child in (None, ""))
             }
         if isinstance(item, list):
@@ -64,7 +66,8 @@ def operation_definition(value: dict[str, Any]) -> dict[str, Any]:
 def operation_readback_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     def without_empty_derived_path(value: dict[str, Any]) -> dict[str, Any]:
         return {
-            name: item for name, item in value.items()
+            name: item
+            for name, item in value.items()
             if name != "effectivePath" or item is not None
         }
 
@@ -80,16 +83,18 @@ class GatewaySnapshot:
     operation_policies: dict[str, str | None]
 
     def fingerprint(self) -> str:
-        return document_digest({
-            "revision": self.revision,
-            "api": self.api_properties,
-            "parent": policy_digest(self.parent_policy),
-            "operations": self.operations,
-            "policies": {
-                name: policy_digest(value) if value is not None else None
-                for name, value in self.operation_policies.items()
-            },
-        })
+        return document_digest(
+            {
+                "revision": self.revision,
+                "api": self.api_properties,
+                "parent": policy_digest(self.parent_policy),
+                "operations": self.operations,
+                "policies": {
+                    name: policy_digest(value) if value is not None else None
+                    for name, value in self.operation_policies.items()
+                },
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -105,7 +110,8 @@ class ImageUpgradePlan:
     @property
     def required(self) -> bool:
         return (
-            self.create_operation or self.initialize_image_policy
+            self.create_operation
+            or self.initialize_image_policy
             or policy_digest(self.source.parent_policy) != policy_digest(self.parent_policy)
         )
 
@@ -114,7 +120,9 @@ class ImageUpgradePlan:
 
 
 def plan_image_upgrade(
-    api_resource_id: str, snapshot: GatewaySnapshot, canonical_parent: str,
+    api_resource_id: str,
+    snapshot: GatewaySnapshot,
+    canonical_parent: str,
 ) -> ImageUpgradePlan:
     try:
         parent = snapshot.parent_policy
@@ -123,11 +131,13 @@ def plan_image_upgrade(
             parent = compose_image_parent_policy(parent, ())
             upgraded = parse_policy(parent)
             actual_rates = [
-                rate for rate in upgraded.iter("rate-limit-by-key")
+                rate
+                for rate in upgraded.iter("rate-limit-by-key")
                 if "images:" in rate.get("counter-key", "")
             ]
             reference_rates = [
-                rate for rate in parse_policy(canonical_parent).iter("rate-limit-by-key")
+                rate
+                for rate in parse_policy(canonical_parent).iter("rate-limit-by-key")
                 if "images:" in rate.get("counter-key", "")
             ]
             for actual, reference in zip(actual_rates, reference_rates, strict=True):
@@ -149,10 +159,14 @@ def plan_image_upgrade(
         for name in ("method", "urlTemplate", "templateParameters")
     ):
         raise ApimUpgradeError("The existing image operation conflicts with the fixed route")
-    identity = document_digest({
-        "target": api_resource_id.casefold(), "source": snapshot.fingerprint(),
-        "parent": policy_digest(parent), "version": UPGRADE_VERSION,
-    })
+    identity = document_digest(
+        {
+            "target": api_resource_id.casefold(),
+            "source": snapshot.fingerprint(),
+            "parent": policy_digest(parent),
+            "version": UPGRADE_VERSION,
+        }
+    )
     return ImageUpgradePlan(
         api_resource_id=api_resource_id,
         source=snapshot,
@@ -164,7 +178,9 @@ def plan_image_upgrade(
 
 
 def verify_upgrade_snapshot(
-    plan: ImageUpgradePlan, observed: GatewaySnapshot, default_image_policy: str,
+    plan: ImageUpgradePlan,
+    observed: GatewaySnapshot,
+    default_image_policy: str,
 ) -> None:
     if observed.revision != plan.revision or observed.api_properties != plan.source.api_properties:
         raise ApimUpgradeError("The upgrade candidate changed API identity or configuration")
@@ -224,9 +240,12 @@ class AzureUpgradeBackend:
         self.subscription, self.resource_group, self.apim_name, self.api_id = match.groups()
         self.application_ids = application_ids
         self.deploy = deploy
-        if any(not resource.casefold().startswith(
-            f"/subscriptions/{self.subscription}/resourcegroups/".casefold()
-        ) for resource in application_ids):
+        if any(
+            not resource.casefold().startswith(
+                f"/subscriptions/{self.subscription}/resourcegroups/".casefold()
+            )
+            for resource in application_ids
+        ):
             raise ApimUpgradeError("Maintenance targets must belong to the selected subscription")
 
     def _get(self, resource_id: str, *, policy: bool = False) -> dict[str, Any] | None:
@@ -260,7 +279,17 @@ class AzureUpgradeBackend:
             return None
         if response.status_code != 200:
             raise ApimUpgradeError(f"ARM upgrade read returned HTTP {response.status_code}")
-        value = response.json()
+        policy_text = response.text.lstrip("\ufeff \t\r\n")
+        if policy and policy_text.startswith("<"):
+            try:
+                parse_policy(policy_text)
+            except ElementTree.ParseError as error:
+                raise ApimUpgradeError("ARM returned malformed raw XML policy") from error
+            return {"properties": {"value": policy_text}}
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise ApimUpgradeError("ARM upgrade read returned invalid JSON") from error
         if not isinstance(value, dict):
             raise ApimUpgradeError("ARM upgrade read returned an invalid object")
         return value
@@ -296,8 +325,12 @@ class AzureUpgradeBackend:
             raise ApimUpgradeError("ARM returned a different API revision")
         path = self.api_resource_id + ";rev=" + quote(observed_revision, safe="")
         for name in (
-            "apiRevision", "apiRevisionDescription", "isCurrent", "isOnline",
-            "provisioningState", "sourceApiId",
+            "apiRevision",
+            "apiRevisionDescription",
+            "isCurrent",
+            "isOnline",
+            "provisioningState",
+            "sourceApiId",
         ):
             properties.pop(name, None)
         parent = self._policy(path)
@@ -357,34 +390,52 @@ class AzureUpgradeBackend:
 
 
 def upgrade_parameters(
-    plan: ImageUpgradePlan, stage: str, revision: str, *, create_revision: bool,
+    plan: ImageUpgradePlan,
+    stage: str,
+    revision: str,
+    *,
+    create_revision: bool,
 ) -> dict[str, Any]:
     parts = plan.api_resource_id.split("/")
     if stage not in {"prepare", "promote"} or revision not in {plan.revision, plan.source.revision}:
         raise ApimUpgradeError("The deployment stage or revision is outside the upgrade plan")
     return {
-        "apimResourceGroupName": parts[4], "apimName": parts[8], "apiId": parts[10],
-        "sourceRevision": plan.source.revision, "revision": revision, "stage": stage,
+        "apimResourceGroupName": parts[4],
+        "apimName": parts[8],
+        "apiId": parts[10],
+        "sourceRevision": plan.source.revision,
+        "revision": revision,
+        "stage": stage,
         "createRevision": create_revision,
         "initializeImagePolicy": plan.initialize_image_policy,
         "apiProperties": plan.source.api_properties if stage == "prepare" else {},
         "parentPolicy": plan.parent_policy if stage == "prepare" else "",
         "imageOperationProperties": plan.source.operations.get(
             IMAGE_OPERATION_ID, IMAGE_OPERATION_PROPERTIES
-        ) if stage == "prepare" else {},
+        )
+        if stage == "prepare"
+        else {},
     }
 
 
 def validate_upgrade_what_if(
-    result: dict[str, Any], plan: ImageUpgradePlan, stage: str, revision: str,
+    result: dict[str, Any],
+    plan: ImageUpgradePlan,
+    stage: str,
+    revision: str,
 ) -> None:
     api = plan.api_resource_id.casefold()
     candidate = api + ";rev=" + revision.casefold()
-    allowed = {
-        candidate, candidate + "/policies/policy",
-        candidate + "/operations/images-generations",
-        candidate + "/operations/images-generations/policies/policy",
-    } if stage == "prepare" else {api + "/releases/infrastructure-" + revision.casefold()}
+    allowed = (
+        {
+            candidate,
+            candidate + "/policies/policy",
+            candidate + "/operations/images-generations",
+            candidate + "/operations/images-generations/policies/policy",
+        }
+        if stage == "prepare"
+        else {api + "/releases/infrastructure-" + revision.casefold()}
+    )
     changes = result.get("changes", result.get("properties", {}).get("changes"))
     if not isinstance(changes, list):
         raise ApimUpgradeError("Upgrade what-if did not enumerate resource changes")
@@ -398,12 +449,15 @@ def validate_upgrade_what_if(
 
 
 def _verify_partial_candidate(
-    plan: ImageUpgradePlan, observed: GatewaySnapshot, default_image_policy: str,
+    plan: ImageUpgradePlan,
+    observed: GatewaySnapshot,
+    default_image_policy: str,
 ) -> None:
     if observed.revision != plan.revision or observed.api_properties != plan.source.api_properties:
         raise ApimUpgradeError("An interrupted candidate changed API configuration")
     if policy_digest(observed.parent_policy) not in {
-        policy_digest(plan.source.parent_policy), policy_digest(plan.parent_policy),
+        policy_digest(plan.source.parent_policy),
+        policy_digest(plan.parent_policy),
     }:
         raise ApimUpgradeError("An interrupted candidate has an unrecognized parent policy")
     if set(observed.operations) - set(plan.source.operations) - {IMAGE_OPERATION_ID}:
@@ -420,13 +474,17 @@ def _verify_partial_candidate(
         if policy is None and actual is not None and name != IMAGE_OPERATION_ID:
             raise ApimUpgradeError("An interrupted candidate added an existing operation policy")
     image = observed.operations.get(IMAGE_OPERATION_ID)
-    if plan.create_operation and image is not None and not operation_readback_matches(
-        IMAGE_OPERATION_PROPERTIES, image
+    if (
+        plan.create_operation
+        and image is not None
+        and not operation_readback_matches(IMAGE_OPERATION_PROPERTIES, image)
     ):
         raise ApimUpgradeError("An interrupted candidate changed the image operation")
     image_policy = observed.operation_policies.get(IMAGE_OPERATION_ID)
-    if plan.initialize_image_policy and image_policy is not None and (
-        policy_digest(image_policy) != policy_digest(default_image_policy)
+    if (
+        plan.initialize_image_policy
+        and image_policy is not None
+        and (policy_digest(image_policy) != policy_digest(default_image_policy))
     ):
         raise ApimUpgradeError("An interrupted candidate contains an unrecognized image policy")
 
@@ -439,6 +497,8 @@ def execute_image_upgrade(
     save: Callable[[dict[str, Any]], None],
     *,
     rollback: bool = False,
+    prepare_only: bool = False,
+    candidate_validator: Callable[[GatewaySnapshot], None] | None = None,
 ) -> dict[str, Any]:
     if not plan.required:
         return {"version": plan.version, "status": "not_required"}
@@ -451,7 +511,10 @@ def execute_image_upgrade(
         raise ApimUpgradeError("The existing API is missing; an upgrade must not bootstrap it")
     if rollback:
         if journal is None or journal.get("status") not in {
-            "passed", "promoting", "rolling_back", "rolled_back",
+            "passed",
+            "promoting",
+            "rolling_back",
+            "rolled_back",
         }:
             raise ApimUpgradeError("Rollback requires a recorded promotion of this upgrade")
         original = backend.read(plan.source.revision)
@@ -499,9 +562,15 @@ def execute_image_upgrade(
     if candidate is None:
         raise ApimUpgradeError("The candidate was not created; no promotion was attempted")
     verify_upgrade_snapshot(plan, candidate, default_image_policy)
+    if prepare_only:
+        result = {**record, "status": "prepared"}
+        save(result)
+        return result
     current = backend.read()
     if current is None or current.fingerprint() != plan.source.fingerprint():
         raise ApimUpgradeError("The current API changed before promotion")
+    if candidate_validator is not None:
+        candidate_validator(candidate)
     save({**record, "status": "promoting"})
     backend.promote(plan, plan.revision)
     observed = backend.read()

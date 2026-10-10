@@ -3,10 +3,46 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .models import EnterpriseEntity, EnterpriseEntityCatalog
+from .models import (
+    EnterpriseEntity,
+    EnterpriseEntityCatalog,
+    UsageQueryEntity,
+    UsageQueryEntityCatalog,
+)
 
 ORGANIZATION_ID = "org-contoso-global"
 DEFAULT_APPLICATION_USER_DEPARTMENT_ID = "department-platform"
+
+
+def historical_entity_catalog(rows: Iterable[Mapping[str, Any]]) -> UsageQueryEntityCatalog:
+    collections: dict[str, dict[str, UsageQueryEntity]] = {
+        key: {} for key in ("organization", "department", "project", "agent", "user")
+    }
+    for row in rows:
+        group = collections[str(row["scope_type"])]
+        identity = str(row["scope_id"])
+        if identity not in group:
+            group[identity] = UsageQueryEntity(
+                id=identity,
+                name=str(row["scope_name"] or identity),
+                parent_id=row["parent_scope_id"],
+                parent_ids=([row["parent_scope_id"]] if row["parent_scope_id"] else []),
+                source="historical",
+                directory_status="unattributed" if identity == "unattributed" else "historical",
+            )
+        elif row["parent_scope_id"] and row["parent_scope_id"] not in group[identity].parent_ids:
+            group[identity].parent_ids.append(row["parent_scope_id"])
+    values = {
+        key: sorted(group.values(), key=lambda entity: (entity.name.casefold(), entity.id))
+        for key, group in collections.items()
+    }
+    return UsageQueryEntityCatalog(
+        organizations=values["organization"],
+        departments=values["department"],
+        projects=values["project"],
+        agents=values["agent"],
+        users=values["user"],
+    )
 
 
 def configured_invocation_testers(

@@ -30,7 +30,7 @@ function MicrosoftMark({ size = 16 }: { size?: number }) {
 }
 
 export function LoginPage() {
-  const { signInWithPassword, signInWithEntra, entraError } = useAuth()
+  const { signInWithPassword, signInWithEntra, entraError, loginNotice } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [revealed, setRevealed] = useState(false)
@@ -78,6 +78,7 @@ export function LoginPage() {
         </CardHeader>
 
         <CardContent className="login-body">
+          {loginNotice && <p className="login-notice" role="status">{loginNotice}</p>}
           {/* Microsoft first: it is the real identity path, and the password form below it is
               a temporary account for people trying the product out. Order is the only thing
               on this page that says which one is which. */}

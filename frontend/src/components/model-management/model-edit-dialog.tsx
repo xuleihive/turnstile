@@ -93,7 +93,9 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
   const message = (dirty || submitted) && imagePriceMissing ? "请填写文字输入、缓存文字和图像输出单价。"
     : validation && (dirty || submitted) ? VALIDATION_MESSAGES[validation] : error
   const update = <Key extends keyof ModelEditDraft>(key: Key, value: ModelEditDraft[Key]) => {
-    setDraft((current) => ({ ...current, [key]: value }))
+    setDraft((current) => ({
+      ...current, [key]: value, ...(key === "contextWindow" ? { contextOrigin: "user" as const } : {}),
+    }))
   }
   const close = () => { if (!busy) onClose() }
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -144,8 +146,8 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
               <span className="simple-section-title"><b id={`${id}-pricing`}>价格与限制</b></span>
               <span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span>
             </div>
-            {!imageGeneration && <ModelPriceSourceFields model={model} draft={draft} setDraft={setDraft}
-              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null} />}
+            <ModelPriceSourceFields model={model} draft={draft} setDraft={setDraft}
+              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null} />
             <div className={imageGeneration ? "form-grid" : "form-grid three"}>
               {!imageGeneration && <ModelEditNumberField id={`${id}-context`} label="上下文窗口" unit="Tokens" integer value={draft.contextWindow} onChange={(value) => update("contextWindow", value)} busy={busy} />}
               <ModelEditNumberField id={`${id}-input`} label={imageGeneration ? "文字输入单价" : "输入单价"} value={draft.inputPrice} onChange={(value) => update("inputPrice", value)} busy={busy || followingListPrice} />
@@ -156,7 +158,9 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
               {!imageGeneration && <ModelEditNumberField id={`${id}-cache-write`} label="缓存写入单价" value={draft.cacheWritePrice} onChange={(value) => update("cacheWritePrice", value)} busy={busy || followingListPrice} help="留空按缓存读取单价计费；读取单价也未填写时按输入单价。填写 0 表示免费。" />}
             </div>
             <p className="publication-form-note">
-              {followingListPrice
+              {draft.priceSource === "models_dev"
+                ? "公开参考价用于费用估算，不代表实际账单。"
+                : followingListPrice
                 ? "跟随官方价时，这四个值由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。"
                 : "留空表示未配置，不等于 0。"}
             </p>

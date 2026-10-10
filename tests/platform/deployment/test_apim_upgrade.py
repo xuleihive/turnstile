@@ -35,9 +35,7 @@ from turnstile_core.integrations.apim_policy_components import (
     serialize_policy,
 )
 
-CANONICAL_PARENT = (
-    REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml"
-).read_text()
+CANONICAL_PARENT = (REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
 IMAGE_DENIAL = (REPOSITORY_ROOT / "infra/policies/provider-neutral-images-policy.xml").read_text()
 API_ID = (
     "/subscriptions/unit/resourceGroups/customer/providers/"
@@ -67,9 +65,7 @@ def legacy_parent() -> str:
             continue
         node.set(
             "value",
-            node.get("value", "").replace(
-                CACHE_READ_WITH_FALLBACK, CACHE_READ_WITHOUT_FALLBACK
-            ),
+            node.get("value", "").replace(CACHE_READ_WITH_FALLBACK, CACHE_READ_WITHOUT_FALLBACK),
         )
     for parent in list(root.iter()):
         for index, child in reversed(list(enumerate(list(parent)))):
@@ -85,10 +81,16 @@ def legacy_parent() -> str:
 
 
 def snapshot(*, legacy: bool = False, image: bool = False) -> GatewaySnapshot:
-    operations = {"chat-completions": {
-        "displayName": "Customer text", "method": "POST", "urlTemplate": "/chat/completions",
-        "templateParameters": [], "request": {}, "responses": [],
-    }}
+    operations = {
+        "chat-completions": {
+            "displayName": "Customer text",
+            "method": "POST",
+            "urlTemplate": "/chat/completions",
+            "templateParameters": [],
+            "request": {},
+            "responses": [],
+        }
+    }
     policies: dict[str, str | None] = {
         "chat-completions": "<policies><inbound><base /></inbound></policies>",
     }
@@ -112,6 +114,27 @@ def test_legacy_upgrade_preserves_text_and_has_deterministic_identity() -> None:
     assert policy_digest(plan.parent_policy) == policy_digest(CANONICAL_PARENT)
     assert plan.revision == plan_image_upgrade(API_ID, source, CANONICAL_PARENT).revision
     assert plan.revision != plan_image_upgrade(API_ID + "-other", source, CANONICAL_PARENT).revision
+
+
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+def test_arm_rawxml_policy_response_is_parsed_without_json_assumption(prefix: str) -> None:
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, text=prefix + CANONICAL_PARENT, headers={"Content-Type": "application/xml"}
+            ),
+        )
+    ) as client:
+        backend = AzureUpgradeBackend(
+            client,
+            API_ID,
+            (
+                "/subscriptions/unit/resourceGroups/customer/providers/Microsoft.Web/sites/api",
+                "/subscriptions/unit/resourceGroups/customer/providers/Microsoft.Web/sites/control",
+            ),
+            lambda *_: None,
+        )
+        assert backend._policy(API_ID) == CANONICAL_PARENT
 
 
 def test_upgraded_api_is_a_noop_and_existing_image_policy_is_not_overwritten() -> None:
@@ -140,9 +163,12 @@ def test_operation_without_policy_is_initialized_fail_closed() -> None:
 @pytest.mark.parametrize("legacy", [False, True])
 def test_custom_parent_is_rejected_without_replacing_it(legacy: bool) -> None:
     source = snapshot(legacy=legacy)
-    changed = replace(source, parent_policy=source.parent_policy.replace(
-        'name="ledgerState"', 'name="customerLedgerState"', 1
-    ))
+    changed = replace(
+        source,
+        parent_policy=source.parent_policy.replace(
+            'name="ledgerState"', 'name="customerLedgerState"', 1
+        ),
+    )
     with pytest.raises(ApimUpgradeError, match="supported public version"):
         plan_image_upgrade(API_ID, changed, CANONICAL_PARENT)
 
@@ -323,12 +349,32 @@ def test_upgrade_parameters_do_not_bootstrap_or_change_roles() -> None:
 def test_what_if_rejects_other_resources_and_unresolved_writes(kind: str) -> None:
     plan = plan_image_upgrade(API_ID, snapshot(), CANONICAL_PARENT)
     with pytest.raises(ApimUpgradeError, match="unapproved"):
-        validate_upgrade_what_if({"changes": [{
-            "changeType": kind, "resourceId": API_ID + "-another",
-        }]}, plan, "prepare", plan.revision)
-    validate_upgrade_what_if({"changes": [{
-        "changeType": "Create", "resourceId": API_ID + ";rev=" + plan.revision,
-    }]}, plan, "prepare", plan.revision)
+        validate_upgrade_what_if(
+            {
+                "changes": [
+                    {
+                        "changeType": kind,
+                        "resourceId": API_ID + "-another",
+                    }
+                ]
+            },
+            plan,
+            "prepare",
+            plan.revision,
+        )
+    validate_upgrade_what_if(
+        {
+            "changes": [
+                {
+                    "changeType": "Create",
+                    "resourceId": API_ID + ";rev=" + plan.revision,
+                }
+            ]
+        },
+        plan,
+        "prepare",
+        plan.revision,
+    )
 
 
 def test_arm_reader_pins_revision_checks_maintenance_and_refuses_external_pagination() -> None:
@@ -346,24 +392,43 @@ def test_arm_reader_pins_revision_checks_maintenance_and_refuses_external_pagina
         if path in application_ids:
             return httpx.Response(200, json={"properties": {"state": "Stopped"}})
         if path == API_ID:
-            return httpx.Response(200, json={"properties": {
-                **source.api_properties, "apiRevision": source.revision, "isCurrent": True,
-                "isOnline": True, "sourceApiId": API_ID + ";rev=old",
-            }})
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        **source.api_properties,
+                        "apiRevision": source.revision,
+                        "isCurrent": True,
+                        "isOnline": True,
+                        "sourceApiId": API_ID + ";rev=old",
+                    }
+                },
+            )
         if path == current_path + "/policies/policy":
             assert request.url.params["format"] == "rawxml"
             return httpx.Response(200, json={"properties": {"value": source.parent_policy}})
         if path == current_path + "/operations":
             return httpx.Response(200, json={"value": [{"name": "chat-completions"}]})
         if path == current_path + "/operations/chat-completions":
-            return httpx.Response(200, json={"properties": {
-                **source.operations["chat-completions"], "description": "",
-                "policies": source.operation_policies["chat-completions"],
-            }})
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        **source.operations["chat-completions"],
+                        "description": "",
+                        "policies": source.operation_policies["chat-completions"],
+                    }
+                },
+            )
         if path == current_path + "/operations/chat-completions/policies/policy":
-            return httpx.Response(200, json={"properties": {
-                "value": source.operation_policies["chat-completions"],
-            }})
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        "value": source.operation_policies["chat-completions"],
+                    }
+                },
+            )
         raise AssertionError(path)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
@@ -381,7 +446,8 @@ def test_arm_reader_pins_revision_checks_maintenance_and_refuses_external_pagina
 
 
 def test_full_upgrade_commands_plan_apply_repeat_and_rollback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from scripts import deploy
     from tests.platform.deployment.test_deploy_script import _parameters
@@ -391,9 +457,13 @@ def test_full_upgrade_commands_plan_apply_repeat_and_rollback(
     )
     outputs = {
         "resourceGroupName": inputs.resource_group_name,
-        "apimResourceGroupName": "customer", "apimName": "unit", "apimApiId": "customer-llm",
-        "apimPrincipalId": "unit-principal", "apimGatewayUrl": "https://unit.azure-api.net",
-        "apiName": "api-unit", "controlPlaneFunctionName": "control-unit",
+        "apimResourceGroupName": "customer",
+        "apimName": "unit",
+        "apimApiId": "customer-llm",
+        "apimPrincipalId": "unit-principal",
+        "apimGatewayUrl": "https://unit.azure-api.net",
+        "apiName": "api-unit",
+        "controlPlaneFunctionName": "control-unit",
     }
     original = snapshot(legacy=True)
     snapshots = {original.revision: original}
@@ -409,25 +479,36 @@ def test_full_upgrade_commands_plan_apply_repeat_and_rollback(
             return httpx.Response(404)
         if path == API_ID:
             selected = snapshots[current]
-            return httpx.Response(200, json={"properties": {
-                **selected.api_properties, "apiRevision": selected.revision, "isCurrent": True,
-            }})
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        **selected.api_properties,
+                        "apiRevision": selected.revision,
+                        "isCurrent": True,
+                    }
+                },
+            )
         assert path.startswith(API_ID + ";rev=")
-        revision, _, suffix = path[len(API_ID + ";rev="):].partition("/")
+        revision, _, suffix = path[len(API_ID + ";rev=") :].partition("/")
         if revision not in snapshots:
             return httpx.Response(404)
         selected = snapshots[revision]
         if not suffix:
             value: dict[str, Any] = {
-                **selected.api_properties, "apiRevision": revision,
+                **selected.api_properties,
+                "apiRevision": revision,
                 "isCurrent": revision == current,
             }
         elif suffix == "policies/policy":
             value = {"value": selected.parent_policy}
         elif suffix == "operations":
-            return httpx.Response(200, json={
-                "value": [{"name": name} for name in selected.operations],
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "value": [{"name": name} for name in selected.operations],
+                },
+            )
         else:
             parts = suffix.split("/")
             assert parts[0] == "operations"
@@ -439,7 +520,10 @@ def test_full_upgrade_commands_plan_apply_repeat_and_rollback(
 
     class Runner(deploy.CommandRunner):
         def run_json(
-            self, command: Sequence[str], *, cwd: Path | None = None,
+            self,
+            command: Sequence[str],
+            *,
+            cwd: Path | None = None,
             env: Mapping[str, str] | None = None,
         ) -> dict[str, Any]:
             nonlocal current
@@ -449,13 +533,15 @@ def test_full_upgrade_commands_plan_apply_repeat_and_rollback(
                 return {"accessToken": "unit-token-not-persisted"}
             assert command[:3] == ["az", "deployment", "sub"]
             parameter_file = Path(command[command.index("--parameters") + 1][1:])
-            values = {name: value["value"] for name, value in json.loads(
-                parameter_file.read_text()
-            )["parameters"].items()}
+            values = {
+                name: value["value"]
+                for name, value in json.loads(parameter_file.read_text())["parameters"].items()
+            }
             revision = values["revision"]
             if command[3] == "what-if":
                 suffix = (
-                    ";rev=" + revision if values["stage"] == "prepare"
+                    ";rev=" + revision
+                    if values["stage"] == "prepare"
                     else "/releases/infrastructure-" + revision
                 )
                 return {"changes": [{"changeType": "Create", "resourceId": API_ID + suffix}]}

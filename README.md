@@ -55,7 +55,7 @@ Turnstile is a self-hosted control plane for governed AI model access. It combin
 - Versioned gateway releases, integrity checks, rollback, and protected releases
 - Owner-only application subscription provisioning and key management
 - Password-based and Microsoft Entra authentication
-- FinOps Assistant and report collections grounded in stored telemetry
+- AI FinOps with a FinOps Assistant and a directory-based Report Center grounded in stored telemetry ([design](plan/ai-finops/design.md))
 - GitHub Copilot usage and governance integration (in active development)
 
 > [!WARNING]
@@ -191,6 +191,10 @@ The command prompts for the initial Owner password, runs a subscription-scope wh
 
 For automation, copy `infra/owner.credentials.example.json` to `.turnstile/owner.credentials.json`, set the same email as `bootstrapOwnerEmail`, choose the password, run `chmod 600` on the file, and add `--owner-credentials .turnstile/owner.credentials.json`. Plaintext never enters Bicep or deployment state; only its scrypt hash is deployed.
 
+After the Owner changes their password in User settings, supply the current password
+for rerun verification or update that private credentials file. Keep the original
+deployment state and bootstrap hash; reruns do not reset the existing account.
+
 Use `scripts.deploy plan` for a preview without creating resources. See [Deployment](docs/deployment.md) for prerequisites, reruns, and recovery.
 
 ## Post-deployment model onboarding
@@ -235,6 +239,7 @@ See [Troubleshooting](docs/troubleshooting.md) for startup, authentication, data
 | [Documentation index](docs/README.md) | Entry point for operators and maintainers |
 | [Architecture](docs/architecture.md) | Runtime boundaries, ownership, and data flow |
 | [Configuration](docs/configuration.md) | Environment variables, authentication, and feature gates |
+| [Organization Management](docs/organization-management.md) | Persistent directory, department delegation, reviewed Entra synchronization, initialization and upgrade |
 | [Deployment](docs/deployment.md) | Azure provisioning, packaging, rollout, and verification |
 | [Testing](docs/testing.md) | Local, contract, infrastructure, and end-to-end validation |
 | [Security](docs/security.md) | Threat boundaries, secret handling, and deployment controls |

@@ -22,6 +22,7 @@ from ..services.assistant import AssistantService
 from ..services.budget_service import TokenBudgetService
 from ..services.runtime_service import ModelRuntimeService
 from .dependencies import Repository
+from .session import CurrentSession
 
 
 @lru_cache(maxsize=1)
@@ -155,9 +156,13 @@ AnomalyRuleServiceDependency = Annotated[
 ]
 
 
-def assistant_service(repository: Repository) -> AssistantService:
+def assistant_service(repository: Repository, identity: CurrentSession) -> AssistantService:
     settings = get_settings()
-    return AssistantService(repository, ModelRuntimeService(repository, settings), settings)
+    return AssistantService(
+        repository, ModelRuntimeService(repository, settings), settings,
+        department_ids=identity.directory_department_ids,
+        data_scope=identity.data_scope,
+    )
 
 
 AssistantServiceDependency = Annotated[AssistantService, Depends(assistant_service)]

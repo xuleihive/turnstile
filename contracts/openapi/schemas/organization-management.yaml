@@ -1,0 +1,576 @@
+schemas:
+  AccountLinkWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      app_user_id:
+        type: string
+        format: uuid
+        title: App User Id
+    additionalProperties: false
+    type: object
+    required:
+    - app_user_id
+    title: AccountLinkWrite
+  AdministratorsWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      account_ids:
+        items:
+          type: string
+          format: uuid
+        type: array
+        maxItems: 100
+        title: Account Ids
+    additionalProperties: false
+    type: object
+    title: AdministratorsWrite
+  ConnectionWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      organization_id:
+        type: string
+        maxLength: 255
+        minLength: 1
+        title: Organization Id
+      name:
+        type: string
+        maxLength: 160
+        minLength: 1
+        title: Name
+      cloud:
+        type: string
+        enum:
+        - public
+        - usgov
+        - china
+        title: Cloud
+        default: public
+      tenant_id:
+        type: string
+        format: uuid
+        title: Tenant Id
+      client_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Client Id
+      authentication_mode:
+        type: string
+        enum:
+        - managed_identity
+        - key_vault_secret
+        title: Authentication Mode
+        default: managed_identity
+      credential_ref:
+        anyOf:
+        - type: string
+          maxLength: 512
+        - type: 'null'
+        title: Credential Ref
+        writeOnly: true
+      scope:
+        type: string
+        enum:
+        - selected_groups
+        - all_users
+        title: Scope
+        default: selected_groups
+      default_department_id:
+        anyOf:
+        - type: string
+          maxLength: 255
+        - type: 'null'
+        title: Default Department Id
+      include_guests:
+        type: boolean
+        title: Include Guests
+        default: false
+      enabled:
+        type: boolean
+        title: Enabled
+        default: false
+      sync_interval_minutes:
+        type: integer
+        maximum: 1440.0
+        minimum: 15.0
+        title: Sync Interval Minutes
+        default: 60
+    additionalProperties: false
+    type: object
+    required:
+    - organization_id
+    - name
+    - tenant_id
+    title: ConnectionWrite
+  DirectoryPage:
+    properties:
+      items:
+        items:
+          additionalProperties: true
+          type: object
+        type: array
+        title: Items
+      total:
+        type: integer
+        title: Total
+      next_cursor:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Next Cursor
+      generated_at:
+        type: string
+        format: date-time
+        title: Generated At
+    additionalProperties: false
+    type: object
+    required:
+    - items
+    - total
+    - generated_at
+    title: DirectoryPage
+  ExternalBindingWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      person_id:
+        type: string
+        format: uuid
+        title: Person Id
+      job_id:
+        type: string
+        format: uuid
+        title: Job Id
+      bind_login_identity:
+        type: boolean
+        title: Bind Login Identity
+        default: false
+    additionalProperties: false
+    type: object
+    required:
+    - person_id
+    - job_id
+    title: ExternalBindingWrite
+  GroupMapping:
+    properties:
+      group_id:
+        type: string
+        format: uuid
+        title: Group Id
+      unit_id:
+        type: string
+        maxLength: 255
+        minLength: 1
+        title: Unit Id
+      membership_mode:
+        type: string
+        enum:
+        - direct
+        - transitive
+        title: Membership Mode
+        default: direct
+      enabled:
+        type: boolean
+        title: Enabled
+        default: true
+    additionalProperties: false
+    type: object
+    required:
+    - group_id
+    - unit_id
+    title: GroupMapping
+  GroupMappingsWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      items:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GroupMapping
+        type: array
+        maxItems: 200
+        title: Items
+    additionalProperties: false
+    type: object
+    title: GroupMappingsWrite
+  OrganizationPersonCreate:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      organization_id:
+        type: string
+        maxLength: 255
+        minLength: 1
+        title: Organization Id
+      department_id:
+        type: string
+        maxLength: 255
+        minLength: 1
+        title: Department Id
+      display_name:
+        type: string
+        maxLength: 160
+        minLength: 1
+        title: Display Name
+      email:
+        type: string
+        maxLength: 255
+        minLength: 3
+        title: Email
+      password:
+        type: string
+        format: password
+        title: Password
+        writeOnly: true
+      employee_number:
+        anyOf:
+        - type: string
+          maxLength: 64
+        - type: 'null'
+        title: Employee Number
+    additionalProperties: false
+    type: object
+    required:
+    - organization_id
+    - department_id
+    - display_name
+    - email
+    - password
+    title: OrganizationPersonCreate
+  OrganizationWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      code:
+        type: string
+        maxLength: 64
+        minLength: 1
+        title: Code
+      name:
+        type: string
+        maxLength: 160
+        minLength: 1
+        title: Name
+      description:
+        type: string
+        maxLength: 2000
+        title: Description
+        default: ''
+      contact_email:
+        anyOf:
+        - type: string
+          maxLength: 320
+        - type: 'null'
+        title: Contact Email
+      status:
+        type: string
+        enum:
+        - active
+        - inactive
+        - archived
+        title: Status
+        default: active
+    additionalProperties: false
+    type: object
+    required:
+    - code
+    - name
+    title: OrganizationWrite
+  PersonStatusWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      status:
+        type: string
+        enum:
+        - active
+        - inactive
+        - archived
+        title: Status
+      disable_account:
+        type: boolean
+        title: Disable Account
+        default: false
+    additionalProperties: false
+    type: object
+    required:
+    - status
+    title: PersonStatusWrite
+  PersonWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      display_name:
+        type: string
+        maxLength: 160
+        minLength: 1
+        title: Display Name
+      contact_email:
+        anyOf:
+        - type: string
+          maxLength: 320
+        - type: 'null'
+        title: Contact Email
+      employee_number:
+        anyOf:
+        - type: string
+          maxLength: 64
+        - type: 'null'
+        title: Employee Number
+      job_title:
+        type: string
+        maxLength: 160
+        title: Job Title
+        default: ''
+      menu_permission_group:
+        anyOf:
+        - type: string
+          enum:
+          - user
+          - organization_admin
+          - department_admin
+          - team_admin
+        - type: 'null'
+        title: Menu Permission Group
+      menu_permission_groups:
+        anyOf:
+        - items:
+            type: string
+            enum:
+            - user
+            - organization_admin
+            - department_admin
+            - team_admin
+          type: array
+          maxItems: 3
+        - type: 'null'
+        title: Menu Permission Groups
+    additionalProperties: false
+    type: object
+    required:
+    - display_name
+    title: PersonWrite
+  SyncApplyWrite:
+    properties:
+      expected_directory_version:
+        type: integer
+        minimum: 0.0
+        title: Expected Directory Version
+      approve_missing:
+        type: boolean
+        title: Approve Missing
+        default: false
+      approve_mass_changes:
+        type: boolean
+        title: Approve Mass Changes
+        default: false
+    additionalProperties: false
+    type: object
+    required:
+    - expected_directory_version
+    title: SyncApplyWrite
+  SyncJobWrite:
+    properties:
+      mode:
+        type: string
+        enum:
+        - full
+        - delta
+        title: Mode
+        default: full
+    additionalProperties: false
+    type: object
+    title: SyncJobWrite
+  TeamsWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      team_ids:
+        items:
+          type: string
+        type: array
+        maxItems: 200
+        title: Team Ids
+    additionalProperties: false
+    type: object
+    title: TeamsWrite
+  UnitMembersWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      person_ids:
+        items:
+          type: string
+          format: uuid
+        type: array
+        maxItems: 100
+        minItems: 1
+        title: Person Ids
+    additionalProperties: false
+    type: object
+    required:
+    - person_ids
+    title: UnitMembersWrite
+  UnitWrite:
+    properties:
+      expected_revision:
+        anyOf:
+        - type: integer
+          minimum: 1.0
+        - type: 'null'
+        title: Expected Revision
+      reason:
+        type: string
+        maxLength: 2000
+        title: Reason
+        default: ''
+      code:
+        type: string
+        maxLength: 64
+        minLength: 1
+        title: Code
+      name:
+        type: string
+        maxLength: 160
+        minLength: 1
+        title: Name
+      description:
+        type: string
+        maxLength: 2000
+        title: Description
+        default: ''
+      contact_email:
+        anyOf:
+        - type: string
+          maxLength: 320
+        - type: 'null'
+        title: Contact Email
+      status:
+        type: string
+        enum:
+        - active
+        - inactive
+        - archived
+        title: Status
+        default: active
+      kind:
+        type: string
+        enum:
+        - department
+        - team
+        title: Kind
+      parent_unit_id:
+        anyOf:
+        - type: string
+          maxLength: 255
+        - type: 'null'
+        title: Parent Unit Id
+    additionalProperties: false
+    type: object
+    required:
+    - code
+    - name
+    - kind
+    title: UnitWrite

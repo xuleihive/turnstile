@@ -351,8 +351,7 @@ def test_anomaly_rules_support_owner_crud_and_validation() -> None:
 
         client.cookies.set("turnstile_session", MEMBER_SESSION)
         member_listed = client.get("/api/v1/anomaly-rules")
-        assert member_listed.status_code == 200
-        assert len(member_listed.json()["items"]) == 5
+        assert member_listed.status_code == 403
         client.cookies.set("turnstile_session", OWNER_SESSION)
 
         removed = client.delete(
@@ -627,13 +626,7 @@ def test_monthly_token_budgets_track_usage_and_enforce_parent_limit() -> None:
             "/api/v1/budgets",
             params={"period": "2026-07"},
         )
-        assert member_view.status_code == 200
-        member_payload = member_view.json()
-        assert {
-            key: value for key, value in member_payload.items() if key != "generated_at"
-        } == {
-            key: value for key, value in compact_payload.items() if key != "generated_at"
-        }
+        assert member_view.status_code == 403
         client.cookies.set("turnstile_session", OWNER_SESSION)
 
         protected_parent = client.delete(
@@ -941,7 +934,7 @@ def test_people_budget_directory_is_bounded_at_ten_thousand_users(
             for index in range(10_000)
         ],
     )
-    monkeypatch.setattr(budget_service, "enterprise_catalog", lambda: catalog)
+    monkeypatch.setattr(budget_service, "catalog_for", lambda *args, **kwargs: catalog)
     repository = InMemoryRepository()
     app.dependency_overrides[get_repository] = lambda: repository
     headers = {"X-Hive-Role": "owner"}

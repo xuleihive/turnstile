@@ -2,6 +2,7 @@
 
 - [Architecture](architecture.md)
 - [Configuration](configuration.md)
+- [Organization Management](organization-management.md)
 - [Deployment](deployment.md)
 - [Testing](testing.md)
 - [End-to-End Validation](e2e-validation.md)

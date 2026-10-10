@@ -6,6 +6,7 @@ EXPECTED_DOCUMENTS = {
     "README.md",
     "architecture.md",
     "configuration.md",
+    "organization-management.md",
     "deployment.md",
     "e2e-validation.md",
     "security.md",

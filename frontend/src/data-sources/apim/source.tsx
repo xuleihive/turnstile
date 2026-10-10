@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import type { ReactNode } from "react"
+import { usageArchiveFilter } from "../../lib/usage-filter-scope"
 
 import { usageWindow } from "./api"
 import { prefetchPage, type PrefetchablePage } from "./queries"
@@ -37,6 +38,7 @@ const apimPageIds = new Set([
   "models",
   "pinned-report",
   "settings",
+  "organization-management",
 ])
 
 export function normalizeApimPage(page: string) {
@@ -67,7 +69,7 @@ export function prefetchApimPage(
 }
 
 export function defaultApimFilters(days = 30, scope: FinOpsScope = {}): UsageFilters {
-  return { ...usageWindow(days), ...scope }
+  return { ...usageWindow(days), ...scope, directory_status: usageArchiveFilter(scope.directory_status) }
 }
 
 export function renderApimPage({

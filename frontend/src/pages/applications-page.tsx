@@ -688,7 +688,7 @@ export function ApplicationsPage() {
     const detailConsumer = detailCategory === "agents" ? "智能体" : "应用"
     const DetailIcon = detailCategory === "agents" ? Bot : AppWindow
     return <div className="application-detail-workspace">
-    <header className="application-detail-breadcrumb"><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>订阅对象</a><ChevronRight size={13} /><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>{detailCategory === "agents" ? "智能体" : "应用"}</a><ChevronRight size={13} /><code title={detail.data?.display_name}>{detail.data?.display_name ?? applicationId}</code></header>
+    <header className="application-detail-breadcrumb"><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>订阅管理</a><ChevronRight size={13} /><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>{detailCategory === "agents" ? "智能体" : "应用"}</a><ChevronRight size={13} /><code title={detail.data?.display_name}>{detail.data?.display_name ?? applicationId}</code></header>
     {detail.error ? <div className="smh-empty application-detail-error"><DetailIcon size={28} /><b>{detailCategory === "agents" ? "无法加载智能体详情" : "无法加载应用详情"}</b><span>{String(detail.error)}</span><a className="ghost-button" href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>返回{detailCategory === "agents" ? "智能体" : "应用"}</a></div>
       : <main className="application-detail"><ApplicationDetailView application={detail.data} loading={detail.isLoading} modelNames={modelNames} canEditAvatar={detail.data?.avatar_url !== undefined} canManage={user?.role === "owner"} governanceWriteAvailable={detail.data?.governance_write_available === true} models={registry.data?.models ?? []} /></main>}
   </div>
@@ -700,7 +700,7 @@ export function ApplicationsPage() {
       <Button type="button" variant="ghost" size="icon-sm" disabled={busy} onClick={() => setCreateOpen(true)} aria-label={`添加${consumer}`} title={`添加${consumer}`}><Plus size={16} /></Button>
     </div>, mobileActionsTarget)}
     <header className="smh-page-header applications-header">
-      <div><span className="smh-header-icon"><KeyRound size={17} /></span><h1>订阅对象</h1><span>{applications.isLoading ? "—" : items.length}</span></div>
+      <div><span className="smh-header-icon"><KeyRound size={17} /></span><h1>订阅管理</h1><span>{applications.isLoading ? "—" : items.length}</span></div>
       <div className="smh-header-actions">
         {user?.role === "owner" ? <><Button variant="outline" disabled={!gatewayId || !applications.data?.sync_available || busy} onClick={() => gatewayId && syncMutation.mutate(gatewayId)} title={applications.data?.sync_available ? "从 APIM 刷新订阅库存" : applications.data?.sync_unavailable_reason ?? "发布工作进程未部署"}>{busy ? <RefreshCw className="spin" size={13} /> : <RefreshCw size={13} />}同步 APIM</Button><Button disabled={busy} onClick={() => setCreateOpen(true)} title={`添加${consumer}`}><Plus size={14} />添加{consumer}</Button></> : <span className="applications-readonly"><ShieldAlert size={13} />只读</span>}
       </div>

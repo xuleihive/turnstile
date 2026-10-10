@@ -28,6 +28,69 @@ logger = logging.getLogger(__name__)
 
 @app.timer_trigger(
     arg_name="timer",
+    schedule="25 * * * * *",
+    run_on_startup=False,
+    use_monitor=True,
+)
+def project_directory_identities(timer: func.TimerRequest) -> None:
+    del timer
+    settings = get_settings()
+    if not settings.directory_identity_projection_enabled:
+        return
+    from turnstile_core.integrations.directory_identity_table import TableDirectoryIdentityStore
+    from turnstile_core.persistence.directory_store import directory_store
+    from turnstile_core.services.directory_projection import DirectoryProjectionWorker
+
+    if not settings.database_url or not settings.ledger_table_endpoint:
+        logger.error("Directory identity projection requires PostgreSQL and the existing ledger")
+        return
+    with TableDirectoryIdentityStore(
+        settings.ledger_table_endpoint, settings.ledger_table_name
+    ) as writer:
+        result = DirectoryProjectionWorker(directory_store(settings.database_url), writer).run_once(
+            worker_id=os.environ.get("WEBSITE_INSTANCE_ID", "directory-projector-local")[:128],
+        )
+    if result:
+        logger.info("Directory projection %s advanced to %s", result["id"], result["status"])
+
+
+@app.timer_trigger(
+    arg_name="timer",
+    schedule="5 * * * * *",
+    run_on_startup=False,
+    use_monitor=True,
+)
+def synchronize_directory(timer: func.TimerRequest) -> None:
+    del timer
+    settings = get_settings()
+    if not settings.directory_sync_enabled:
+        return
+    from turnstile_core.integrations.entra_directory import GraphDirectoryClient
+    from turnstile_core.persistence.directory_store import directory_store
+    from turnstile_core.services.directory_sync_worker import DirectorySyncWorker
+
+    if not settings.database_url:
+        logger.error("Directory synchronization requires PostgreSQL")
+        return
+    worker = DirectorySyncWorker(
+        directory_store(settings.database_url),
+        lambda connection: GraphDirectoryClient(
+            connection,
+            managed_identity_tenant_id=settings.directory_managed_identity_tenant_id,
+            deployment_cloud=settings.directory_deployment_cloud,
+        ),
+        CredentialCipher.from_settings(settings),
+    )
+    worker.enqueue_due()
+    result = worker.run_once(
+        worker_id=os.environ.get("WEBSITE_INSTANCE_ID", "directory-local")[:128],
+    )
+    if result:
+        logger.info("Directory sync %s advanced to %s", result["id"], result["status"])
+
+
+@app.timer_trigger(
+    arg_name="timer",
     schedule="*/30 * * * * *",
     run_on_startup=False,
     use_monitor=True,
@@ -35,10 +98,7 @@ logger = logging.getLogger(__name__)
 def publish_gateway_changes(timer: func.TimerRequest) -> None:
     del timer
     settings = get_settings()
-    if not (
-        settings.control_plane_enabled
-        and settings.gateway_publication_worker_enabled
-    ):
+    if not (settings.control_plane_enabled and settings.gateway_publication_worker_enabled):
         return
     repository = create_repository(settings)
     publisher = AzureApimPublisherClient(settings)
@@ -91,10 +151,7 @@ def publish_gateway_changes(timer: func.TimerRequest) -> None:
 def process_gateway_release_operations(timer: func.TimerRequest) -> None:
     del timer
     settings = get_settings()
-    if not (
-        settings.control_plane_enabled
-        and settings.gateway_release_worker_enabled
-    ):
+    if not (settings.control_plane_enabled and settings.gateway_release_worker_enabled):
         return
     repository = create_repository(settings)
     publisher = AzureApimPublisherClient(settings)

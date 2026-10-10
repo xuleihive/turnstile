@@ -1,4 +1,94 @@
 paths:
+  /api/v1/model-management/price-preview:
+    post:
+      tags: [Model Platform]
+      operationId: previewModelPrice
+      summary: Preview provider-specific pricing with bounded default-model matching
+      description: Owner-only; previews do not mutate model configuration. AI matching may incur usage.
+      security: [{sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '../../openapi.yaml#/components/schemas/PricePreviewRequest'}
+      responses:
+        '200':
+          description: Matching result, authoritative prices and source warnings
+          content:
+            application/json:
+              schema: {$ref: '../../openapi.yaml#/components/schemas/PricePreviewResponse'}
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/price-sync:
+    post:
+      tags: [Model Platform]
+      operationId: syncModelPrices
+      summary: Synchronize each model using its configured pricing source
+      description: >-
+        Owner-only. Explicit manual models are skipped; absent configuration follows models.dev.
+        Context windows and routing are unchanged. dry_run performs no configuration writes or AI calls.
+      security: [{sessionCookie: []}]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '../../openapi.yaml#/components/schemas/PriceSyncRequest'}
+      responses:
+        '200':
+          description: Per-model outcomes and refreshed registry
+          content:
+            application/json:
+              schema: {$ref: '../../openapi.yaml#/components/schemas/PriceSyncResponse'}
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/price-catalog/models:
+    get:
+      tags: [Model Platform]
+      operationId: searchPriceCatalogModels
+      summary: Search public catalog model names
+      security: [{sessionCookie: []}]
+      parameters:
+      - in: query
+        name: q
+        schema: {type: string, maxLength: 120}
+      - in: query
+        name: source
+        description: Read only this source; omission searches all sources for compatibility.
+        schema: {$ref: '../../openapi.yaml#/components/schemas/PriceSource'}
+      responses:
+        '200':
+          description: Catalog model names and unavailable sources
+          content:
+            application/json:
+              schema: {$ref: '../../openapi.yaml#/components/schemas/PriceCatalogModelsResponse'}
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/price-catalog/options:
+    get:
+      tags: [Model Platform]
+      operationId: getPriceCatalogOptions
+      summary: Read deployment-specific catalog pricing options
+      security: [{sessionCookie: []}]
+      parameters:
+      - in: query
+        name: model
+        required: true
+        schema: {type: string, maxLength: 1500}
+      responses:
+        '200':
+          description: Catalog options, completeness and warnings
+          content:
+            application/json:
+              schema: {$ref: '../../openapi.yaml#/components/schemas/PriceCatalogOptionsResponse'}
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
   /api/v1/model-gateway/images/generations:
     post:
       tags: [Model Gateway]

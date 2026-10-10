@@ -81,9 +81,11 @@ export function useAssistantController({
   const { timezone } = useTimezone()
   const { locale } = useLocale()
 
-  // Read rather than fetch on open: the sidebar already holds this query, so the pin
-  // dialog's report list is served from cache.
-  const pinnedReports = useQuery(pinnedChartsQuery(source === "apim" ? owner : null))
+  // The report center and pin dialog share the cache; a closed assistant does not fetch it.
+  const pinnedReports = useQuery({
+    ...pinnedChartsQuery(source === "apim" ? owner : null),
+    enabled: source === "apim" && Boolean(owner && pinTarget),
+  })
   const conversations = useQuery({
     ...conversationsQuery(source, owner),
     enabled: conversationsEnabled,

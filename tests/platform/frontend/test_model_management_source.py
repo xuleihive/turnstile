@@ -388,9 +388,9 @@ def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     ).read_text(encoding="utf-8")
     styles = read_frontend_styles()
 
-    assert '{ label: "APIM 后端池", icon: Network, page: "apim-native-routes" }' in app
+    assert '{ label: "负载均衡", icon: Network, page: "apim-native-routes" }' in app
     assert 'page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen=' in app
-    assert 'aria-label="打开 APIM 后端池列表"' in app
+    assert 'aria-label="打开负载均衡列表"' in app
     assert 'className="settings-mobile-topbar-end-action"' in app
     assert "ApimNativeRouteDialog" not in model_page
     assert "model-route-action" not in model_page

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
+
+from ..domain.data_access import DataAccessScope
 
 
 def _activation_runtime_config(binding: Mapping[str, Any]) -> dict[str, Any]:
@@ -46,14 +48,48 @@ def _activation_runtime_config(binding: Mapping[str, Any]) -> dict[str, Any]:
     return config
 
 
+UsageDirectoryStatus = Literal["active", "archived", "historical", "unattributed"]
+USAGE_DIRECTORY_STATUSES: tuple[UsageDirectoryStatus, ...] = (
+    "active", "archived", "historical", "unattributed",
+)
+
+
+@dataclass(frozen=True)
+class UsageDirectoryScope:
+    statuses: tuple[UsageDirectoryStatus, ...]
+    active_organizations: tuple[str, ...]
+    archived_organizations: tuple[str, ...]
+    active_departments: Mapping[str, str]
+    archived_departments: tuple[str, ...]
+    archived_users: tuple[str, ...]
+
+    def status(
+        self, organization_id: str, department_id: str, user_id: str,
+    ) -> UsageDirectoryStatus:
+        if organization_id == "unattributed" or department_id == "unattributed":
+            return "unattributed"
+        if (
+            organization_id in self.archived_organizations
+            or department_id in self.archived_departments
+            or user_id in self.archived_users
+        ):
+            return "archived"
+        if (
+            organization_id in self.active_organizations
+            and self.active_departments.get(department_id) == organization_id
+        ):
+            return "active"
+        return "historical"
+
+
 @dataclass(frozen=True)
 class UsageFilters:
-    organization_id: str | None = None
-    department_id: str | None = None
-    project_id: str | None = None
-    agent_id: str | None = None
-    model_id: str | None = None
-    user_id: str | None = None
+    organization_id: str | tuple[str, ...] | None = None
+    department_id: str | tuple[str, ...] | None = None
+    project_id: str | tuple[str, ...] | None = None
+    agent_id: str | tuple[str, ...] | None = None
+    model_id: str | tuple[str, ...] | None = None
+    user_id: str | tuple[str, ...] | None = None
     # The access points a request arrived through, e.g. 'Microsoft Foundry via APIM' or
     # 'GitHub Copilot CLI'. Matched on the display name because token_usage.runtime is the
     # name itself; the registry UUID is never written into telemetry. Several names are
@@ -61,6 +97,9 @@ class UsageFilters:
     # be answerable without inventing a channel column the ingestion path does not produce.
     runtime: tuple[str, ...] | None = None
     status_code: int | None = None
+    allowed_department_ids: tuple[str, ...] | None = None
+    directory_scope: UsageDirectoryScope | None = None
+    data_scope: DataAccessScope | None = None
 
 
 CACHE_DIMENSION_FIELDS = {
@@ -76,6 +115,8 @@ CACHE_DIMENSION_FIELDS = {
 
 def cache_scope_for_filters(filters: UsageFilters) -> tuple[str, tuple[str, ...]] | None:
     """Use the bounded APIM metric only for an unfiltered global view."""
+    if filters.allowed_department_ids is not None or filters.data_scope is not None:
+        return None
     if any(
         (
             filters.organization_id,
@@ -86,6 +127,7 @@ def cache_scope_for_filters(filters: UsageFilters) -> tuple[str, tuple[str, ...]
             filters.model_id,
             filters.runtime,
             filters.status_code,
+            filters.directory_scope,
         )
     ):
         return None

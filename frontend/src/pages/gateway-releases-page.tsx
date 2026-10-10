@@ -312,7 +312,7 @@ function ReleaseDetail({ release, loading, canManage, operationsEnabled, busy, o
           <header className="gateway-release-card-head"><div><h2>相对基础版本的变更</h2></div><span data-no-localize>{changeCount(changes)}</span></header>
           <div className="gateway-release-change-grid">
             <ChangeColumn title="模型" added={changes.added_models} removed={changes.removed_models} changed={changes.changed_models} />
-            <ChangeColumn title="APIM 后端池" added={changes.added_backend_pools} removed={changes.removed_backend_pools} changed={changes.changed_backend_pools} />
+            <ChangeColumn title="负载均衡" added={changes.added_backend_pools} removed={changes.removed_backend_pools} changed={changes.changed_backend_pools} />
           </div>
         </section>
 

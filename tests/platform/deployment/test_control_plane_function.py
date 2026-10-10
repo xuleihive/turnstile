@@ -25,9 +25,19 @@ def test_disabled_publication_timer_does_not_build_dependencies(monkeypatch: Any
     function_app.publish_gateway_changes(None)
 
 
+def test_disabled_directory_timers_do_not_build_dependencies(monkeypatch: Any) -> None:
+    settings = SimpleNamespace(
+        directory_sync_enabled=False, directory_identity_projection_enabled=False
+    )
+    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
+    function_app.synchronize_directory(None)
+    function_app.project_directory_identities(None)
+
+
 @pytest.mark.parametrize("provisioning_enabled", (False, True))
 def test_release_timer_never_constructs_publication_worker(
-    monkeypatch: Any, provisioning_enabled: bool,
+    monkeypatch: Any,
+    provisioning_enabled: bool,
 ) -> None:
     settings = SimpleNamespace(
         control_plane_enabled=True,
@@ -88,9 +98,7 @@ def test_release_timer_never_constructs_publication_worker(
                 "parent_policy": None,
             }
 
-        def run_once(
-            self, worker_id: str, lease_seconds: int, max_attempts: int
-        ) -> None:
+        def run_once(self, worker_id: str, lease_seconds: int, max_attempts: int) -> None:
             calls.append((worker_id, lease_seconds, max_attempts))
 
     class PublicationWorker:
@@ -100,9 +108,7 @@ def test_release_timer_never_constructs_publication_worker(
     monkeypatch.setattr(function_app, "get_settings", lambda: settings)
     monkeypatch.setattr(function_app, "create_repository", lambda _: repository)
     monkeypatch.setattr(function_app, "AzureApimPublisherClient", lambda _: publisher)
-    monkeypatch.setattr(
-        CredentialCipher, "from_settings", lambda _: cipher
-    )
+    monkeypatch.setattr(CredentialCipher, "from_settings", lambda _: cipher)
     monkeypatch.setattr(function_app, "GatewayReleaseOperationWorker", ReleaseWorker)
     monkeypatch.setattr(function_app, "GatewayPublicationWorker", PublicationWorker)
     monkeypatch.setattr(function_app, "TableStorageLedger", Ledger)
@@ -112,8 +118,12 @@ def test_release_timer_never_constructs_publication_worker(
     function_app.process_gateway_release_operations(None)
 
     assert calls == [("release-worker-instance", 180, 30)]
-    assert ledger_calls == ([
-        ("https://ledger.example.test", "TurnstileLedger"),
-        (UUID(int=1), UUID(int=2)),
-        ("closed",),
-    ] if provisioning_enabled else [])
+    assert ledger_calls == (
+        [
+            ("https://ledger.example.test", "TurnstileLedger"),
+            (UUID(int=1), UUID(int=2)),
+            ("closed",),
+        ]
+        if provisioning_enabled
+        else []
+    )

@@ -7,7 +7,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, HttpUrl, SecretStr, model_validator
+from pydantic import Field, HttpUrl, PrivateAttr, SecretStr, model_validator
 
 from .image_profiles import ImageGenerationLimits, ImageGenerationProfile
 from .models import StrictModel
@@ -214,6 +214,12 @@ class GatewayKind(StrEnum):
     DIRECT = "direct"
 
 
+class InvocationApiFormat(StrEnum):
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
 class RuntimeKind(StrEnum):
     COPILOT_CLI = "copilot_cli"
     FOUNDRY = "foundry"
@@ -249,6 +255,7 @@ class PriceSource(StrEnum):
     """
 
     MANUAL = "manual"
+    MODELS_DEV = "models_dev"
     AZURE_RETAIL = "azure_retail"
     ANTHROPIC = "anthropic"
 
@@ -262,6 +269,9 @@ class PriceSyncStatus(StrEnum):
     # was discarded. Distinct from `stale`: the source was read fine, the answer just no longer
     # applies to the row it was computed for.
     SUPERSEDED = "superseded"
+    AMBIGUOUS = "ambiguous"
+    UNSUPPORTED = "unsupported"
+    DEFERRED = "deferred"
 
 
 class GatewayProfileWrite(StrictModel):
@@ -459,13 +469,13 @@ class ManagedModelWrite(StrictModel):
     # OpenAI 1.25x on GPT-5.6 and later). None falls back to the cached rate.
     cache_write_cost_per_million: float | None = Field(default=None, ge=0)
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
-    # `manual` is the default so an existing registry keeps behaving exactly as it did: the four
-    # rates above stay whatever someone typed, and the price sync leaves the row alone.
-    price_source: PriceSource = PriceSource.MANUAL
-    price_reference: str | None = Field(default=None, min_length=1, max_length=255)
+    price_source: PriceSource = PriceSource.MODELS_DEV
+    price_reference: str | None = Field(default=None, min_length=1, max_length=1500)
     # Percent of list price this model is charged at, overriding the connection's own figure.
     # None inherits it. This is a commercial term, so nothing derives it -- a person types it.
     price_discount_percent: float | None = Field(default=None, gt=0, le=100)
+    price_entry_digest: str | None = Field(default=None, max_length=64)
+    allow_unpriced: bool = False
 
     @model_validator(mode="after")
     def validate_image_model(self) -> ManagedModelWrite:
@@ -478,7 +488,8 @@ class ManagedModelWrite(StrictModel):
 
     @model_validator(mode="after")
     def validate_price_source(self) -> ManagedModelWrite:
-        if self.price_source is not PriceSource.MANUAL and not self.price_reference:
+        if self.price_source in {PriceSource.AZURE_RETAIL, PriceSource.ANTHROPIC} \
+                and not self.price_reference:
             raise ValueError("Following a list price requires the catalog entry to follow")
         return self
 
@@ -515,6 +526,10 @@ class ManagedModel(ManagedModelWrite):
     # Resolved from the model's own figure or the connection's, so the caller does not have to
     # know which one applied.
     effective_discount_percent: float | None = None
+    price_source_configured: bool = True
+    price_config_updated_at: datetime | None = None
+    match_metadata: dict[str, Any] | None = None
+    source_snapshot: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -554,6 +569,7 @@ class PriceCatalogOption(StrictModel):
     output_per_million: float | None = None
     cached_per_million: float | None = None
     cache_write_per_million: float | None = None
+    context_window: int | None = None
 
 
 class PriceCatalogOptionsResponse(StrictModel):
@@ -575,13 +591,61 @@ class PriceSyncRequest(StrictModel):
     """Which models to sync. Omitting the list syncs everything that follows a list price."""
 
     model_ids: list[UUID] | None = None
+    refresh: bool = True
+    dry_run: bool = False
+
+
+class PricePreviewRequest(StrictModel):
+    model_id: UUID | None = None
+    runtime_id: UUID | None = None
+    price_source: PriceSource = PriceSource.MODELS_DEV
+    deployment_name: str | None = Field(default=None, max_length=500)
+    upstream_model_id: str | None = Field(default=None, max_length=500)
+    display_name: str | None = Field(default=None, max_length=255)
+    model_key: str | None = Field(default=None, max_length=255)
+    operation: Literal["chat", "image_generation"] = "chat"
+    price_reference: str | None = Field(default=None, max_length=1500)
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
+    refresh: bool = False
+    rematch: bool = False
+
+
+class PriceMatch(StrictModel):
+    reference: str
+    provider_id: str
+    model_id: str
+    name: str
+    canonical_model_id: str | None = None
+    method: Literal["exact", "ai", "manual", "stored"] = "exact"
+    price_basis: Literal["deployment", "origin_reference"] = "deployment"
+    reason: str | None = None
+    default_model_id: UUID | None = None
+
+
+class PricePreviewResponse(StrictModel):
+    status: Literal["matched", "unmapped", "ambiguous", "stale", "unsupported", "deferred"]
+    match: PriceMatch | None = None
+    context_window: int | None = None
+    list_prices: PendingListPrice | None = None
+    effective_prices: PendingListPrice | None = None
+    effective_discount_percent: float | None = None
+    entry_digest: str | None = None
+    catalog_snapshot_id: str | None = None
+    fetched_at: datetime | None = None
+    source_updated_at: str | None = None
+    fresh: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    candidates: list[PriceMatch] = Field(default_factory=list)
 
 
 class PriceSyncDetail(StrictModel):
     model_id: UUID
     model_key: str
-    status: PriceSyncStatus
+    status: PriceSyncStatus | None = None
     message: str | None = None
+    outcome: str | None = None
+    price_source: PriceSource | None = None
+    price_reference: str | None = None
 
 
 class RegistryResponse(StrictModel):
@@ -614,6 +678,14 @@ class PriceSyncResponse(StrictModel):
     # Planned a write, then found the model's pricing had been edited in the meantime and left
     # it alone. Counted separately from `stale`: the source was fine, the plan was not.
     superseded: int = 0
+    total: int = 0
+    unchanged: int = 0
+    skipped_manual: int = 0
+    ambiguous: int = 0
+    unsupported: int = 0
+    deferred: int = 0
+    partial_fields: int = 0
+    dry_run: bool = False
     details: list[PriceSyncDetail]
     registry: RegistryResponse
 
@@ -680,6 +752,9 @@ class ChatMessage(StrictModel):
     content: str | None = Field(default=None, max_length=200_000)
     tool_calls: list[ToolCall] | None = Field(default=None, max_length=20)
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=255)
+    # Opaque reasoning and output items live only within the current tool loop.
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def check_shape_matches_role(self) -> ChatMessage:
@@ -712,6 +787,7 @@ class ModelInvocationRequest(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     response_format: Literal["json_object"] | None = None
     stream: bool = False
+    api_format: InvocationApiFormat | None = None
 
 
 class InvocationUsage(StrictModel):
@@ -740,6 +816,18 @@ class ModelInvocationResponse(StrictModel):
     latency_ms: int = Field(ge=0)
     usage: InvocationUsage | None
     estimated_cost: float | None = Field(default=None, ge=0)
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
+
+    def assistant_message(self) -> ChatMessage:
+        message = ChatMessage(
+            role="assistant",
+            content=self.content or None,
+            tool_calls=self.tool_calls,
+        )
+        message._responses_output = self._responses_output
+        message._anthropic_content = self._anthropic_content
+        return message
 
 
 class TrafficGenerationRequest(StrictModel):

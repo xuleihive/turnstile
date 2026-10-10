@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from ..domain.anomaly_engine import evaluate_anomaly_rules
 from ..domain.application_access import UsageApplicationAttribution
 from ..domain.billable_requests import BillableRequestAttempt
-from ..domain.enterprise import enterprise_catalog
+from ..domain.enterprise import enterprise_catalog, historical_entity_catalog
 from ..domain.ledger import BudgetReservationAdmission, BudgetReservationFinalization
 from ..domain.models import (
     ApimCacheReadBucket,
@@ -19,6 +19,7 @@ from ..domain.models import (
     OptimizationEventCreate,
     ReconciledUsage,
     TokenUsageRecord,
+    UsageQueryEntityCatalog,
 )
 from .in_memory_applications import InMemoryApplicationRepositoryMixin
 from .in_memory_assistant import InMemoryAssistantRepositoryMixin
@@ -26,6 +27,7 @@ from .in_memory_billable_requests import InMemoryBillableRequestRepositoryMixin
 from .in_memory_budgets import InMemoryBudgetRepositoryMixin
 from .in_memory_publications import InMemoryPublicationRepositoryMixin
 from .in_memory_registry import InMemoryRegistryRepositoryMixin
+from .personal_usage import InMemoryPersonalUsageRepositoryMixin
 from .repository import (
     CACHE_DIMENSION_FIELDS,
     QueryRepository,
@@ -77,6 +79,7 @@ def metric(et: float, input_: int, cached: int, output: int, calls: int) -> dict
 
 
 class InMemoryRepository(
+    InMemoryPersonalUsageRepositoryMixin,
     InMemoryRegistryRepositoryMixin,
     InMemoryApplicationRepositoryMixin,
     InMemoryPublicationRepositoryMixin,
@@ -399,10 +402,8 @@ class InMemoryRepository(
             if existing.estimated and not record.estimated:
                 self.usage_records[index] = record.model_copy(
                     update={
-                        "budget_admission": record.budget_admission
-                        or existing.budget_admission,
-                        "model_admission": record.model_admission
-                        or existing.model_admission,
+                        "budget_admission": record.budget_admission or existing.budget_admission,
+                        "model_admission": record.model_admission or existing.model_admission,
                     }
                 )
             elif not existing.estimated and not record.estimated:
@@ -455,9 +456,10 @@ class InMemoryRepository(
     def model_identities(self) -> dict[str, ModelIdentity]:
         identities: dict[str, ModelIdentity] = {}
         for publication in self.gateway_publications:
-            if publication["publication_kind"] != "model_remove" or publication[
-                "status"
-            ] not in {"active", "superseded"}:
+            if publication["publication_kind"] != "model_remove" or publication["status"] not in {
+                "active",
+                "superseded",
+            }:
                 continue
             for target in publication["desired_spec"].get("removed_models", []):
                 model_id = str(target["model_id"])
@@ -516,9 +518,7 @@ class InMemoryRepository(
                     ),
                     "estimated_cost": _repriced(record, item),
                     "estimated": cache_unknown,
-                    "ingest_error": (
-                        "stream_cache_usage_unavailable" if cache_unknown else None
-                    ),
+                    "ingest_error": ("stream_cache_usage_unavailable" if cache_unknown else None),
                 }
             )
             self.reconciled_usage_ids.add(record.id)
@@ -584,14 +584,10 @@ class InMemoryRepository(
         dimension_type: str,
         dimension_values: Sequence[str],
     ) -> None:
-        metric = self.apim_cache_read_totals(
-            from_, to, dimension_type, dimension_values
-        )
+        metric = self.apim_cache_read_totals(from_, to, dimension_type, dimension_values)
         if not metric:
             return
-        dimension_field = (
-            dimension_type if dimension_type == "runtime" else f"{dimension_type}_id"
-        )
+        dimension_field = dimension_type if dimension_type == "runtime" else f"{dimension_type}_id"
         database_cache = int(totals.get("cache_read_tokens", 0))
         metric_cache = 0
         database_apim_cache = 0
@@ -608,13 +604,24 @@ class InMemoryRepository(
             )
         corrected = database_cache + max(metric_cache - database_apim_cache, 0)
         totals["cache_read_tokens"] = corrected
-        totals["total_tokens"] = max(
-            int(totals["total_tokens"]) + corrected - database_cache, 0
-        )
+        totals["total_tokens"] = max(int(totals["total_tokens"]) + corrected - database_cache, 0)
 
     @staticmethod
     def _matches(record: TokenUsageRecord, filters: UsageFilters) -> bool:
+        if (
+            filters.allowed_department_ids is not None
+            and record.department_id not in filters.allowed_department_ids
+        ):
+            return False
         if record.usage_domain != "apim":
+            return False
+        if filters.data_scope is not None and not filters.data_scope.allows(
+            record.department_id, record.user_id,
+        ):
+            return False
+        if filters.directory_scope is not None and filters.directory_scope.status(
+            record.organization_id, record.department_id, record.user_id,
+        ) not in filters.directory_scope.statuses:
             return False
         for field, value in (
             ("organization_id", filters.organization_id),
@@ -671,11 +678,7 @@ class InMemoryRepository(
         latencies = [float(record.latency_ms) for record in records]
 
         def in_band(low: float, high: float | None) -> int:
-            return sum(
-                1
-                for value in latencies
-                if value >= low and (high is None or value < high)
-            )
+            return sum(1 for value in latencies if value >= low and (high is None or value < high))
 
         return {
             "total_tokens": sum(
@@ -683,8 +686,7 @@ class InMemoryRepository(
                 for record in records
             ),
             "cache_read_tokens": sum(
-                max(record.cached_tokens - record.cache_write_tokens, 0)
-                for record in records
+                max(record.cached_tokens - record.cache_write_tokens, 0) for record in records
             ),
             "total_requests": count,
             "estimated_cost": round(sum(record.estimated_cost for record in records), 8),
@@ -692,18 +694,14 @@ class InMemoryRepository(
                 sum(record.latency_ms for record in records) / count if count else 0, 2
             ),
             "error_rate": round(
-                100 * sum(record.status_code >= 400 for record in records) / count
-                if count
-                else 0,
+                100 * sum(record.status_code >= 400 for record in records) / count if count else 0,
                 2,
             ),
             "p50_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.5),
             "p95_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.95),
             "p99_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.99),
             "success_requests": sum(record.status_code < 400 for record in records),
-            "client_error_requests": sum(
-                400 <= record.status_code < 500 for record in records
-            ),
+            "client_error_requests": sum(400 <= record.status_code < 500 for record in records),
             "server_error_requests": sum(record.status_code >= 500 for record in records),
             "latency_under_1s": in_band(0, 1000),
             "latency_1_to_2s": in_band(1000, 2000),
@@ -745,8 +743,7 @@ class InMemoryRepository(
             "generated_at": datetime.now(UTC),
             "totals": current,
             "changes_percent": {
-                key: self._change(float(current[key]), float(previous[key]))
-                for key in current
+                key: self._change(float(current[key]), float(previous[key])) for key in current
             },
         }
 
@@ -770,42 +767,44 @@ class InMemoryRepository(
             "runtime": ("runtime", "runtime"),
         }
         id_field, name_field = fields[dimension]
-        grouped: dict[tuple[str, str], list[TokenUsageRecord]] = {}
+        grouped: dict[str, list[TokenUsageRecord]] = {}
         records = self._usage_between(from_, to, filters)
         for record in records:
-            key = (str(getattr(record, id_field)), str(getattr(record, name_field)))
+            key = str(getattr(record, id_field))
             grouped.setdefault(key, []).append(record)
         total_cost = sum(record.estimated_cost for record in records)
         items = []
-        for (id_, name), values in grouped.items():
+        for id_, values in grouped.items():
+            latest = max(values, key=lambda record: (record.ts, record.id))
+            name = str(getattr(latest, name_field))
             totals = self._executive_totals(values)
             if cache_distribution_supported(dimension, filters):
-                self._apply_metric_cache(
-                    totals, values, from_, to, dimension, (id_,)
-                )
+                self._apply_metric_cache(totals, values, from_, to, dimension, (id_,))
             cost = float(totals["estimated_cost"])
             breakdown: list[dict[str, Any]] = []
             if split_by is not None:
                 split_id, split_name = fields[split_by]
-                children: dict[tuple[str, str], list[TokenUsageRecord]] = {}
+                children: dict[str, list[TokenUsageRecord]] = {}
                 for record in values:
-                    child_key = (
-                        str(getattr(record, split_id)),
-                        str(getattr(record, split_name)),
-                    )
+                    child_key = str(getattr(record, split_id))
                     children.setdefault(child_key, []).append(record)
                 breakdown = sorted(
                     (
                         {
                             "id": child_id,
-                            "name": child_name,
+                            "name": str(
+                                getattr(
+                                    max(child_values, key=lambda record: (record.ts, record.id)),
+                                    split_name,
+                                )
+                            ),
                             "total_tokens": sum(
                                 item.input_tokens + item.cached_tokens + item.output_tokens
                                 for item in child_values
                             ),
                             "total_requests": len(child_values),
                         }
-                        for (child_id, child_name), child_values in children.items()
+                        for child_id, child_values in children.items()
                     ),
                     key=lambda entry: -int(entry["total_tokens"]),
                 )
@@ -891,6 +890,35 @@ class InMemoryRepository(
             "budget_admission": record.budget_admission,
             "model_admission": record.model_admission,
         }
+
+    def historical_entities(
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+    ) -> UsageQueryEntityCatalog:
+        rows: list[dict[str, Any]] = []
+        for record in sorted(
+            self._usage_between(from_, to, filters),
+            key=lambda item: (item.ts, item.id),
+            reverse=True,
+        ):
+            for kind, identity, name, parent in (
+                ("organization", record.organization_id, record.organization, None),
+                ("department", record.department_id, record.department, record.organization_id),
+                ("project", record.project_id, record.project, record.department_id),
+                ("agent", record.agent_id, record.agent, record.project_id),
+                ("user", record.user_id, record.user, record.department_id),
+            ):
+                rows.append(
+                    {
+                        "scope_type": kind,
+                        "scope_id": identity,
+                        "scope_name": name,
+                        "parent_scope_id": parent,
+                    }
+                )
+        return historical_entity_catalog(rows)
 
     def observed_users(self) -> list[dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
@@ -1061,8 +1089,7 @@ class InMemoryRepository(
                 if "copilot" in f"{model_key} {display_name}".lower()
                 else "openai"
                 if any(
-                    value in f"{model_key} {display_name}".lower()
-                    for value in ("gpt", "openai")
+                    value in f"{model_key} {display_name}".lower() for value in ("gpt", "openai")
                 )
                 else "generic"
             ),
@@ -1137,7 +1164,7 @@ class InMemoryRepository(
             "team": ("team", "team"),
         }
         id_field, name_field = fields[group_by] if group_by != "none" else (None, None)
-        grouped: dict[tuple[datetime, str, str], list[TokenUsageRecord]] = {}
+        grouped: dict[tuple[datetime, str], list[TokenUsageRecord]] = {}
         for record in self._usage_between(from_, to, filters):
             if interval == "hour":
                 bucket = record.ts.replace(minute=0, second=0, microsecond=0)
@@ -1147,10 +1174,19 @@ class InMemoryRepository(
             else:
                 bucket = record.ts.replace(hour=0, minute=0, second=0, microsecond=0)
             key = "all" if id_field is None else str(getattr(record, id_field))
-            label = "all" if name_field is None else str(getattr(record, name_field))
-            grouped.setdefault((bucket, key, label), []).append(record)
+            grouped.setdefault((bucket, key), []).append(record)
         points: list[dict[str, Any]] = []
-        for (bucket, key, label), records in sorted(grouped.items()):
+        for (bucket, key), records in sorted(grouped.items()):
+            label = (
+                "all"
+                if name_field is None
+                else str(
+                    getattr(
+                        max(records, key=lambda record: (record.ts, record.id)),
+                        name_field,
+                    )
+                )
+            )
             points.append(
                 {
                     "bucket_start": bucket,
@@ -1168,28 +1204,20 @@ class InMemoryRepository(
                             max(record.cached_tokens - record.cache_write_tokens, 0)
                             for record in records
                         ),
-                        "cache_write_tokens": sum(
-                            record.cache_write_tokens for record in records
-                        ),
+                        "cache_write_tokens": sum(record.cache_write_tokens for record in records),
                         "output_tokens": sum(record.output_tokens for record in records),
                         "calls": len(records),
-                        "estimated_cost": sum(
-                            record.estimated_cost or 0.0 for record in records
-                        ),
+                        "estimated_cost": sum(record.estimated_cost or 0.0 for record in records),
                         "p95_latency_ms": InMemoryRepository._percentile_cont(
                             [float(record.latency_ms) for record in records], 0.95
                         ),
-                        "failed_calls": sum(
-                            1 for record in records if record.status_code >= 400
-                        ),
+                        "failed_calls": sum(1 for record in records if record.status_code >= 400),
                     },
                 }
             )
         cache_dimension: str | None = None
         cache_values: tuple[str, ...] | None = None
-        if group_by in CACHE_DIMENSION_FIELDS and cache_distribution_supported(
-            group_by, filters
-        ):
+        if group_by in CACHE_DIMENSION_FIELDS and cache_distribution_supported(group_by, filters):
             cache_dimension = group_by
             cache_values = tuple(sorted({str(point["key"]) for point in points}))
         elif group_by == "none":
@@ -1206,7 +1234,7 @@ class InMemoryRepository(
                     if interval == "hour"
                     else bucket + timedelta(days=7 if interval == "week" else 1)
                 )
-                records = grouped[(bucket, key, str(point["label"]))]
+                records = grouped[(bucket, key)]
                 totals = point["totals"]
                 assert isinstance(totals, dict)
                 self._apply_metric_cache(

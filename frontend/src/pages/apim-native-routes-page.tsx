@@ -161,10 +161,10 @@ export function ApimNativeRoutesPage({
 
   const routeListContent = (closeOnSelect: boolean) => <>
     <div className="gateway-list-controls apim-native-route-list-controls">
-      <label className="smh-search"><Search size={14} /><input value={search} disabled={routeStateLoading} onChange={(event) => setSearch(event.target.value)} placeholder="搜索后端池..." aria-label="搜索 APIM 后端池" /></label>
+      <label className="smh-search"><Search size={14} /><input value={search} disabled={routeStateLoading} onChange={(event) => setSearch(event.target.value)} placeholder="搜索后端池..." aria-label="搜索负载均衡" /></label>
     </div>
-    <div className="gateway-list-scroll" role="list" aria-label="APIM 后端池列表">
-      {routeStateLoading ? <div className="apim-native-route-drawer-state"><RefreshCw className="spin" size={18} />加载 APIM 后端池列表</div> : routeStateError ? <div className="apim-native-route-drawer-state error">无法加载 APIM 后端池</div> : <>{routes.map((model) => {
+    <div className="gateway-list-scroll" role="list" aria-label="负载均衡列表">
+      {routeStateLoading ? <div className="apim-native-route-drawer-state"><RefreshCw className="spin" size={18} />加载负载均衡列表</div> : routeStateError ? <div className="apim-native-route-drawer-state error">无法加载负载均衡</div> : <>{routes.map((model) => {
         const runtimes = equivalentNativeRouteRuntimes(model, registry.data!)
         return <div role="listitem" className={`gateway-list-row ${model.id === selectedModelId ? "active" : ""}`} key={model.id}>
           <button type="button" className="gateway-list-main" onClick={() => {
@@ -183,16 +183,16 @@ export function ApimNativeRoutesPage({
 
   return <div className="smh-workspace apim-native-routes-workspace">
     <header className="smh-page-header">
-      <div><span className="smh-header-icon"><Network size={17} /></span><h1>APIM 后端池</h1><span>{routeStateLoading ? "—" : activeRoutes.length}</span></div>
+      <div><span className="smh-header-icon"><Network size={17} /></span><h1>负载均衡</h1><span>{routeStateLoading ? "—" : activeRoutes.length}</span></div>
       {user?.role === "owner" && <div className="smh-header-actions"><button type="button" disabled={!registry.data || routeStateLoading || Boolean(routeStateError)} onClick={() => onAddOpenChange(true)}><Plus size={14} />添加后端池</button></div>}
     </header>
-    {routeStateLoading ? <div className="registry-loading"><RefreshCw className="spin" />加载 APIM 后端池列表</div> : routeStateError || !registry.data ? <div className="registry-error">无法加载 APIM 后端池：{String(routeStateError)}</div> : <div className="gateway-split apim-native-routes-layout" style={{ "--gateway-pane-width": `${paneWidth}px` } as CSSProperties}>
+    {routeStateLoading ? <div className="registry-loading"><RefreshCw className="spin" />加载负载均衡列表</div> : routeStateError || !registry.data ? <div className="registry-error">无法加载负载均衡：{String(routeStateError)}</div> : <div className="gateway-split apim-native-routes-layout" style={{ "--gateway-pane-width": `${paneWidth}px` } as CSSProperties}>
       {!isMobile && <aside className="gateway-list-pane apim-native-route-list">{routeListContent(false)}</aside>}
       <button
         className="runtime-pane-handle"
         type="button"
         role="separator"
-        aria-label="调整 APIM 后端池列表宽度"
+        aria-label="调整负载均衡列表宽度"
         aria-orientation="vertical"
         aria-valuemin={paneMinWidth}
         aria-valuemax={paneMaxWidth}
@@ -231,7 +231,7 @@ export function ApimNativeRoutesPage({
     </div>}
     {isMobile && registry.data && <Dialog open={routeDrawerOpen} onOpenChange={onRouteDrawerOpenChange}>
       <DialogContent className="apim-native-route-drawer" finalFocus={false}>
-        <DialogHeader className="apim-native-route-drawer-header"><DialogTitle>APIM 后端池</DialogTitle><DialogDescription className="sr-only">选择一个后端池</DialogDescription><DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="apim-native-route-drawer-close" />}><X size={16} /><span className="sr-only">关闭</span></DialogClose></DialogHeader>
+        <DialogHeader className="apim-native-route-drawer-header"><DialogTitle>负载均衡</DialogTitle><DialogDescription className="sr-only">选择一个后端池</DialogDescription><DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="apim-native-route-drawer-close" />}><X size={16} /><span className="sr-only">关闭</span></DialogClose></DialogHeader>
         <aside className="gateway-list-pane apim-native-route-list apim-native-route-drawer-list">{routeListContent(true)}</aside>
       </DialogContent>
     </Dialog>}

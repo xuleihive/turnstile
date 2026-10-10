@@ -133,7 +133,7 @@ export function AssistantPage({
           onClick={onToggleSidebar}
         ><PanelLeft size={16} /></Button>
         <span className="finops-header-icon"><Sparkles size={17} /></span>
-        <h1>FinOps Assistant</h1>
+        <h1>FinOps助手</h1>
       </div>
       <Button variant="outline" size="sm" className="assistant-new-chat" onClick={startNew}>
         <Plus size={15} />新对话

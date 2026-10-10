@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from ..domain.pricing import PriceConfigurationChanged
 from ..domain.runtime_models import apply_databricks_adoption
 
 
@@ -73,6 +74,10 @@ class InMemoryRegistryRepositoryMixin:
             "models": [
                 {
                     **model,
+                    "price_source": model.get("price_source") or "models_dev",
+                    "price_source_configured": model.get(
+                        "price_source_configured", "price_source" in model,
+                    ),
                     "image_profile": self._published_image_profile(model),
                     "effective_discount_percent": self._effective_discount(model),
                 }
@@ -104,9 +109,9 @@ class InMemoryRegistryRepositoryMixin:
             # Same guard the SQL repository applies. Without it here, every test that reaches a
             # sync through the fake would agree that a stale result may land on a model whose
             # pricing changed underneath it -- and the database would disagree in production.
-            if update.get("writes"):
+            if update.get("expected_source") is not None:
                 current = (
-                    str(model.get("price_source") or "manual"),
+                    str(model.get("price_source") or "models_dev"),
                     model.get("price_reference"),
                     self._effective_discount(model),
                 )
@@ -115,13 +120,24 @@ class InMemoryRegistryRepositoryMixin:
                     update.get("expected_reference"),
                     update.get("expected_discount_percent"),
                 )
-                if current != planned:
-                    model["price_sync_status"] = "superseded"
-                    model["price_sync_message"] = (
-                        "同步期间该模型的计价配置被改动，本次结果已作废，未写入"
-                    )
-                    model["price_synced_at"] = now
+                configured = model.get("price_source_configured", "price_source" in model)
+                version_changed = (
+                    update.get("expected_updated_at") is not None
+                    and model.get("updated_at") != update["expected_updated_at"]
+                )
+                price_version_changed = (
+                    update.get("expected_price_updated_at") is not None
+                    and model.get("price_config_updated_at") != update["expected_price_updated_at"]
+                )
+                if current != planned or configured != update.get("expected_configured", True) \
+                        or version_changed or price_version_changed:
+                    if current == planned:
+                        model["price_sync_status"] = "superseded"
                     continue
+            if not update.get("writes") and not model.get(
+                "price_source_configured", "price_source" in model,
+            ):
+                continue
 
             if update.get("writes"):
                 # The accepted baseline moves only when the price is accepted.
@@ -132,6 +148,13 @@ class InMemoryRegistryRepositoryMixin:
                     model[column] = update.get(column)
                 model["pending_list_price"] = None
                 model["updated_at"] = now
+                model["price_source"] = update.get("price_source") or update.get("expected_source")
+                model["price_reference"] = update.get("price_reference") \
+                    or update.get("expected_reference")
+                model["price_source_configured"] = True
+                model["price_config_updated_at"] = now
+                model["match_metadata"] = update.get("match_metadata")
+                model["source_snapshot"] = update.get("source_snapshot")
                 written += 1
             elif update.get("pending_list_price") is not None:
                 model["pending_list_price"] = update["pending_list_price"]
@@ -139,6 +162,7 @@ class InMemoryRegistryRepositoryMixin:
             model["price_sync_status"] = update.get("status")
             model["price_sync_message"] = update.get("message")
             model["price_synced_at"] = now
+            model["price_config_updated_at"] = now
         return written
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,6 +175,7 @@ class InMemoryRegistryRepositoryMixin:
             row.setdefault("upstream_model_id", row.get("model_key"))
             row.setdefault("assignment_required", False)
             row.setdefault("publication_id", None)
+            row.setdefault("price_source_configured", "price_source" in values)
         row.setdefault("id", uuid4())
         row.update(created_at=now, updated_at=now)
         target = self._registry_target(kind)
@@ -248,6 +273,9 @@ class InMemoryRegistryRepositoryMixin:
         row = self._find(target, item_id)
         if row is None:
             return None
+        if kind == "model" and values.get("pricing_expected_updated_at") is not None \
+                and row["updated_at"] != values["pricing_expected_updated_at"]:
+            raise PriceConfigurationChanged("模型在定价期间已修改，请刷新后重试")
         if kind == "model" and any(
             publication["publication_kind"] == "model_remove"
             and publication["status"] in {
@@ -283,7 +311,28 @@ class InMemoryRegistryRepositoryMixin:
             elif kind == "model":
                 for runtime in self.runtimes:
                     runtime["is_default"] = runtime["id"] == values["runtime_id"]
-        row.update(values)
+        pricing_changed = kind == "model" and any(
+            field in values and values[field] != row.get(field)
+            for field in ("price_source", "price_reference")
+        )
+        row.update({
+            key: value for key, value in values.items() if key != "pricing_expected_updated_at"
+        })
+        if kind == "model" and (pricing_changed or values.get("source_snapshot") is not None):
+            row["pending_list_price"] = None
+        if pricing_changed:
+            for field in (
+                "list_input_cost_per_million", "list_output_cost_per_million",
+                "list_cached_cost_per_million", "list_cache_write_cost_per_million",
+                "match_metadata", "source_snapshot",
+            ):
+                if field not in values:
+                    row[field] = None
+        if kind == "model" and "price_source" in values:
+            row["price_source_configured"] = True
+            row["price_config_updated_at"] = datetime.now(UTC)
+            if values["price_source"] == "manual":
+                row["price_reference"] = None
         row["updated_at"] = datetime.now(UTC)
         if kind == "runtime":
             provider = self._require(self.providers, row["provider_id"], "provider")

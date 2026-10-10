@@ -231,6 +231,7 @@ Turnstile不会创建或修改客户的Foundry项目；执行IAM授权的Azure�
 | 指南 | 内容 |
 | --- | --- |
 | [文档索引](docs/README.md) | 运维人员和维护人员的入口 |
+| [组织管理](docs/organization-management.md) | 数据库组织目录、部门授权、Entra 同步审核、初始化与升级流程 |
 | [架构](docs/architecture.md) | 运行时边界、组件归属与数据流 |
 | [配置](docs/configuration.md) | 环境变量、身份验证与功能开关 |
 | [部署](docs/deployment.md) | Azure 预配、打包、发布与验证 |

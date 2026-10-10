@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 import psycopg
@@ -31,6 +32,16 @@ def migrate() -> list[str]:
         raise RuntimeError("DATABASE_URL is required to run migrations")
     applied: list[str] = []
     with psycopg.connect(settings.database_url) as connection:
+        deadline = time.monotonic() + 120
+        while True:
+            lock = connection.execute(
+                "SELECT pg_try_advisory_lock(hashtextextended('turnstile:schema-migration', 0))"
+            ).fetchone()
+            if lock is not None and lock[0]:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timed out waiting for another schema migration")
+            time.sleep(0.1)
         connection.execute(CREATE_MIGRATION_TABLE)
         for path in migration_files(settings.migrations_dir):
             version = path.name.removesuffix(".up.sql")

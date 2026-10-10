@@ -1711,7 +1711,8 @@ class GatewayControlPlaneService:
         return GatewayPublication.model_validate(row)
 
     def publish(
-        self, write: GatewayPublicationCreate, created_by: str
+        self, write: GatewayPublicationCreate, created_by: str,
+        *, pricing_values: dict[str, Any] | None = None,
     ) -> GatewayPublication:
         if write.model.operation == "image_generation" and not self._image_generation_enabled:
             raise ControlPlaneUnavailableError("Image generation is not enabled")
@@ -1731,6 +1732,8 @@ class GatewayControlPlaneService:
                 update={"image_configuration": self._image_generation_defaults}
             )
         model = self._release_model(model_input, provider, runtime)
+        if pricing_values is not None:
+            model = model.model_copy(update={"price_configuration": pricing_values})
         self._validate_model(model, registry["models"])
         binding_runtime = self._model_binding_runtime(provider, runtime, model)
 
@@ -2657,7 +2660,11 @@ class GatewayControlPlaneService:
             else ["chat", "streaming"]
         )
         return ModelTarget(
-            **model.model_dump(exclude={"deployment_name", "operation", "image_configuration"}),
+            **model.model_dump(exclude={
+                "deployment_name", "operation", "image_configuration",
+                "price_source", "price_reference", "price_discount_percent",
+                "price_entry_digest", "allow_unpriced",
+            }),
             family_key=family,
             capabilities=capabilities,
             allowed_roles=["owner", "admin", "member"],

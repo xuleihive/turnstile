@@ -94,8 +94,8 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     schemas = cast(dict[str, dict[str, str]], components["schemas"])
 
     assert len(CONTRACT.read_text(encoding="utf-8").splitlines()) < 800
-    assert len(paths) == 78
-    assert len(schemas) == 172
+    assert len(paths) == 118
+    assert len(schemas) == 216
     assert all(set(value) == {"$ref"} for value in paths.values())
     assert all(set(value) == {"$ref"} for value in schemas.values())
     assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
@@ -106,7 +106,78 @@ def test_openapi_root_is_a_small_domain_index() -> None:
         "github-copilot.yaml",
         "model-platform.yaml",
         "observability.yaml",
+        "user-settings.yaml",
+        "organization-management.yaml",
+        "permission-management.yaml",
     }
+
+
+def test_user_settings_contract_matches_served_self_service_routes() -> None:
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+
+    def personal(operations: set[tuple[str, str]]) -> set[tuple[str, str]]:
+        return {operation for operation in operations if "/user-settings/" in operation[0]}
+
+    assert personal(documented) == personal(served)
+    schemas = _documented_schemas()
+    avatar = cast(dict[str, dict[str, object]], schemas["AvatarUpdate"]["properties"])
+    branches = cast(list[dict[str, object]], avatar["avatar_data_url"]["anyOf"])
+    assert any(branch.get("maxLength") == 90_000 for branch in branches)
+    assert "avatar_data_url" in cast(list[str], schemas["AvatarUpdate"]["required"])
+    assert schemas["PasswordUpdate"]["additionalProperties"] is False
+    passwords = cast(dict[str, dict[str, object]], schemas["PasswordUpdate"]["properties"])
+    assert all(value["writeOnly"] for value in passwords.values())
+
+
+def test_usage_query_contract_exposes_multiselect_and_distinct_directory_states() -> None:
+    operation = cast(
+        dict[str, object], _documented_paths()["/api/v1/enterprise/query-entities"]["get"],
+    )
+    parameters = cast(list[dict[str, object]], operation["parameters"])
+    repeated = [item for item in parameters if item.get("name") in {
+        "organization_id", "department_id", "user_id", "directory_status",
+    }]
+    assert len(repeated) == 4
+    assert all(item["explode"] is True for item in repeated)
+    assert all(cast(dict[str, object], item["schema"])["type"] == "array" for item in repeated)
+    entity = cast(
+        dict[str, dict[str, object]], _documented_schemas()["UsageQueryEntity"]["properties"],
+    )
+    assert set(cast(list[str], entity["directory_status"]["enum"])) == {
+        "active", "archived", "historical", "unattributed",
+    }
+    generated = app.openapi()["paths"]["/api/v1/observability/requests"]["get"]["parameters"]
+    assert all(any(row["name"] == field for row in generated) for field in (
+        "organization_id", "department_id", "agent_id", "user_id", "directory_status",
+    ))
+
+
+def test_directory_contract_matches_served_routes_and_generated_dtos() -> None:
+    from scripts.export_directory_contract import PREFIX, export
+
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+    assert {op for op in documented if op[0].startswith(PREFIX)} == {
+        op for op in served if op[0].startswith(PREFIX)
+    }
+    generated = export()
+    domain = CONTRACT.parent / "openapi"
+    assert _yaml_document(domain / "paths/organization-management.yaml") == {
+        "paths": generated["paths"],
+    }
+    assert _yaml_document(domain / "schemas/organization-management.yaml") == {
+        "schemas": generated["schemas"],
+    }
+    connection = generated["schemas"]["ConnectionWrite"]["properties"]
+    assert connection["credential_ref"]["writeOnly"]
+    assert (
+        generated["schemas"]["SyncApplyWrite"]["properties"]["approve_missing"]["default"] is False
+    )
+    profile = cast(dict[str, object], _documented_schemas()["AuthProfile"]["properties"])
+    assert {"directory_scope_key", "directory_permission_revision", "governance_user_id"} <= set(
+        profile
+    )
 
 
 def test_databricks_contract_describes_workspace_authentication_and_owned_adoption() -> None:
@@ -118,7 +189,9 @@ def test_databricks_contract_describes_workspace_authentication_and_owned_adopti
     assert "oauth_m2m" in cast(list[str], properties["auth_mode"]["enum"])
     assert len(cast(list[object], connection["oneOf"])) == 4
     for schema_name in (
-        "GatewayRuntimeTarget", "GatewayPublicationRetry", "GatewayCredentialRotation",
+        "GatewayRuntimeTarget",
+        "GatewayPublicationRetry",
+        "GatewayCredentialRotation",
     ):
         fields = cast(dict[str, dict[str, object]], schemas[schema_name]["properties"])
         assert fields["oauth_client_secret"]["writeOnly"] is True
@@ -131,7 +204,8 @@ def test_databricks_contract_describes_workspace_authentication_and_owned_adopti
     assert operation["security"] == [{"sessionCookie": []}]
     assert (path, "post") in _operations(app.openapi()["paths"])
     mi = cast(
-        dict[str, dict[str, object]], schemas["DatabricksAuthorizationRequirement"]["properties"],
+        dict[str, dict[str, object]],
+        schemas["DatabricksAuthorizationRequirement"]["properties"],
     )
     assert mi["kind"]["const"] == "databricks_workspace" and mi["role_name"]["const"] == "CAN_QUERY"
 
@@ -169,8 +243,9 @@ def test_image_contract_is_single_nonstreaming_passthrough_and_session_protected
     assert retry["authorize_image_probes"]["default"] is False
     view = cast(dict[str, dict[str, object]], schemas["GatewayPublication"]["properties"])
     assert view["retry_can_authorize_image_probes"]["default"] is False
-    assert "retry_can_authorize_image_probes" in (
-        app.openapi()["components"]["schemas"]["GatewayPublicationView"]["properties"]
+    assert (
+        "retry_can_authorize_image_probes"
+        in (app.openapi()["components"]["schemas"]["GatewayPublicationView"]["properties"])
     )
 
 
@@ -284,7 +359,11 @@ def test_openai_connection_contract_exposes_no_registration_secret() -> None:
     assert "api_key" not in connection
     assert connection["openai_base_url"]["pattern"] == "^https://"
     assert connection["model_vendor"]["enum"] == [
-        "generic", "kimi", "deepseek", "openai", "anthropic",
+        "generic",
+        "kimi",
+        "deepseek",
+        "openai",
+        "anthropic",
     ]
     assert "openai_compatible" in cast(list[str], provider["template"]["enum"])
     assert runtime["api_key"]["writeOnly"] is True
@@ -360,7 +439,8 @@ def test_native_apim_pool_contract_is_bounded_and_model_scoped() -> None:
     )
     registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
     for field in (
-        write["session_affinity"], pool_config["session_affinity"],
+        write["session_affinity"],
+        pool_config["session_affinity"],
         registry["backend_pool_session_affinity_supported"],
     ):
         assert field["type"] == "boolean"
