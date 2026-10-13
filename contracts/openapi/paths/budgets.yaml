@@ -5,8 +5,7 @@ paths:
       - Budgets
       operationId: getTokenBudgets
       summary: Get monthly organization, department, and user Token budgets
-      description: Returns assigned limits, actual usage, remaining allowance, forecast, status, and audit
-        history to any authenticated application user.
+      description: Owner-only. Returns tenant-wide assigned limits, actual usage, remaining allowance, forecast, status, and audit history.
       parameters:
       - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
       - name: include_users
@@ -24,6 +23,8 @@ paths:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/TokenBudgetResponse
         '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         default:
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse

@@ -5,7 +5,7 @@ paths:
       - Application Access
       operationId: listGatewayApplications
       summary: List APIM-backed applications and current governance state
-      description: 'Returns adopted subscription metadata, exact attributed usage, the
+      description: 'Owners see all applications. Members see only applications they own. Returns adopted subscription metadata, exact attributed usage, the
 
         current Ledger-backed monthly budget, and model-access posture. Subscription
 
@@ -29,6 +29,7 @@ paths:
       - Application Access
       operationId: getGatewayApplication
       summary: Get one application's subscriptions, usage, and audit history
+      description: Owners may read any application; Members can read only their own applications. Other applications return 404.
       parameters:
       - name: application_id
         in: path
@@ -53,7 +54,7 @@ paths:
       - Application Access
       operationId: getGatewayApplicationUsageActivity
       summary: Get one application's attributed usage over time
-      description: Returns server-aggregated APIM usage joined through immutable Application attribution. Unattributed requests and requests attributed to other Applications are excluded.
+      description: Owners may read any application; Members can read only their own applications. Returns server-aggregated APIM usage joined through immutable Application attribution. Unattributed requests and requests attributed to other Applications are excluded.
       parameters:
       - name: application_id
         in: path
@@ -89,7 +90,7 @@ paths:
       - Application Access
       operationId: revealGatewayApplicationSubscriptionKey
       summary: Reveal one APIM subscription key for immediate copy
-      description: Owner-only. Reads one key from APIM on demand. The response is non-cacheable and the key is never persisted by Turnstile or included in later reads.
+      description: The owning Member or an Owner reads one key from APIM on demand. The response is no-store; the key is never persisted by Turnstile or included in later reads.
       parameters:
       - name: application_id
         in: path
@@ -138,7 +139,7 @@ paths:
       - Application Access
       operationId: rotateGatewayApplicationSubscriptionKey
       summary: Rotate one APIM subscription key
-      description: Owner-only. Immediately invalidates the selected key and leaves the other key unchanged. A caller can use the reveal action separately to copy the replacement without making rotation success depend on a second ARM call.
+      description: The owning Member or an Owner rotates one APIM key. The other key remains valid for a staged client update.
       parameters:
       - name: application_id
         in: path
@@ -363,13 +364,11 @@ paths:
       - Application Access
       operationId: provisionGatewayApplicationSubscription
       summary: Create a governed APIM subscription
-      description: 'Owner-only. Generates a primary and secondary key, returns the primary
+      description: 'Owner-only. Queues APIM subscription creation without generating or returning
 
-        key exactly once, and queues APIM subscription creation on the control-plane worker.
+        key material locally. APIM is the sole issuer; keys are revealed through listSecrets
 
-        Keys are encrypted in a short-lived operation sidecar and deleted when the operation
-
-        succeeds or fails. This operation does not call listSecrets.
+        after provisioning completes. The operation response contains metadata only.
 
         '
       parameters:
@@ -387,7 +386,7 @@ paths:
               $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionCreate
       responses:
         '202':
-          description: Subscription provisioning queued; primary key is returned once
+          description: Subscription provisioning queued; no key material is returned
           content:
             application/json:
               schema:
@@ -397,6 +396,227 @@ paths:
         '404':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/me/subscriptions:
+    get:
+      tags:
+      - Application Access
+      operationId: listMyGatewaySubscriptions
+      summary: List APIM subscriptions owned by the current user
+      responses:
+        '200':
+          description: Current user's subscription metadata, without key values
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayUserSubscriptionList
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    post:
+      tags:
+      - Application Access
+      operationId: createMyGatewaySubscription
+      summary: Queue an APIM subscription for the current user
+      description: APIM generates the key material; user identity and APIM Subscription ID are server controlled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayUserSubscriptionCreate
+      responses:
+        '202':
+          description: Provisioning queued; no key material is returned
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionProvisionAccepted
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/admin/users/{user_id}/subscriptions:
+    get:
+      tags:
+      - Application Access
+      operationId: listUserGatewaySubscriptions
+      summary: List one user's APIM subscriptions
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The user's APIM subscription metadata
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayUserSubscriptionList
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    post:
+      tags:
+      - Application Access
+      operationId: createUserGatewaySubscription
+      summary: Queue an APIM subscription for a user
+      description: Owner-only. The server binds the target user and APIM creates the key material.
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayUserSubscriptionCreate
+      responses:
+        '202':
+          description: Provisioning queued; no key material is returned
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionProvisionAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/admin/subscriptions/keys/export:
+    post:
+      tags:
+      - Application Access
+      operationId: exportGatewaySubscriptionKeys
+      summary: Export selected APIM subscription keys as CSV
+      description: Owner-only. Reads APIM listSecrets on demand, limits each export to 1000 subscriptions and 8 concurrent calls, and does not persist key values.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewaySubscriptionKeysExportFilter
+      responses:
+        '200':
+          description: No-store CSV containing APIM primary and secondary keys
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/owner:
+    put:
+      tags:
+      - Application Access
+      operationId: updateGatewayApplicationOwner
+      summary: Assign or unassign an application owner
+      description: Owner-only. Changes future attribution and does not rewrite historical usage.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationOwnerUpdate
+      responses:
+        '200':
+          description: Updated application and owner metadata
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationDetail
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/subscriptions/{application_subscription_id}/cancel:
+    post:
+      tags:
+      - Application Access
+      operationId: cancelGatewayApplicationSubscription
+      summary: Cancel an APIM subscription
+      description: Owner-only. Deletes the APIM Subscription and records the cancellation; key values are never stored.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: application_subscription_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionCancel
+      responses:
+        '204':
+          description: APIM subscription cancelled
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         '503':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse

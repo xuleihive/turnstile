@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api import app, get_entra_verifier
+from backend.http.security_audit_support import get_optional_security_audit_service
 from backend.http.session import get_auth_store
 from backend.services.auth_service import EntraIdentity, hash_password
 from tests.support.paths import REPOSITORY_ROOT
@@ -18,11 +19,26 @@ client = TestClient(app)
 USER_ID = UUID("00000000-0000-4000-8000-000000000001")
 
 
+class CapturingAuditService:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def record(self, event: Any, connection: object | None = None) -> None:
+        self.events.append(event)
+
+
 class CapturingAuthStore:
-    def __init__(self, role: str = "owner") -> None:
+    def __init__(
+        self,
+        role: str = "owner",
+        enabled: bool = True,
+        organization_unit_id: UUID | None = None,
+    ) -> None:
         self.sessions: list[dict[str, Any]] = []
         self.expired_cleanup_calls = 0
         self.role = role
+        self.enabled = enabled
+        self.organization_unit_id = organization_unit_id
 
     def find_user_by_email(self, email: str) -> dict[str, Any] | None:
         if email != "owner@contoso.com":
@@ -55,6 +71,8 @@ class CapturingAuthStore:
         )
 
     def session_owner(self, token_sha256: str) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
         session = next(
             (item for item in self.sessions if item["token_sha256"] == token_sha256),
             None,
@@ -66,6 +84,19 @@ class CapturingAuthStore:
             "email": "owner@contoso.com",
             "display_name": "Owner",
             "role": self.role,
+            "permissions": (
+                ["platform.manage", "users.read", "users.manage", "org.read", "org.manage",
+                 "roles.read", "applications.read.all", "applications.read.own",
+                 "keys.manage.all", "keys.manage.own", "usage.read.all", "usage.read.own",
+                 "reports.create.all", "reports.create.own", "security_audit.read"]
+                if self.role == "owner"
+                else [
+                    "applications.read.own",
+                    "keys.manage.own",
+                    "usage.read.own",
+                    "reports.create.own",
+                ]
+            ),
             "method": session["method"],
             "created_at": session["authenticated_at"],
             "expires_at": session["expires_at"],
@@ -87,7 +118,8 @@ class CapturingAuthStore:
             "display_name": display_name,
             "password_hash": password_hash,
             "role": self.role,
-            "enabled": True,
+            "enabled": self.enabled,
+            "organization_unit_id": self.organization_unit_id,
         }
 
 
@@ -119,6 +151,20 @@ def test_auth_store_uses_only_absolute_expiry_and_revokes_on_password_update() -
     assert "s.expires_at > now()" in source
     assert "last_seen_at" not in source
     assert 'connection.execute("DELETE FROM user_session WHERE user_id = %s"' in source
+
+
+def test_entra_upsert_only_updates_display_name_for_preprovisioned_users() -> None:
+    source = (REPOSITORY_ROOT / "turnstile_core/persistence/auth_store.py").read_text(
+        encoding="utf-8"
+    )
+    upsert = source.split("def upsert_entra_user(", 1)[1].split(
+        "def create_password_user(", 1
+    )[0]
+
+    assert "SET display_name = COALESCE(EXCLUDED.display_name, app_user.display_name)" in upsert
+    assert "role = EXCLUDED.role" not in upsert
+    assert "enabled = EXCLUDED.enabled" not in upsert
+    assert "organization_unit_id = EXCLUDED.organization_unit_id" not in upsert
 
 
 @pytest.fixture
@@ -198,6 +244,12 @@ def test_profile_reports_absolute_expiry_without_renewing_session(
 
     assert first.status_code == second.status_code == 200
     assert first.json()["session_expires_at"] == second.json()["session_expires_at"]
+    assert first.json()["permissions"] == [
+        "applications.read.all", "applications.read.own", "keys.manage.all",
+        "keys.manage.own", "org.manage", "org.read", "platform.manage",
+        "reports.create.all", "reports.create.own", "roles.read", "security_audit.read",
+        "usage.read.all", "usage.read.own", "users.manage", "users.read",
+    ]
     assert "set-cookie" not in first.headers
     assert "set-cookie" not in second.headers
     assert len(auth_dependencies.sessions) == 1
@@ -226,3 +278,72 @@ def test_member_login_uses_the_longer_member_policy() -> None:
     assert response.status_code == 200
     assert response.json()["role"] == "member"
     assert "Max-Age=14400" in response.headers["set-cookie"]
+
+
+def test_disabled_user_session_is_rejected_on_the_next_request(
+    auth_dependencies: CapturingAuthStore,
+) -> None:
+    login = client.post(
+        "/api/v1/auth/login",
+        headers={"Origin": "http://localhost:5173"},
+        json={"email": "owner@contoso.com", "password": "correct-password"},
+    )
+    assert login.status_code == 200
+    cookie = login.cookies.get("turnstile_session")
+    assert cookie
+
+    auth_dependencies.enabled = False
+    response = client.get(
+        "/api/v1/auth/me", headers={"Cookie": f"turnstile_session={cookie}"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_password_login_success_and_failure_are_audited_without_passwords(
+    auth_dependencies: CapturingAuthStore,
+) -> None:
+    audit = CapturingAuditService()
+    app.dependency_overrides[get_optional_security_audit_service] = lambda: audit
+    try:
+        failed = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://localhost:5173"},
+            json={"email": "owner@contoso.com", "password": "wrong-password"},
+        )
+        succeeded = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://localhost:5173"},
+            json={"email": "owner@contoso.com", "password": "correct-password"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_security_audit_service, None)
+
+    assert failed.status_code == 401
+    assert succeeded.status_code == 200
+    assert [(event.action, event.result) for event in audit.events] == [
+        ("login.password", "failure"),
+        ("login.password", "success"),
+    ]
+    assert "wrong-password" not in str(audit.events)
+    assert "correct-password" not in str(audit.events)
+
+
+def test_logout_is_audited(auth_dependencies: CapturingAuthStore) -> None:
+    audit = CapturingAuditService()
+    app.dependency_overrides[get_optional_security_audit_service] = lambda: audit
+    try:
+        login = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://localhost:5173"},
+            json={"email": "owner@contoso.com", "password": "correct-password"},
+        )
+        assert login.status_code == 200
+        logout = client.post("/api/v1/auth/logout", headers={"Origin": "http://localhost:5173"})
+    finally:
+        client.cookies.clear()
+        app.dependency_overrides.pop(get_optional_security_audit_service, None)
+
+    assert logout.status_code == 204
+    assert audit.events[-1].action == "session.logout"
+    assert audit.events[-1].result == "success"

@@ -147,7 +147,7 @@ test("application blocked state keeps configuration visible without dispatching"
   assert.equal(view.requests.length, 0)
 })
 
-test("application component protects the key and suppresses duplicate creation", async () => {
+test("application component discards legacy key fields and suppresses duplicate creation", async () => {
   const view = creationHarness()
   const operation = { id: applicationId, operation_kind: "application_provision", status: "queued", checkpoint: {}, semantic_preview: { apim_subscription_id: "unit-app" } }
   view.find(node => node.type === "Input" && node.props.maxLength === 100).props.onChange({ target: { value: "Unit App" } })
@@ -161,20 +161,15 @@ test("application component protects the key and suppresses duplicate creation",
   assert.equal(view.accepted.length, 1)
   assert.equal("primary_key" in view.accepted[0], false)
   assert.equal(JSON.stringify(view.render()).includes("unit-key-not-a-real-secret"), false)
-  assert.equal(view.find(node => node.props?.["aria-label"] === "订阅密钥已隐藏").props.children, "\u2022".repeat(32))
+  assert.equal(view.find(node => node.props?.["aria-label"] === "订阅密钥已隐藏"), undefined)
+  assert.equal(view.find(node => node.props?.["aria-label"] === "复制订阅密钥"), undefined)
   view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
   assert.equal(view.requests.length, 1)
   view.find(node => node.props?.className === "application-create-dismiss").props.onClick()
-  assert.equal(view.closed.length, 0)
-  assert.ok(view.find(node => node.props?.role === "alert" && node.props.children.startsWith("尚未复制密钥")))
-  view.find(node => node.props?.["aria-label"] === "复制订阅密钥").props.onClick()
-  await nextTurn()
-  assert.deepEqual(view.clipboard, ["unit-key-not-a-real-secret"])
-  assert.ok(view.find(node => node.props?.role === "status" && node.props.children === "已复制"))
+  assert.equal(view.closed.length, 1)
   view.props.operation = { ...operation, status: "succeeded", checkpoint: { application_id: applicationId } }
   view.find(node => node.type === "Button" && node.props.children === "打开应用详情").props.onClick()
   assert.deepEqual(view.opened, [applicationId])
-  assert.equal(view.find(node => node.props?.["aria-label"] === "复制订阅密钥"), undefined)
 })
 
 test("failed application creation never displays a usable key control", async () => {

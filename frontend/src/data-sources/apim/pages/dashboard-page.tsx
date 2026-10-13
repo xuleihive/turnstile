@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Activity,
   AlertTriangle,
@@ -12,7 +12,9 @@ import {
   CircleCheck,
   CircleDollarSign,
   Clock3,
+  Download,
   LayoutDashboard,
+  LoaderCircle,
   LineChart,
   Network,
   PanelLeft,
@@ -83,9 +85,10 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
-import { usageWindow } from "../api"
+import { dataSource, usageWindow } from "../api"
 import { getIntlLocale, useLocale, type LocalePreference } from "../../../locales/index"
 import { priceRequests } from "../../../lib/pricing"
+import { useAuth } from "../../../providers/auth-provider"
 import { finopsKeys, finopsQueries, trendDimensionForFilters } from "../queries"
 import type {
   AnomalyRule,
@@ -101,15 +104,27 @@ import type {
   TrendMetric,
   UsageFilters,
   UsageAnomaly,
+  UsageExportJob,
+  UsageExportJobStatus,
   UsageRequestDetail,
   UsageRequestSummary,
 } from "../types"
 
 type AnalyticsTab = "overview" | "analytics" | "trends" | "governance" | "requests" | "invoke"
-export type FinOpsScope = Omit<UsageFilters, "from" | "to">
+export type FinOpsScope = Omit<UsageFilters, "from" | "to" | "user_id"> & {
+  user_id?: string
+}
+const EMPTY_FINOPS_SCOPE: FinOpsScope = Object.freeze({})
 type RankingLimit = 5 | 10 | 20
 
 const rankingLimits: RankingLimit[] = [5, 10, 20]
+
+function usageFiltersFromExportJob(job: UsageExportJob): UsageFilters {
+  const filters = Object.fromEntries(
+    Object.entries(job.filters).filter(([, value]) => value != null),
+  ) as Omit<UsageFilters, "from" | "to">
+  return { from: job.from, to: job.to, ...filters }
+}
 
 const pageHeaders: Record<AnalyticsTab, { title: string; icon: typeof Activity }> = {
   overview: { title: "管理总览", icon: LayoutDashboard },
@@ -150,13 +165,30 @@ export function FinOpsDashboard({
   onOpenRequest: (requestId: string) => void
 }) {
   const queryClient = useQueryClient()
+  const { can } = useAuth()
+  const canReadDirectory = can("users.read") || can("platform.manage")
+  const canReadAllUsage = can("usage.read.all") || can("platform.manage")
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [downloadingJobId, setDownloadingJobId] = useState<string | null>(null)
+  const [exportActionError, setExportActionError] = useState<string | null>(null)
   const tab = initialTab
   const header = pageHeaders[tab]
   const HeaderIcon = header.icon
   const entityQuery = useQuery(finopsQueries.entities())
   const registryQuery = useQuery(finopsQueries.registry())
-  const filters = useMemo<UsageFilters>(() => ({ ...usageWindow(days), ...scope }), [days, scope])
+  const effectiveScope = canReadAllUsage ? scope : EMPTY_FINOPS_SCOPE
+  const filters = useMemo<UsageFilters>(
+    () => ({ ...usageWindow(days), ...effectiveScope }),
+    [days, effectiveScope],
+  )
+  const exportJobsQuery = useQuery({
+    ...finopsQueries.usageExportJobs(),
+    enabled: tab === "requests",
+  })
+  const createExportJob = useMutation({
+    mutationFn: (selectedFilters: UsageFilters) => dataSource.createUsageExportJob(selectedFilters),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: finopsKeys.exportJobs }),
+  })
   const entities = entityQuery.data
   const unpricedModels = registryQuery.data?.models.filter((model) => model.enabled && (model.input_cost_per_million == null || model.output_cost_per_million == null)) ?? []
   const costAvailable = registryQuery.data != null && unpricedModels.length === 0
@@ -176,6 +208,26 @@ export function FinOpsDashboard({
       setIsRefreshing(false)
     }
   }
+  const downloadJob = async (jobId: string) => {
+    setDownloadingJobId(jobId)
+    setExportActionError(null)
+    try {
+      const blob = await dataSource.downloadUsageExportJob(jobId)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = `turnstile_usage_report_${jobId}.zip`
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+    } catch (error) {
+      setExportActionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDownloadingJobId(null)
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.exportJobs })
+    }
+  }
   return <div className="finops-workspace">
     <header className="finops-header">
       <div><Button variant="ghost" size="icon-sm" className="finops-sidebar-trigger" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="finops-header-icon"><HeaderIcon size={17} /></span><h1>{header.title}</h1></div>
@@ -183,7 +235,7 @@ export function FinOpsDashboard({
     </header>
     {tab !== "invoke" && <div className="finops-filterbar">
       <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== 30} allowAll={false} options={[{ value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(Number(next))} />
-      {entities && <>
+      {entities && canReadDirectory && <>
         <FilterMenuField label="组织" icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
         <FilterMenuField label="部门" icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
         {/* No project filter. It is the one dimension no token carries -- the APIM policy
@@ -195,21 +247,113 @@ export function FinOpsDashboard({
         <FilterMenuField label="人员" icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
       </>}
       {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange(30); onScopeChange({}) }}><X size={14} />重置</Button>}
+      {tab === "requests" && <div className="finops-filter-actions">
+        <Button variant="outline" size="sm" disabled={createExportJob.isPending} onClick={() => createExportJob.mutate(filters)}>
+          {createExportJob.isPending ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}
+          {createExportJob.isPending ? "正在提交" : "导出分析报表"}
+        </Button>
+        {createExportJob.error && <span role="alert" className="finops-export-error">提交失败：{createExportJob.error.message}</span>}
+      </div>}
     </div>}
     <div className="finops-scroll-region">
       {tab !== "invoke" && unpricedModels.length > 0 && <PricingCoverageNotice modelKeys={unpricedModels.map((model) => model.model_key)} />}
       <div className="finops-content">
+        {tab === "requests" && <UsageExportJobsPanel
+          jobs={exportJobsQuery.data?.items ?? []}
+          loading={exportJobsQuery.isLoading}
+          error={exportJobsQuery.error?.message ?? exportActionError}
+          downloadingJobId={downloadingJobId}
+          onDownload={(jobId) => void downloadJob(jobId)}
+          onRetry={(job) => createExportJob.mutate(usageFiltersFromExportJob(job))}
+          retrying={createExportJob.isPending}
+        />}
         {(entityQuery.isLoading || registryQuery.isLoading) && <LoadingState label={tab === "invoke" ? "正在加载调用配置" : undefined} />}
         {(entityQuery.error || registryQuery.error) && <ErrorState error={entityQuery.error ?? registryQuery.error} />}
         {entities && registryQuery.data && tab === "overview" && <ExecutiveOverview filters={filters} costAvailable={costAvailable} />}
         {entities && registryQuery.data && tab === "analytics" && <ModelUsage filters={filters} costAvailable={costAvailable} />}
         {entities && tab === "trends" && <UsageTrends filters={filters} />}
-        {entities && registryQuery.data && tab === "governance" && <Governance filters={filters} entities={entities} models={registryQuery.data.models} onOpenRequest={onOpenRequest} />}
+        {entities && registryQuery.data && tab === "governance" && canReadDirectory && <Governance filters={filters} entities={entities} models={registryQuery.data.models} onOpenRequest={onOpenRequest} />}
+        {entities && tab === "governance" && !canReadDirectory && <div className="finops-state empty" role="status">企业治理规则仅对有目录权限的角色开放。</div>}
         {entities && registryQuery.data && tab === "requests" && <RequestTrace filters={filters} costAvailable={costAvailable} models={registryQuery.data.models} />}
-        {entities && tab === "invoke" && <AgentInvocation entities={entities} />}
+        {entities && tab === "invoke" && canReadDirectory && <AgentInvocation entities={entities} />}
+        {entities && tab === "invoke" && !canReadDirectory && <div className="finops-state empty" role="status">当前角色无法读取企业调用目录。请在“我的 API Key”创建密钥后，通过 APIM 调用模型。</div>}
       </div>
     </div>
   </div>
+}
+
+const usageExportStatusLabels: Record<UsageExportJobStatus, string> = {
+  queued: "等待处理",
+  running: "正在生成",
+  ready: "已完成",
+  failed: "导出失败",
+  expired: "已过期",
+}
+
+function usageExportDate(value: string) {
+  return new Intl.DateTimeFormat(getIntlLocale(), {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value))
+}
+
+function UsageExportJobsPanel({
+  jobs,
+  loading,
+  error,
+  downloadingJobId,
+  onDownload,
+  onRetry,
+  retrying,
+}: {
+  jobs: UsageExportJob[]
+  loading: boolean
+  error: string | null
+  downloadingJobId: string | null
+  onDownload: (jobId: string) => void
+  onRetry: (job: UsageExportJob) => void
+  retrying: boolean
+}) {
+  return <section className="finops-panel finops-export-jobs" aria-label="分析报告导出任务">
+    <PanelTitle title="分析报告导出任务" meta={`${jobs.length}`} />
+    {error && <p role="alert" className="finops-export-error">下载失败：{error}</p>}
+    {loading && <LoadingState />}
+    {!loading && !error && jobs.length === 0 && <EmptyState title="暂无导出任务" detail="导出任务会显示在这里。" />}
+    {!loading && jobs.length > 0 && <ul className="finops-export-job-list">
+      {jobs.slice(0, 10).map((job) => <li className="finops-export-job" key={job.id}>
+        <div className="finops-export-job-main">
+          <strong>{usageExportStatusLabels[job.status]}</strong>
+          <code>{job.id}</code>
+          <span>记录数：{job.row_count ?? "—"}</span>
+          <span>创建时间：{usageExportDate(job.created_at)}</span>
+          <span>有效至：{usageExportDate(job.expires_at)}</span>
+          {job.error_code && <span>错误代码：<code>{job.error_code}</code></span>}
+        </div>
+        <div className="finops-export-job-actions">
+          {job.status === "ready" && <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={downloadingJobId !== null}
+            onClick={() => onDownload(job.id)}
+          >
+            {downloadingJobId === job.id ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}
+            下载 ZIP
+          </Button>}
+          {(job.status === "failed" || job.status === "expired") && <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={retrying}
+            onClick={() => onRetry(job)}
+          >
+            {retrying ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+            重试
+          </Button>}
+        </div>
+      </li>)}
+    </ul>}
+  </section>
 }
 
 function PricingCoverageNotice({ modelKeys }: { modelKeys: string[] }) {

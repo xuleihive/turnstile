@@ -723,9 +723,9 @@ class LedgerSyncService:
             written += 1
         return written
 
-    def project_application_mappings(self) -> int:
+    def project_application_mappings(self, owner_user_id: UUID | None = None) -> int:
         written = 0
-        for mapping in self._repository.gateway_application_ledger_mappings():
+        for mapping in self._repository.gateway_application_ledger_mappings(owner_user_id):
             self._store.upsert(
                 application_map_partition_key(mapping["gateway_profile_id"]),
                 str(mapping["apim_subscription_id"]),
@@ -737,6 +737,21 @@ class LedgerSyncService:
                     "ApplicationStatus": str(mapping["application_status"]),
                     "SubscriptionState": str(mapping["subscription_state"]),
                     "ScopeExists": bool(mapping["scope_exists"]),
+                    "OwnerUserId": str(mapping.get("owner_user_id") or ""),
+                    "OwnerEmail": str(mapping.get("owner_email") or ""),
+                    "OwnerDisplayName": str(mapping.get("owner_display_name") or ""),
+                    "OwnerEnabled": bool(mapping.get("owner_enabled", False)),
+                    "OwnerTenantId": str(mapping.get("owner_tenant_id") or ""),
+                    "TenantId": str(mapping.get("tenant_id") or ""),
+                    "TenantName": str(mapping.get("tenant_name") or ""),
+                    "TenantEnabled": bool(mapping.get("tenant_enabled", False)),
+                    "OrganizationUnitId": str(mapping.get("organization_unit_id") or ""),
+                    "OrganizationUnitName": str(
+                        mapping.get("organization_unit_name") or ""
+                    ),
+                    "OrganizationUnitEnabled": bool(
+                        mapping.get("organization_unit_enabled", False)
+                    ),
                 },
             )
             written += 1

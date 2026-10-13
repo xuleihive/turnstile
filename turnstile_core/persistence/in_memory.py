@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -861,6 +861,41 @@ class InMemoryRepository(
             reverse=True,
         )
         return [self._request_summary(record) for record in records[:limit]]
+
+    def iter_usage_requests(
+        self, from_: datetime, to: datetime, filters: UsageFilters
+    ) -> Iterator[dict[str, Any]]:
+        records = sorted(
+            self._usage_between(from_, to, filters),
+            key=lambda record: (record.ts, record.id),
+            reverse=True,
+        )
+        for record in records:
+            yield {
+                **self._request_summary(record),
+                "usage_id": record.id,
+                "team": record.team,
+                "workflow": record.workflow,
+                "run_id": record.run_id,
+                "turn_index": record.turn_index,
+                "provider": record.provider,
+                "input_tokens": record.input_tokens,
+                "cached_tokens": record.cached_tokens,
+                "cache_read_tokens": max(record.cached_tokens - record.cache_write_tokens, 0),
+                "cache_write_tokens": record.cache_write_tokens,
+                "output_tokens": record.output_tokens,
+                "input_price_per_million_usd": record.input_price_per_million,
+                "cached_price_per_million_usd": record.cached_price_per_million,
+                "cache_write_price_per_million_usd": record.cache_write_price_per_million,
+                "output_price_per_million_usd": record.output_price_per_million,
+                "estimated_cost_usd": record.estimated_cost,
+                "usage_estimated": record.estimated,
+                "ingest_source": record.ingest_source,
+                "ingest_error": record.ingest_error,
+                "reconciled_at": None,
+                "budget_admission": record.budget_admission,
+                "model_admission": record.model_admission,
+            }
 
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None:
         records = [

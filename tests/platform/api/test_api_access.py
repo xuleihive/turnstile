@@ -23,9 +23,10 @@ from backend.data_sources.github_copilot.router import (
 )
 from backend.http.assistant import title_router as assistant_title_router
 from backend.http.dependencies import get_repository
-from backend.http.model_platform import publication_router
+from backend.http.model_platform import invocation_router, publication_router
 from backend.http.publication_auth import require_publication_owner
 from backend.http.session import (
+    optional_authenticated_session,
     require_allowed_write_origin,
     require_authenticated_session,
     require_owner_session,
@@ -41,6 +42,14 @@ from turnstile_core.domain.runtime_models import ModelInvocationRequest
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
+
+
+def _dependency_tree_contains(dependant: object, target: object) -> bool:
+    children = getattr(dependant, "dependencies", ())
+    return any(
+        dependency.call is target or _dependency_tree_contains(dependency, target)
+        for dependency in children
+    )
 
 
 def test_budget_history_omits_legacy_noop_audit_events() -> None:
@@ -81,8 +90,8 @@ def test_health() -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 def test_every_business_api_route_requires_the_shared_session_dependency() -> None:
-    # APIM and GitHub Copilot are physically separate routers. Both depend on the same
-    # session/CSRF boundary, while only the OAuth callback remains public.
+    # APIM and GitHub Copilot are physically separate routers. Management APIs require
+    # the shared session/CSRF boundary; model invocation accepts either a session or APIM key.
     assert any(
         getattr(route, "original_router", None) is protected for route in app.routes
     )
@@ -91,6 +100,10 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
     )
     assert any(
         getattr(route, "original_router", None) is publication_router
+        for route in app.routes
+    )
+    assert any(
+        getattr(route, "original_router", None) is invocation_router
         for route in app.routes
     )
     assert any(
@@ -106,7 +119,20 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         route for route in copilot_protected.routes if isinstance(route, APIRoute)
     ]
 
-    assert len(apim_routes) == 86
+    assert len(apim_routes) == 107
+    invocation = next(
+        route for route in invocation_router.routes
+        if isinstance(route, APIRoute)
+        and route.path == "/api/v1/model-gateway/invoke"
+    )
+    assert any(
+        dependency.call is optional_authenticated_session
+        for dependency in invocation.dependant.dependencies
+    )
+    assert not any(
+        dependency.call is require_authenticated_session
+        for dependency in invocation.dependant.dependencies
+    )
     adoption = next(
         route for route in apim_routes
         if route.path == "/api/v1/model-management/connections/{runtime_id}/adopt"
@@ -152,7 +178,7 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
             "POST",
         ),
     }
-    owner_application_key_routes = {
+    managed_application_key_routes = {
         (
             "/api/v1/application-access/applications/{application_id}/subscriptions/"
             "{application_subscription_id}/keys/{key_kind}/reveal",
@@ -171,16 +197,15 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
                     dependency.call is require_owner_session
                     for dependency in route.dependant.dependencies
                 ), route.path
-            if (route.path, method) in owner_application_key_routes:
+            if (route.path, method) in managed_application_key_routes:
                 assert any(
-                    dependency.call is require_owner_session
+                    dependency.call.__name__ == "require_any_permission"
                     for dependency in route.dependant.dependencies
                 ), route.path
     assert len(copilot_routes) == 25
     for route in [*apim_routes, *copilot_routes]:
-        assert any(
-            dependency.call is require_authenticated_session
-            for dependency in route.dependant.dependencies
+        assert _dependency_tree_contains(
+            route.dependant, require_authenticated_session
         ), route.path
     callback_route = next(
         route
@@ -188,9 +213,8 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         if isinstance(route, APIRoute)
         and route.path == "/api/v1/copilot/oauth/callback"
     )
-    assert not any(
-        dependency.call is require_authenticated_session
-        for dependency in callback_route.dependant.dependencies
+    assert not _dependency_tree_contains(
+        callback_route.dependant, require_authenticated_session
     )
     publication_routes = [
         route
@@ -300,7 +324,7 @@ def test_business_api_requires_a_session_even_with_a_spoofed_owner_header() -> N
     assert response.status_code == 401
     assert response.json() == {"detail": "未登录。"}
 
-def test_member_can_read_budget_and_anomaly_views_but_cannot_manage_them() -> None:
+def test_member_cannot_read_enterprise_budget_views_or_manage_them() -> None:
     client.cookies.set("turnstile_session", MEMBER_SESSION)
     period = "2026-07"
 
@@ -316,8 +340,8 @@ def test_member_can_read_budget_and_anomaly_views_but_cannot_manage_them() -> No
     )
     rules = client.get("/api/v1/anomaly-rules")
 
-    assert budget_overview.status_code == 200
-    assert people.status_code == 200
+    assert budget_overview.status_code == 403
+    assert people.status_code == 403
     assert rules.status_code == 200
 
     budget_write = client.put(
@@ -659,6 +683,142 @@ def test_member_invocation_accepts_self_or_configured_tester_only() -> None:
     assert captured[1].metadata.user == "test.user01@contoso.com"
     assert captured[2].metadata.user_id == "victim@contoso.com"
     assert captured[2].metadata.user == "Victim"
+
+
+def test_model_invocation_requires_session_or_apim_subscription_key() -> None:
+    client.cookies.clear()
+    response = client.post(
+        "/api/v1/model-gateway/invoke",
+        json={
+            "metadata": {
+                "organization_id": "org",
+                "organization": "Org",
+                "department_id": "dept",
+                "department": "Department",
+                "project_id": "project",
+                "project": "Project",
+                "agent_id": "agent",
+                "agent": "Agent",
+                "user_id": "user@example.com",
+                "user": "User",
+                "workflow": "test",
+                "model_id": "model",
+                "model": "Model",
+                "runtime": "Runtime",
+                "request_source": "test",
+                "run_id": "run",
+                "turn_index": 1,
+            },
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_apim_key_invocation_does_not_trust_caller_user_metadata() -> None:
+    captured: list[tuple[ModelInvocationRequest, dict[str, object]]] = []
+
+    class CapturingRuntimeService:
+        def invoke(self, request: ModelInvocationRequest, **kwargs: object) -> dict[str, object]:
+            captured.append((request, kwargs))
+            return {
+                "request_id": "request-id",
+                "correlation_id": "correlation-id",
+                "content": "ok",
+                "provider": "test",
+                "runtime": "test",
+                "model": "test",
+                "gateway": "apim",
+                "latency_ms": 1,
+                "usage": None,
+                "estimated_cost": None,
+            }
+
+    payload: dict[str, Any] = {
+        "metadata": {
+            "organization_id": "attacker-org",
+            "organization": "Attacker Org",
+            "department_id": "attacker-department",
+            "department": "Attacker Department",
+            "project_id": "attacker-project",
+            "project": "Attacker Project",
+            "agent_id": "attacker-agent",
+            "agent": "Attacker Agent",
+            "user_id": "victim@contoso.com",
+            "user": "Victim",
+            "workflow": "untrusted-client",
+            "model_id": "test-model",
+            "model": "test-model",
+            "runtime": "test-runtime",
+            "request_source": "untrusted-client",
+            "run_id": "caller-run-id",
+            "turn_index": 1,
+        },
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    app.dependency_overrides[runtime_service] = CapturingRuntimeService
+    client.cookies.clear()
+    try:
+        response = client.post(
+            "/api/v1/model-gateway/invoke",
+            headers={"Ocp-Apim-Subscription-Key": "invalid-key-value"},
+            json=payload,
+        )
+    finally:
+        app.dependency_overrides.pop(runtime_service, None)
+
+    assert response.status_code == 200
+    forwarded_request, options = captured[0]
+    assert forwarded_request.metadata.user_id == "unattributed"
+    assert forwarded_request.metadata.user == "unattributed"
+    assert options["gateway_credential_override"] == "invalid-key-value"
+    assert options["enforce_user_model_access"] is False
+    assert options["enforce_local_user_budget"] is False
+
+
+def test_apim_key_invocation_preserves_apim_unauthorized_status() -> None:
+    class RejectingRuntimeService:
+        def invoke(self, request: ModelInvocationRequest, **kwargs: object) -> dict[str, object]:
+            del request, kwargs
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=401, detail="Invalid subscription key")
+
+    app.dependency_overrides[runtime_service] = RejectingRuntimeService
+    client.cookies.clear()
+    try:
+        response = client.post(
+            "/api/v1/model-gateway/invoke",
+            headers={"Ocp-Apim-Subscription-Key": "invalid-key-value"},
+            json={
+                "metadata": {
+                    "organization_id": "org",
+                    "organization": "Org",
+                    "department_id": "dept",
+                    "department": "Department",
+                    "project_id": "project",
+                    "project": "Project",
+                    "agent_id": "agent",
+                    "agent": "Agent",
+                    "user_id": "user@example.com",
+                    "user": "User",
+                    "workflow": "test",
+                    "model_id": "model",
+                    "model": "Model",
+                    "runtime": "Runtime",
+                    "request_source": "test",
+                    "run_id": "run",
+                    "turn_index": 1,
+                },
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(runtime_service, None)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid subscription key"}
 
 def test_unknown_api_route_never_falls_back_to_spa_html() -> None:
     response = client.get("/api/v1/not-a-real-route")

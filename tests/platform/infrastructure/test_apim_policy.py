@@ -467,6 +467,44 @@ def test_application_identity_comes_from_apim_and_validated_token_context() -> N
     assert '&quot;service:&quot; + subscriptionId' in policy
 
 
+def test_key_calls_require_a_live_subscription_owner_and_override_client_identity() -> None:
+    policy = POLICY_PATH.read_text()
+
+    assert '&quot;OwnerUserId&quot;' in policy
+    assert '&quot;OwnerEnabled&quot;' in policy
+    assert '&quot;TenantId&quot;' in policy
+    assert '&quot;TenantEnabled&quot;' in policy
+    assert '&quot;OrganizationUnitId&quot;' in policy
+    assert '&quot;OrganizationUnitEnabled&quot;' in policy
+    assert '&quot;application_unassigned&quot;' in policy
+    assert (
+        '@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot;'
+        in policy
+    )
+    assert (
+        '(bool)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot;'
+        not in policy
+    )
+    assert 'name="x-user-id" exists-action="override"' in policy
+    assert 'name="x-user-name" exists-action="override"' in policy
+    assert 'name="x-org-id" exists-action="override"' in policy
+    assert 'name="x-department-id" exists-action="override"' in policy
+    assert '&quot;telemetryApplicationActorType&quot;' in policy
+    assert '&quot;telemetryApplicationActorId&quot;' in policy
+
+
+def test_application_denials_keep_the_mapped_owner_attribution() -> None:
+    policy = POLICY_PATH.read_text()
+    denial = policy.index("name=\"applicationDenialReason\"")
+    log_start = policy.index("<log-to-eventhub", denial)
+    log_end = policy.index("</log-to-eventhub>", log_start)
+    denial_log = policy[log_start:log_end]
+
+    assert '&quot;ownerUserId&quot;' in denial_log
+    assert '&quot;application_actor_type&quot;' in denial_log
+    assert '&quot;application_actor_id&quot;' in denial_log
+
+
 def test_application_admission_uses_dynamic_ledger_mapping_and_exact_reservation() -> None:
     policy = POLICY_PATH.read_text()
 
@@ -510,10 +548,32 @@ def test_apim_derives_the_model_for_subscription_callers_that_omit_the_header() 
 
     # Without this the request body names the model but telemetry records `unattributed`.
     assert 'name="subscriptionModel"' in policy
-    # `skip` keeps the richer registry identifiers the dashboard BFF already sends.
-    assert policy.count('<set-header name="x-model-id" exists-action="skip">') == 1
-    assert policy.count('<set-header name="x-hive-model" exists-action="skip">') == 1
-    assert policy.count('<set-header name="x-request-source" exists-action="skip">') == 1
+    subscription_model_branch = policy.split(
+        '<set-variable name="subscriptionModel"', 1
+    )[1].split("</when>", 1)[0]
+    # The body is the source of truth for APIM subscriptions; caller-supplied model
+    # attribution must never override model allow-listing or telemetry.
+    assert '<set-header name="x-model-id" exists-action="override">' in subscription_model_branch
+    assert '<set-header name="x-hive-model" exists-action="override">' in subscription_model_branch
+    assert (
+        '<set-header name="x-request-source" exists-action="override">'
+        in subscription_model_branch
+    )
+
+
+def test_subscription_callers_cannot_forge_project_or_agent_billing_attribution() -> None:
+    policy = POLICY_PATH.read_text()
+    subscription_branch = policy.split(
+        '<set-variable name="subscriptionAgent"', 1
+    )[1].split('<set-variable name="subscriptionModel"', 1)[0]
+
+    for header in ("x-project-id", "x-project-name", "x-agent-id", "x-agent-name"):
+        assert f'<set-header name="{header}" exists-action="override">' in subscription_branch
+    assert subscription_branch.count('>unattributed</value>') >= 4
+    model_branch = policy.split(
+        '<set-variable name="subscriptionModel"', 1
+    )[1].split("</when>", 1)[0]
+    assert '<set-header name="x-request-source" exists-action="override">' in model_branch
 
 
 def test_apim_attributes_mapped_subscriptions_to_trusted_agents() -> None:
@@ -546,7 +606,11 @@ def test_apim_attributes_mapped_subscriptions_to_trusted_agents() -> None:
         in policy
     )
     assert (
-        'state[&quot;applicationType&quot;] = (string)row[&quot;ApplicationType&quot;]'
+        'var applicationType = (string)row[&quot;ApplicationType&quot;]'
+        in policy
+    )
+    assert (
+        'state[&quot;applicationType&quot;] = applicationType;'
         in policy
     )
     assert (
@@ -616,6 +680,23 @@ def test_apim_token_limits_use_product_subscription_identity() -> None:
     assert "Microsoft.ApiManagement/service/products@" in module
     assert "Microsoft.ApiManagement/service/products/apis@" in module
     assert "scope: product.id" in module
+
+
+def test_apim_product_remains_the_subscription_key_authority() -> None:
+    module = APIM_MODULE_PATH.read_text()
+    policy = POLICY_PATH.read_text()
+    api = module.split("resource api 'Microsoft.ApiManagement/service/apis@", 1)[1].split(
+        "resource product '", 1
+    )[0]
+    product = module.split("resource product 'Microsoft.ApiManagement/service/products@", 1)[
+        1
+    ].split("resource productApi '", 1)[0]
+
+    assert "header: 'Ocp-Apim-Subscription-Key'" in api
+    assert "subscriptionRequired: true" in product
+    assert "subscriptionsLimit: 1000" in product
+    assert '<set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />' in policy
+    assert '<set-query-parameter name="subscription-key" exists-action="delete" />' in policy
 
 
 def test_count_tokens_is_an_anthropic_operation_but_never_billed() -> None:

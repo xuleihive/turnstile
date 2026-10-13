@@ -40,6 +40,7 @@ param bootstrapOwnerEmail string
 param bootstrapOwnerPasswordHash string
 
 var storageName = 'st${resourcePrefix}${take(suffix, 10)}'
+var usageExportStorageName = 'st${take(resourcePrefix, 8)}ex${take(suffix, 10)}'
 var ledgerStorageName = 'st${resourcePrefix}ledger${take(suffix, 4)}'
 var postgresServerName = 'pg-${resourcePrefix}-${suffix}'
 var databaseName = 'turnstile'
@@ -252,6 +253,26 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+resource usageExportStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: usageExportStorageName
+  location: location
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    allowSharedKeyAccess: false
+    allowBlobPublicAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Disabled'
+    networkAcls: {
+      bypass: 'None'
+      defaultAction: 'Deny'
+    }
+  }
+}
+
 resource functionDeploymentBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storage
   name: 'default'
@@ -260,6 +281,19 @@ resource functionDeploymentBlobService 'Microsoft.Storage/storageAccounts/blobSe
 resource functionDeploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: functionDeploymentBlobService
   name: telemetryDeploymentContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource usageExportBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: usageExportStorage
+  name: 'default'
+}
+
+resource usageExportContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: usageExportBlobService
+  name: 'turnstile-usage-exports'
   properties: {
     publicAccess: 'None'
   }
@@ -397,6 +431,42 @@ resource blobPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
     virtualNetwork: {
       id: virtualNetwork.id
     }
+  }
+}
+
+resource usageExportBlobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-${usageExportStorageName}-blob'
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'usage-export-blob'
+        properties: {
+          privateLinkServiceId: usageExportStorage.id
+          groupIds: [
+            'blob'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource usageExportBlobPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: usageExportBlobPrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'blob'
+        properties: {
+          privateDnsZoneId: blobPrivateDnsZone.id
+        }
+      }
+    ]
   }
 }
 
@@ -645,7 +715,9 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'WEBSITES_PORT', value: '8000' }
         { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'DATABASE_URL', value: postgresConnectionString }
+        { name: 'USAGE_EXPORT_BLOB_SERVICE_URL', value: usageExportStorage.properties.primaryEndpoints.blob }
         { name: 'DATA_BACKEND', value: 'postgresql' }
+        { name: 'TRUST_AZURE_ARR_CLIENT_IP', value: 'true' }
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: credentialEncryptionKey }
         { name: 'MANAGEMENT_API_KEY', value: managementApiKey }
         { name: 'APIM_PRINCIPAL_ID', value: apimPrincipalId }
@@ -734,6 +806,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'EVENT_HUB_CONNECTION__fullyQualifiedNamespace', value: '${eventHubNamespace.name}.servicebus.windows.net' }
         { name: 'EVENT_HUB_CONNECTION__credential', value: 'managedidentity' }
         { name: 'DATABASE_URL', value: postgresConnectionString }
+        { name: 'USAGE_EXPORT_BLOB_SERVICE_URL', value: usageExportStorage.properties.primaryEndpoints.blob }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
         { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: workspace.properties.customerId }
@@ -848,6 +921,26 @@ resource telemetryLedgerContributor 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
+resource telemetryUsageExportBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(usageExportContainer.id, functionApp.id, 'usage-export-blob-contributor')
+  scope: usageExportContainer
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
+resource apiUsageExportBlobReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(usageExportContainer.id, api.id, 'usage-export-blob-reader')
+  scope: usageExportContainer
+  properties: {
+    principalId: api.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
+  }
+}
+
 resource apimLedgerContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(ledgerTable.id, apimPrincipalId, 'table-data-contributor')
   scope: ledgerTable
@@ -877,6 +970,7 @@ output eventHubName string = usageEventHub.name
 output applicationInsightsName string = appInsights.name
 output applicationInsightsConnectionString string = appInsights.properties.ConnectionString
 output ledgerStorageName string = ledgerStorage.name
+output usageExportStorageName string = usageExportStorage.name
 output ledgerTableEndpoint string = ledgerTableEndpoint
 output keyVaultName string = keyVault.name
 output databaseUrlSecretUri string = databaseUrlSecret.properties.secretUri

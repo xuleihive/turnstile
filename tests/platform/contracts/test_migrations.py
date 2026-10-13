@@ -33,8 +33,72 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "006_versioned_budget_evidence.up.sql",
         "007_model_price_source.up.sql",
         "008_price_review_and_guard.up.sql",
+        "009_user_access_and_audit_foundation.up.sql",
+        "010_application_owner_and_subscription_audit.up.sql",
+        "011_usage_export_jobs.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
+
+
+def test_user_access_migration_preserves_legacy_ownership_and_usage_history() -> None:
+    path = MIGRATIONS / "009_user_access_and_audit_foundation.up.sql"
+    assert path.is_file(), "the user access migration must be appended after version 008"
+    sql = path.read_text(encoding="utf-8")
+    lowered = sql.lower()
+
+    assert {
+        "tenant",
+        "organization_unit",
+        "app_role",
+        "app_permission",
+        "app_role_permission",
+        "security_audit_event",
+    } <= table_names(sql)
+    assert "drop constraint if exists app_user_role_check" in lowered
+    assert re.search(r"references public\.app_role\s*\(code\)", lowered)
+    assert "insert into public.app_role" in lowered
+    assert "insert into public.app_permission" in lowered
+    assert "insert into public.app_role_permission" in lowered
+    assert "add column tenant_id uuid" in lowered
+    assert "update public.app_user" in lowered
+    assert lowered.count(
+        "alter column tenant_id set default '10000000-0000-4000-8000-000000000001'"
+    ) == 2
+    assert "update public.gateway_application" in lowered
+    assert re.search(r"lower\(btrim\((?:application\.)?owner_id\)\)", lowered)
+    assert "having count(*) = 1" in lowered
+    assert "add column owner_user_id uuid" in lowered
+    assert "foreign key (owner_user_id) references public.app_user(id)" in lowered
+    assert not re.search(r"owner_user_id\s+set\s+not null", lowered)
+    assert not re.search(
+        r"^\s*(UPDATE|DELETE|TRUNCATE)\s+(public\.)?token_usage\b",
+        sql,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    assert "drop table" not in lowered
+
+
+def test_application_audit_migration_allows_owner_and_subscription_events() -> None:
+    path = MIGRATIONS / "010_application_owner_and_subscription_audit.up.sql"
+    sql = path.read_text(encoding="utf-8").lower()
+
+    assert "owner_changed" in sql
+    assert "subscription_created" in sql
+    assert "subscription_cancelled" in sql
+    assert "drop table" not in sql
+
+
+def test_usage_export_migration_is_append_only_and_has_queue_indexes() -> None:
+    path = MIGRATIONS / "011_usage_export_jobs.up.sql"
+    assert path.is_file(), "usage export jobs must use a new append-only migration"
+    sql = path.read_text(encoding="utf-8").lower()
+    assert "create table public.usage_export_job" in sql
+    assert "idempotency_key" in sql
+    assert "lease_until" in sql
+    assert "expires_at" in sql
+    assert "usage_export_job_active_user_idx" in sql
+    assert "usage_export_job_lease_idx" in sql
+    assert "drop table" not in sql
 
 
 def test_the_review_baseline_and_the_pending_price_are_separate_columns() -> None:

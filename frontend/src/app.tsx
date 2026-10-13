@@ -84,6 +84,7 @@ import {
   prefetchApimPage,
   renderApimPage,
 } from "./data-sources/apim/source";
+import { resolveApimPage, visibleApimPages } from "./data-sources/apim/page-access.js";
 import type { FinOpsScope } from "./data-sources/apim/pages/dashboard-page";
 import {
   githubCopilotOwnsPage,
@@ -99,6 +100,9 @@ import { ApimNativeRoutesPage } from "./pages/apim-native-routes-page";
 import { GatewayReleasesPage } from "./pages/gateway-releases-page";
 import { ApplicationsPage } from "./pages/applications-page";
 import { SettingsPage } from "./pages/settings-page";
+import { SecurityAuditPage } from "./pages/security-audit-page";
+import { UserManagementPage } from "./pages/user-management-page";
+import { MyApiKeysPage } from "./pages/my-api-keys-page";
 import type {
   AuditFinding,
   AuditStatus,
@@ -126,7 +130,10 @@ type Page =
   | "copilot-cost-centers"
   | "copilot-unassigned-users"
   | "copilot-enterprise-teams"
-  | "copilot-requests";
+  | "copilot-requests"
+  | "user-management"
+  | "security-audit"
+  | "my-api-keys";
 type DataSource = "apim" | "github-copilot";
 
 function normalizePageForSource(source: DataSource, page: Page): Page {
@@ -164,6 +171,9 @@ const pageIds: Page[] = [
   "copilot-unassigned-users",
   "copilot-enterprise-teams",
   "copilot-requests",
+  "user-management",
+  "security-audit",
+  "my-api-keys",
 ];
 function pageFromUrl(): Page {
   const value = new URLSearchParams(window.location.search).get("page");
@@ -842,12 +852,16 @@ function Loading() {
 
 export function App() {
   const queryClient = useQueryClient();
-  const { user, photo, signOut } = useAuth();
+  const { user, photo, signOut, can } = useAuth();
   const assistantOwner = user?.email ?? null;
+  const apimPermissions = user?.permissions ?? (user?.role === "owner" ? ["usage.read.all"] : []);
   const [selectedDataSource, setSelectedDataSource] = useState<DataSource>(dataSourceFromStorage);
   const [page, setPage] = useState<Page>(() =>
     normalizePageForSource(selectedDataSource, pageFromUrl()));
-  const routedPage = normalizePageForSource(selectedDataSource, page);
+  const routedPage = normalizePageForSource(
+    selectedDataSource,
+    selectedDataSource === "apim" ? resolveApimPage(page, apimPermissions) as Page : page,
+  );
 
   useEffect(() => {
     const syncPageFromUrl = () => {
@@ -958,7 +972,8 @@ export function App() {
     setAssistantConversationId(null);
     localStorage.setItem(DATA_SOURCE_STORAGE_KEY, next);
     setFinopsScope({});
-    const nextPage = normalizePageForSource(next, page);
+    const sourcePage = next === "apim" ? resolveApimPage(page, apimPermissions) as Page : page;
+    const nextPage = normalizePageForSource(next, sourcePage);
     if (nextPage !== page) setPage(nextPage);
     const url = new URL(window.location.href);
     url.searchParams.set("source", next);
@@ -1061,18 +1076,21 @@ export function App() {
     sidebarDrag.current = null;
   };
   const navigatePage = (next: Page, requestId?: string) => {
-    setPage(next);
+    const permittedPage = selectedDataSource === "apim"
+      ? resolveApimPage(next, apimPermissions) as Page
+      : next;
+    setPage(permittedPage);
     const url = new URL(window.location.href);
-    url.searchParams.set("page", next);
+    url.searchParams.set("page", permittedPage);
     url.searchParams.delete("runtime");
     url.searchParams.delete("tab");
     url.searchParams.delete("router");
     url.searchParams.delete("application");
-    if (next !== "pinned-report") url.searchParams.delete("chart");
+    if (permittedPage !== "pinned-report") url.searchParams.delete("chart");
     // The open thread belongs to the assistant page alone. Leaving it in the URL would
     // put a stale conversation back on screen the next time that page is opened from
     // the nav, which reads as the nav entry having its own memory.
-    if (next !== "assistant") url.searchParams.delete("conversation");
+    if (permittedPage !== "assistant") url.searchParams.delete("conversation");
     if (requestId) url.searchParams.set("request", requestId);
     else url.searchParams.delete("request");
     window.history.replaceState(null, "", url);
@@ -1130,8 +1148,11 @@ export function App() {
     document.addEventListener("keydown", handleCreateInvocationShortcut);
     return () => document.removeEventListener("keydown", handleCreateInvocationShortcut);
   }, [selectedDataSource]);
-  const sourcePages = selectedDataSource === "apim" ? apimPages : githubCopilotPages;
-  const pageInfo = sourcePages.find((item) => item.id === page) ?? {
+  const allSourcePages = selectedDataSource === "apim" ? apimPages : githubCopilotPages;
+  const sourcePages = selectedDataSource === "apim"
+    ? visibleApimPages(apimPages, apimPermissions)
+    : allSourcePages;
+  const pageInfo = allSourcePages.find((item) => item.id === page) ?? {
     id: page,
     label:
       page === "apim-native-routes"
@@ -1170,7 +1191,9 @@ export function App() {
   const navGroups: NavGroup[] = [
     {
       label: "AI 用量治理",
-      items: sourcePages.map((item) => ({ label: item.label, icon: item.icon, page: item.id })),
+      items: sourcePages
+        .filter((item) => !["user-management", "security-audit", "my-api-keys"].includes(item.id))
+        .map((item) => ({ label: item.label, icon: item.icon, page: item.id })),
     },
   ];
   if (selectedDataSource === "apim") {
@@ -1188,6 +1211,15 @@ export function App() {
     label: "系统管理",
     items: [
       { label: "设置", icon: Settings, page: "settings" },
+      ...(selectedDataSource === "apim" && can("users.read")
+        ? [{ label: "用户与组织", icon: UsersRound, page: "user-management" as Page }]
+        : []),
+      ...(selectedDataSource === "apim" && can("security_audit.read")
+        ? [{ label: "安全审计", icon: ShieldAlert, page: "security-audit" as Page }]
+        : []),
+      ...(selectedDataSource === "apim" && can("keys.manage.own")
+        ? [{ label: "我的 API Key", icon: KeyRound, page: "my-api-keys" as Page }]
+        : []),
     ],
   });
   // The invocation console is deliberately absent from the sidebar: the header already
@@ -1502,6 +1534,15 @@ export function App() {
           {selectedDataSource === "apim" && page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen={nativeRouteDrawerOpen} onRouteDrawerOpenChange={setNativeRouteDrawerOpen} addOpen={nativeRouteAddOpen} onAddOpenChange={setNativeRouteAddOpen} />}
           {selectedDataSource === "apim" && page === "gateway-releases" && <GatewayReleasesPage releaseDrawerOpen={gatewayReleaseDrawerOpen} onReleaseDrawerOpenChange={setGatewayReleaseDrawerOpen} />}
           {selectedDataSource === "apim" && page === "applications" && <ApplicationsPage />}
+          {selectedDataSource === "apim" && page === "user-management" && (can("users.read")
+            ? <UserManagementPage />
+            : <div className="user-management-state error" role="alert">当前账号没有用户与组织管理权限。</div>)}
+          {selectedDataSource === "apim" && page === "security-audit" && (can("security_audit.read")
+            ? <SecurityAuditPage />
+            : <div className="security-audit-state error" role="alert">无权查看安全审计。</div>)}
+          {selectedDataSource === "apim" && page === "my-api-keys" && (can("keys.manage.own")
+            ? <MyApiKeysPage />
+            : <div className="user-api-keys-error" role="alert">当前账号没有 Key 管理权限。</div>)}
           {page === "assistant" && (
             <AssistantPage
               key={selectedDataSource}
@@ -1514,7 +1555,7 @@ export function App() {
           {selectedDataSource === "apim" && page === "pinned-report" && pinnedChartId && (
             <PinnedReportPage chartId={pinnedChartId} onToggleSidebar={toggleSidebar} onDeleted={forgetPinnedReport} />
           )}
-          {selectedDataSource === "apim" && renderApimPage({ page, onToggleSidebar: toggleSidebar, days: finopsDays, scope: finopsScope, onDaysChange: setFinopsDays, onScopeChange: setFinopsScope, onOpenRequest: (requestId) => navigatePage("finops-requests", requestId) })}
+          {selectedDataSource === "apim" && renderApimPage({ page: resolveApimPage(page, apimPermissions) as Page, onToggleSidebar: toggleSidebar, days: finopsDays, scope: finopsScope, onDaysChange: setFinopsDays, onScopeChange: setFinopsScope, onOpenRequest: (requestId) => navigatePage("finops-requests", requestId) })}
           {selectedDataSource === "github-copilot" && githubCopilotOwnsPage(page) && renderGithubCopilotPage(page, toggleSidebar)}
         </div>
       </main>

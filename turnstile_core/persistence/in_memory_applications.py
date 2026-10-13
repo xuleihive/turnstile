@@ -213,32 +213,54 @@ class InMemoryApplicationRepositoryMixin:
             ),
             None,
         )
-        if existing is not None or existing_subscription is not None:
+        if existing_subscription is not None:
             if (
                 existing is not None
-                and existing_subscription is not None
                 and existing_subscription["application_id"] == application_id
                 and existing_subscription["source"] == "managed"
             ):
                 return existing
             raise ValueError("Application or APIM subscription ID already exists")
         now = datetime.now(UTC)
-        application = {
-            "id": application_id,
-            "gateway_profile_id": gateway_profile_id,
-            "slug": value["slug"],
-            "display_name": value["display_name"],
-            "description": value.get("description"),
-            "owner_id": actor,
-            "department_id": None,
-            "application_type": value["application_type"],
-            "status": "active",
-            "system_managed": False,
-            "created_by": actor,
-            "created_at": now,
-            "updated_by": actor,
-            "updated_at": now,
-        }
+        created_application = existing is None
+        if existing is not None:
+            if (
+                existing["gateway_profile_id"] != gateway_profile_id
+                or existing["slug"] != value["slug"]
+                or bool(existing["system_managed"])
+                or value.get("owner_user_id") is not None
+                and existing.get("owner_user_id") != value.get("owner_user_id")
+                or value.get("tenant_id") is not None
+                and existing.get("tenant_id") != value.get("tenant_id")
+            ):
+                raise ValueError("Application owner or identity does not match")
+            application = existing
+        else:
+            application = {
+                "id": application_id,
+                "gateway_profile_id": gateway_profile_id,
+                "slug": value["slug"],
+                "display_name": (
+                    value.get("application_display_name") or value["display_name"]
+                ),
+                "description": value.get("description"),
+                "owner_id": value.get("owner_email") or actor,
+                "department_id": (
+                    str(value["organization_unit_id"])
+                    if value.get("organization_unit_id")
+                    else None
+                ),
+                "owner_user_id": value.get("owner_user_id"),
+                "tenant_id": value.get("tenant_id"),
+                "organization_unit_id": value.get("organization_unit_id"),
+                "application_type": value["application_type"],
+                "status": "active",
+                "system_managed": False,
+                "created_by": actor,
+                "created_at": now,
+                "updated_by": actor,
+                "updated_at": now,
+            }
         subscription = {
             "id": application_subscription_id,
             "application_id": application_id,
@@ -253,23 +275,25 @@ class InMemoryApplicationRepositoryMixin:
             "discovered_at": now,
             "last_synced_at": now,
         }
-        self.gateway_applications.append(application)
+        if created_application:
+            self.gateway_applications.append(application)
         self.gateway_application_subscriptions.append(subscription)
-        self.gateway_application_budgets[(period_start, application_id)] = {
-            "period_start": period_start,
-            "application_id": application_id,
-            "token_limit": default_token_limit,
-            "tokens_per_minute": default_tokens_per_minute,
-            "enforce": True,
-            "warning_threshold_percent": 80,
-            "updated_by": actor,
-            "updated_at": now,
-        }
+        if created_application:
+            self.gateway_application_budgets[(period_start, application_id)] = {
+                "period_start": period_start,
+                "application_id": application_id,
+                "token_limit": default_token_limit,
+                "tokens_per_minute": default_tokens_per_minute,
+                "enforce": True,
+                "warning_threshold_percent": 80,
+                "updated_by": actor,
+                "updated_at": now,
+            }
         self.gateway_application_audit.append(
             {
                 "id": uuid4(),
                 "application_id": application_id,
-                "operation": "created",
+                "operation": "created" if created_application else "subscription_created",
                 "before_state": None,
                 "after_state": {
                     "application": deepcopy(application),
@@ -292,6 +316,68 @@ class InMemoryApplicationRepositoryMixin:
             (item for item in self.gateway_applications if item["id"] == application_id),
             None,
         )
+
+    def list_gateway_applications_for_owner(
+        self, owner_user_id: UUID
+    ) -> Sequence[dict[str, Any]]:
+        return sorted(
+            (
+                item
+                for item in self.gateway_applications
+                if item.get("owner_user_id") == owner_user_id
+                and not bool(item.get("system_managed"))
+            ),
+            key=lambda item: (str(item["display_name"]), str(item["id"])),
+        )
+
+    def update_gateway_application_owner(
+        self,
+        application_id: UUID,
+        owner_user_id: UUID | None,
+        tenant_id: UUID | None,
+        organization_unit_id: UUID | None,
+        owner_email: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None:
+        application = self.get_gateway_application(application_id)
+        if application is None:
+            return None
+        if bool(application.get("system_managed")):
+            raise ValueError("System-managed application ownership cannot be changed")
+        current_tenant = application.get("tenant_id")
+        if tenant_id is not None and current_tenant is not None and current_tenant != tenant_id:
+            raise ValueError("Application and owner must belong to the same tenant")
+        before = {
+            "owner_user_id": application.get("owner_user_id"),
+            "owner_id": application.get("owner_id"),
+            "organization_unit_id": application.get("organization_unit_id"),
+        }
+        now = datetime.now(UTC)
+        application.update(
+            owner_user_id=owner_user_id,
+            tenant_id=tenant_id if tenant_id is not None else current_tenant,
+            organization_unit_id=organization_unit_id,
+            department_id=str(organization_unit_id) if organization_unit_id else None,
+            owner_id=owner_email,
+            updated_by=actor,
+            updated_at=now,
+        )
+        self.gateway_application_audit.append(
+            {
+                "id": uuid4(),
+                "application_id": application_id,
+                "operation": "owner_changed",
+                "before_state": before,
+                "after_state": {
+                    "owner_user_id": owner_user_id,
+                    "owner_id": owner_email,
+                    "organization_unit_id": organization_unit_id,
+                },
+                "actor": actor,
+                "created_at": now,
+            }
+        )
+        return application
 
     def list_gateway_application_avatars(
         self, application_ids: Sequence[UUID]
@@ -472,6 +558,41 @@ class InMemoryApplicationRepositoryMixin:
             for item in self.gateway_application_subscriptions
             if item["application_id"] in wanted
         ]
+
+    def update_gateway_application_subscription_state(
+        self,
+        application_subscription_id: UUID,
+        state: str,
+        actor: str,
+    ) -> dict[str, Any] | None:
+        if state not in {"active", "suspended", "cancelled"}:
+            raise ValueError("Invalid APIM subscription state")
+        subscription = next(
+            (
+                item
+                for item in self.gateway_application_subscriptions
+                if item["id"] == application_subscription_id
+            ),
+            None,
+        )
+        if subscription is None:
+            return None
+        if subscription["state"] == state:
+            return subscription
+        before = deepcopy(subscription)
+        subscription.update(state=state, last_synced_at=datetime.now(UTC))
+        self.gateway_application_audit.append(
+            {
+                "id": uuid4(),
+                "application_id": subscription["application_id"],
+                "operation": "subscription_cancelled",
+                "before_state": {"subscription": before},
+                "after_state": {"subscription": deepcopy(subscription)},
+                "actor": actor,
+                "created_at": datetime.now(UTC),
+            }
+        )
+        return subscription
 
     def list_gateway_application_budgets(
         self, period_start: date, application_ids: Sequence[UUID]
@@ -720,6 +841,27 @@ class InMemoryApplicationRepositoryMixin:
                 "apim_subscription_id": subscription["apim_subscription_id"],
                 "subscription_state": subscription["state"],
                 "scope_exists": subscription["scope_exists"],
+                "owner_user_id": str(application["owner_user_id"])
+                if application.get("owner_user_id") is not None
+                else None,
+                "owner_email": application.get("owner_email"),
+                "owner_display_name": application.get("owner_display_name"),
+                "owner_enabled": bool(application.get("owner_enabled", False)),
+                "owner_tenant_id": str(application["owner_tenant_id"])
+                if application.get("owner_tenant_id") is not None
+                else None,
+                "tenant_id": str(application["tenant_id"])
+                if application.get("tenant_id") is not None
+                else None,
+                "tenant_name": application.get("tenant_name"),
+                "tenant_enabled": bool(application.get("tenant_enabled", False)),
+                "organization_unit_id": str(application["organization_unit_id"])
+                if application.get("organization_unit_id") is not None
+                else None,
+                "organization_unit_name": application.get("organization_unit_name"),
+                "organization_unit_enabled": bool(
+                    application.get("organization_unit_enabled", False)
+                ),
             }
             for subscription in self.gateway_application_subscriptions
             if subscription["gateway_profile_id"] == gateway_profile_id
@@ -798,7 +940,7 @@ class InMemoryApplicationRepositoryMixin:
         return rows
 
     def gateway_application_ledger_mappings(
-        self,
+        self, owner_user_id: UUID | None = None
     ) -> Sequence[dict[str, Any]]:
         applications = {item["id"]: item for item in self.gateway_applications}
         return [
@@ -812,9 +954,34 @@ class InMemoryApplicationRepositoryMixin:
                 "apim_subscription_id": subscription["apim_subscription_id"],
                 "subscription_state": subscription["state"],
                 "scope_exists": subscription["scope_exists"],
+                "owner_user_id": str(application["owner_user_id"])
+                if application.get("owner_user_id") is not None
+                else None,
+                "owner_email": application.get("owner_email"),
+                "owner_display_name": application.get("owner_display_name"),
+                "owner_enabled": bool(application.get("owner_enabled", False)),
+                "owner_tenant_id": str(application["owner_tenant_id"])
+                if application.get("owner_tenant_id") is not None
+                else None,
+                "tenant_id": str(application["tenant_id"])
+                if application.get("tenant_id") is not None
+                else None,
+                "tenant_name": application.get("tenant_name"),
+                "tenant_enabled": bool(application.get("tenant_enabled", False)),
+                "organization_unit_id": str(application["organization_unit_id"])
+                if application.get("organization_unit_id") is not None
+                else None,
+                "organization_unit_name": application.get("organization_unit_name"),
+                "organization_unit_enabled": bool(
+                    application.get("organization_unit_enabled", False)
+                ),
             }
             for subscription in self.gateway_application_subscriptions
             if (application := applications.get(subscription["application_id"])) is not None
+            and (
+                owner_user_id is None
+                or application.get("owner_user_id") == owner_user_id
+            )
         ]
 
     def roll_forward_gateway_application_budgets(self, period_start: date, actor: str) -> int:

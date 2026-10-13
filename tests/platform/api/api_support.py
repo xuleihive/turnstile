@@ -21,13 +21,37 @@ OWNER_SESSION = "test-owner-session"
 MEMBER_SESSION = "test-member-session"
 
 class StubAuthStore:
+    def __init__(self, role: str | None = None, enabled: bool = True) -> None:
+        self.role = role
+        self.enabled = enabled
+
+    @staticmethod
+    def _permissions(role: str) -> list[str]:
+        if role == "owner":
+            return [
+                "platform.manage", "users.read", "users.manage", "org.read",
+                "org.manage", "roles.read", "applications.read.all",
+                "applications.read.own", "keys.manage.all", "keys.manage.own",
+                "usage.read.all", "usage.read.own", "reports.create.all",
+                "reports.create.own", "security_audit.read",
+            ]
+        return [
+            "applications.read.own", "keys.manage.own", "usage.read.own",
+            "reports.create.own",
+        ]
+
     def session_owner(self, token_sha256: str) -> dict[str, object] | None:
+        if not self.enabled:
+            return None
+        owner_role = self.role or "owner"
+        member_role = self.role or "member"
         sessions: dict[str, dict[str, object]] = {
             hash_session_token(OWNER_SESSION): {
                 "id": "00000000-0000-4000-8000-000000000001",
                 "email": "owner@contoso.com",
                 "display_name": "Owner",
-                "role": "owner",
+                "role": owner_role,
+                "permissions": self._permissions(owner_role),
                 "method": "password",
                 "created_at": datetime(2026, 8, 10, tzinfo=UTC),
                 "expires_at": datetime(2026, 8, 17, tzinfo=UTC),
@@ -36,7 +60,8 @@ class StubAuthStore:
                 "id": "00000000-0000-4000-8000-000000000002",
                 "email": "member@contoso.com",
                 "display_name": "Member",
-                "role": "member",
+                "role": member_role,
+                "permissions": self._permissions(member_role),
                 "method": "password",
                 "created_at": datetime(2026, 8, 10, tzinfo=UTC),
                 "expires_at": datetime(2026, 8, 17, tzinfo=UTC),

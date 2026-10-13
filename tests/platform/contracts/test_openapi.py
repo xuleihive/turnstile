@@ -94,8 +94,8 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     schemas = cast(dict[str, dict[str, str]], components["schemas"])
 
     assert len(CONTRACT.read_text(encoding="utf-8").splitlines()) < 800
-    assert len(paths) == 78
-    assert len(schemas) == 172
+    assert len(paths) == 95
+    assert len(schemas) == 197
     assert all(set(value) == {"$ref"} for value in paths.values())
     assert all(set(value) == {"$ref"} for value in schemas.values())
     assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
@@ -106,7 +106,45 @@ def test_openapi_root_is_a_small_domain_index() -> None:
         "github-copilot.yaml",
         "model-platform.yaml",
         "observability.yaml",
+        "security-audit.yaml",
+        "user-management.yaml",
+        "usage-exports.yaml",
     }
+
+
+def test_usage_export_job_contract_documents_idempotent_authenticated_operations() -> None:
+    paths = _documented_paths()
+    schemas = _documented_schemas()
+    root = _yaml_document(CONTRACT.resolve())
+    create = paths["/api/v1/observability/export-jobs"]["post"]
+    download = paths[
+        "/api/v1/observability/export-jobs/{job_id}/download"
+    ]["get"]
+    legacy_export = paths["/api/v1/observability/requests/export"]["get"]
+    create_parameters = cast(list[dict[str, object]], create["parameters"])
+    idempotency = next(
+        parameter for parameter in create_parameters
+        if parameter["name"] == "Idempotency-Key"
+    )
+    response = cast(dict[str, object], create["responses"]["202"])
+    response_schema = cast(
+        dict[str, object],
+        cast(dict[str, object], response["content"])["application/json"],
+    )["schema"]
+
+    assert root["security"] == [{"sessionCookie": []}]
+    assert idempotency["in"] == "header" and idempotency["required"] is True
+    assert response_schema == {
+        "$ref": "#/components/schemas/UsageExportJobResponse"
+    }
+    assert set(schemas["UsageExportJobCreate"]["required"]) == {"from", "to"}
+    assert schemas["UsageExportJobFilterSet"]["additionalProperties"] is False
+    assert "filters" in schemas["UsageExportJobResponse"]["required"]
+    assert {"410", "503"}.issubset(download["responses"])
+    assert "413" in legacy_export["responses"]
+    assert {"queued", "running", "ready", "failed", "expired"} == set(
+        schemas["UsageExportStatus"]["enum"]
+    )
 
 
 def test_databricks_contract_describes_workspace_authentication_and_owned_adoption() -> None:
@@ -134,6 +172,28 @@ def test_databricks_contract_describes_workspace_authentication_and_owned_adopti
         dict[str, dict[str, object]], schemas["DatabricksAuthorizationRequirement"]["properties"],
     )
     assert mi["kind"]["const"] == "databricks_workspace" and mi["role_name"]["const"] == "CAN_QUERY"
+
+
+def test_model_invoke_contract_documents_session_or_apim_key_authentication() -> None:
+    operation = _documented_paths()["/api/v1/model-gateway/invoke"]["post"]
+    security = cast(list[dict[str, object]], operation["security"])
+    parameters = cast(list[dict[str, object]], operation["parameters"])
+    key_header = next(
+        parameter for parameter in parameters
+        if parameter["name"] == "Ocp-Apim-Subscription-Key"
+    )
+
+    assert security == [{"sessionCookie": []}, {"apimSubscriptionKey": []}]
+    assert key_header["in"] == "header"
+    assert key_header["required"] is False
+    response_headers = cast(
+        dict[str, dict[str, object]],
+        cast(dict[str, object], operation["responses"]["200"])["headers"],
+    )
+    assert cast(dict[str, object], response_headers["Cache-Control"])["schema"] == {
+        "type": "string",
+        "const": "no-store",
+    }
 
 
 def test_application_provisioning_defaults_are_nullable_positive_limits() -> None:
@@ -245,6 +305,54 @@ def test_every_assistant_route_is_in_the_contract() -> None:
 
     assert not missing, f"Routes the app serves but the contract omits: {missing}"
     assert not stale, f"Routes the contract claims but the app does not serve: {stale}"
+
+
+def test_every_admin_user_management_route_is_in_the_contract() -> None:
+    documented = {
+        operation
+        for operation in _operations(_documented_paths())
+        if operation[0].startswith("/api/v1/admin/")
+    }
+    served = {
+        operation
+        for operation in _operations(app.openapi()["paths"])
+        if operation[0].startswith("/api/v1/admin/")
+    }
+
+    assert documented == served
+
+
+def test_security_audit_routes_are_documented_as_read_only() -> None:
+    documented = {
+        operation
+        for operation in _operations(_documented_paths())
+        if operation[0].startswith("/api/v1/security/audit-events")
+    }
+    served = {
+        operation
+        for operation in _operations(app.openapi()["paths"])
+        if operation[0].startswith("/api/v1/security/audit-events")
+    }
+
+    assert documented == served
+    assert {method for _, method in served} == {"get"}
+
+
+def test_auth_me_permissions_are_read_only_and_initial_password_is_write_only() -> None:
+    schemas = _documented_schemas()
+    auth_me = schemas["AuthMeProfile"]
+    assert "permissions" in str(auth_me)
+    password = cast(
+        dict[str, object],
+        cast(dict[str, dict[str, object]], schemas["AdminUserCreate"]["properties"])[
+            "initial_password"
+        ],
+    )
+    assert password["writeOnly"] is True
+    assert "initial_password" not in cast(
+        dict[str, object], schemas["AdminUser"]["properties"]
+    )
+    assert "password_hash" not in cast(dict[str, object], schemas["AdminUser"]["properties"])
 
 
 def test_the_contract_never_claims_a_route_that_does_not_exist() -> None:

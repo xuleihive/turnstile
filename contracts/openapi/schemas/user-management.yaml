@@ -1,0 +1,75 @@
+schemas:
+  AdminUser:
+    type: object
+    additionalProperties: false
+    required: [id, email, role, enabled]
+    properties:
+      id: {type: string, format: uuid}
+      email: {type: string, format: email}
+      display_name: {type: [string, 'null']}
+      role: {type: string}
+      enabled: {type: boolean}
+      organization_unit_id: {type: [string, 'null'], format: uuid}
+      organization_unit_name: {type: [string, 'null']}
+      created_at: {type: [string, 'null'], format: date-time}
+      last_login_at: {type: [string, 'null'], format: date-time}
+  AdminUserCreate:
+    type: object
+    additionalProperties: false
+    required: [email]
+    properties:
+      email: {type: string, format: email, minLength: 3, maxLength: 320}
+      display_name: {type: [string, 'null'], maxLength: 160}
+      role: {type: string, default: member, minLength: 1, maxLength: 64}
+      department_id: {type: [string, 'null'], format: uuid}
+      initial_password:
+        type: [string, 'null']
+        minLength: 12
+        maxLength: 256
+        writeOnly: true
+  AdminUserPatch:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      display_name: {type: [string, 'null'], maxLength: 160}
+      role: {type: string, minLength: 1, maxLength: 64}
+      enabled: {type: boolean}
+      department_id: {type: [string, 'null'], format: uuid}
+  AccessRole:
+    type: object
+    additionalProperties: false
+    required: [code, display_name, is_builtin, permissions]
+    properties:
+      code: {type: string}
+      display_name: {type: string}
+      is_builtin: {type: boolean}
+      permissions:
+        type: array
+        items: {type: string}
+  OrganizationUnit:
+    type: object
+    additionalProperties: false
+    required: [id, code, display_name, enabled]
+    properties:
+      id: {type: string, format: uuid}
+      parent_id: {type: [string, 'null'], format: uuid}
+      code: {type: string}
+      display_name: {type: string}
+      enabled: {type: boolean}
+      created_at: {type: [string, 'null'], format: date-time}
+  OrganizationUnitCreate:
+    type: object
+    additionalProperties: false
+    required: [code, display_name]
+    properties:
+      parent_id: {type: [string, 'null'], format: uuid}
+      code: {type: string, minLength: 1, maxLength: 100}
+      display_name: {type: string, minLength: 1, maxLength: 160}
+  OrganizationUnitPatch:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      display_name: {type: string, minLength: 1, maxLength: 160}
+      enabled: {type: boolean}

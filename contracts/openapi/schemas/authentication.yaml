@@ -47,9 +47,6 @@ schemas:
         - 'null'
       role:
         type: string
-        enum:
-        - owner
-        - member
       method:
         type: string
         enum:
@@ -58,3 +55,19 @@ schemas:
       session_expires_at:
         type: string
         format: date-time
+  AuthMeProfile:
+    type: object
+    additionalProperties: false
+    required: [id, email, name, role, method, session_expires_at, permissions]
+    properties:
+      id: {type: string, format: uuid}
+      email: {type: string}
+      name: {type: [string, 'null']}
+      role: {type: string}
+      method:
+        type: string
+        enum: [password, entra]
+      session_expires_at: {type: string, format: date-time}
+      permissions:
+        type: array
+        items: {type: string}

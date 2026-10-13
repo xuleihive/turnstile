@@ -242,35 +242,58 @@ class PostgreSqlApplicationRepositoryMixin:
                    FOR UPDATE""",
                 (gateway_profile_id, value["apim_subscription_id"]),
             ).fetchone()
-            if existing is not None or existing_subscription is not None:
+            if existing_subscription is not None:
                 if (
                     existing is not None
-                    and existing_subscription is not None
                     and existing_subscription["application_id"] == application_id
                     and existing_subscription["source"] == "managed"
                 ):
                     return cast(dict[str, Any], dict(existing))
                 raise ValueError("Application or APIM subscription ID already exists")
-            application = connection.execute(
-                """INSERT INTO gateway_application (
-                       id, gateway_profile_id, slug, display_name, description,
-                       owner_id, department_id, application_type, status,
-                       system_managed, created_by, updated_by
-                   ) VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, 'active',
-                             FALSE, %s, %s)
-                   RETURNING *""",
-                (
-                    application_id,
-                    gateway_profile_id,
-                    value["slug"],
-                    value["display_name"],
-                    value.get("description"),
-                    actor,
-                    value["application_type"],
-                    actor,
-                    actor,
-                ),
-            ).fetchone()
+            created_application = existing is None
+            if existing is not None:
+                if (
+                    existing["gateway_profile_id"] != gateway_profile_id
+                    or existing["slug"] != value["slug"]
+                    or bool(existing["system_managed"])
+                    or value.get("owner_user_id") is not None
+                    and existing["owner_user_id"] != value.get("owner_user_id")
+                    or value.get("tenant_id") is not None
+                    and existing["tenant_id"] != value.get("tenant_id")
+                ):
+                    raise ValueError("Application owner or identity does not match")
+                application = dict(existing)
+            else:
+                application = connection.execute(
+                    """INSERT INTO gateway_application (
+                           id, gateway_profile_id, slug, display_name, description,
+                           owner_id, department_id, application_type, status,
+                           system_managed, created_by, updated_by, owner_user_id,
+                           tenant_id, organization_unit_id
+                       ) VALUES (
+                           %s, %s, %s, %s, %s, %s, %s, %s, 'active', FALSE,
+                           %s, %s, %s,
+                           COALESCE(%s, (SELECT id FROM tenant WHERE is_primary)), %s
+                       ) RETURNING *""",
+                    (
+                        application_id,
+                        gateway_profile_id,
+                        value["slug"],
+                        value.get("application_display_name") or value["display_name"],
+                        value.get("description"),
+                        value.get("owner_email") or actor,
+                        str(value["organization_unit_id"])
+                        if value.get("organization_unit_id")
+                        else None,
+                        value["application_type"],
+                        actor,
+                        actor,
+                        value.get("owner_user_id"),
+                        value.get("tenant_id"),
+                        value.get("organization_unit_id"),
+                    ),
+                ).fetchone()
+                assert application is not None
             subscription = connection.execute(
                 """INSERT INTO gateway_application_subscription (
                        id, application_id, gateway_profile_id,
@@ -288,26 +311,28 @@ class PostgreSqlApplicationRepositoryMixin:
                     value["scope_id"],
                 ),
             ).fetchone()
-            connection.execute(
-                """INSERT INTO gateway_application_budget (
-                       period_start, application_id, token_limit,
-                       tokens_per_minute, enforce, warning_threshold_percent,
-                       updated_by
-                   ) VALUES (%s, %s, %s, %s, TRUE, 80, %s)""",
-                (
-                    period_start,
-                    application_id,
-                    default_token_limit,
-                    default_tokens_per_minute,
-                    actor,
-                ),
-            )
+            if created_application:
+                connection.execute(
+                    """INSERT INTO gateway_application_budget (
+                           period_start, application_id, token_limit,
+                           tokens_per_minute, enforce, warning_threshold_percent,
+                           updated_by
+                       ) VALUES (%s, %s, %s, %s, TRUE, 80, %s)""",
+                    (
+                        period_start,
+                        application_id,
+                        default_token_limit,
+                        default_tokens_per_minute,
+                        actor,
+                    ),
+                )
             connection.execute(
                 """INSERT INTO gateway_application_audit (
                        application_id, operation, before_state, after_state, actor
-                   ) VALUES (%s, 'created', NULL, %s, %s)""",
+                   ) VALUES (%s, %s, NULL, %s, %s)""",
                 (
                     application_id,
+                    "created" if created_application else "subscription_created",
                     Jsonb(
                         _json_value(
                             {
@@ -335,6 +360,80 @@ class PostgreSqlApplicationRepositoryMixin:
                 (application_id,),
             ).fetchone()
         return cast(dict[str, Any] | None, row)
+
+    def list_gateway_applications_for_owner(
+        self, owner_user_id: UUID
+    ) -> Sequence[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM gateway_application
+                   WHERE owner_user_id = %s AND system_managed = FALSE
+                   ORDER BY display_name, id""",
+                (owner_user_id,),
+            ).fetchall()
+        return cast(Sequence[dict[str, Any]], rows)
+
+    def update_gateway_application_owner(
+        self,
+        application_id: UUID,
+        owner_user_id: UUID | None,
+        tenant_id: UUID | None,
+        organization_unit_id: UUID | None,
+        owner_email: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection, connection.transaction():
+            existing = connection.execute(
+                "SELECT * FROM gateway_application WHERE id = %s FOR UPDATE",
+                (application_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if bool(existing["system_managed"]):
+                raise ValueError("System-managed application ownership cannot be changed")
+            if tenant_id is not None and existing["tenant_id"] != tenant_id:
+                raise ValueError("Application and owner must belong to the same tenant")
+            before = {
+                "owner_user_id": existing["owner_user_id"],
+                "owner_id": existing["owner_id"],
+                "organization_unit_id": existing["organization_unit_id"],
+            }
+            row = connection.execute(
+                """UPDATE gateway_application
+                   SET owner_user_id = %s, organization_unit_id = %s,
+                       department_id = %s, owner_id = %s,
+                       updated_by = %s, updated_at = now()
+                   WHERE id = %s RETURNING *""",
+                (
+                    owner_user_id,
+                    organization_unit_id,
+                    str(organization_unit_id) if organization_unit_id else None,
+                    owner_email,
+                    actor,
+                    application_id,
+                ),
+            ).fetchone()
+            assert row is not None
+            connection.execute(
+                """INSERT INTO gateway_application_audit (
+                       application_id, operation, before_state, after_state, actor
+                   ) VALUES (%s, 'owner_changed', %s, %s, %s)""",
+                (
+                    application_id,
+                    Jsonb(_json_value(before)),
+                    Jsonb(
+                        _json_value(
+                            {
+                                "owner_user_id": owner_user_id,
+                                "owner_id": owner_email,
+                                "organization_unit_id": organization_unit_id,
+                            }
+                        )
+                    ),
+                    actor,
+                ),
+            )
+        return cast(dict[str, Any], dict(row))
 
     def list_gateway_application_avatars(
         self, application_ids: Sequence[UUID]
@@ -621,6 +720,44 @@ class PostgreSqlApplicationRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
+    def update_gateway_application_subscription_state(
+        self,
+        application_subscription_id: UUID,
+        state: str,
+        actor: str,
+    ) -> dict[str, Any] | None:
+        if state not in {"active", "suspended", "cancelled"}:
+            raise ValueError("Invalid APIM subscription state")
+        with self._connection() as connection, connection.transaction():
+            existing = connection.execute(
+                """SELECT * FROM gateway_application_subscription
+                   WHERE id = %s FOR UPDATE""",
+                (application_subscription_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if existing["state"] == state:
+                return cast(dict[str, Any], dict(existing))
+            row = connection.execute(
+                """UPDATE gateway_application_subscription
+                   SET state = %s, last_synced_at = now()
+                   WHERE id = %s RETURNING *""",
+                (state, application_subscription_id),
+            ).fetchone()
+            assert row is not None
+            connection.execute(
+                """INSERT INTO gateway_application_audit (
+                       application_id, operation, before_state, after_state, actor
+                   ) VALUES (%s, 'subscription_cancelled', %s, %s, %s)""",
+                (
+                    existing["application_id"],
+                    Jsonb(_json_value({"subscription": dict(existing)})),
+                    Jsonb(_json_value({"subscription": dict(row)})),
+                    actor,
+                ),
+            )
+        return cast(dict[str, Any], dict(row))
+
     def list_gateway_application_budgets(
         self, period_start: date, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]:
@@ -837,10 +974,29 @@ class PostgreSqlApplicationRepositoryMixin:
                           subscription.id AS application_subscription_id,
                           subscription.apim_subscription_id,
                           subscription.state AS subscription_state,
-                          subscription.scope_exists
+                          subscription.scope_exists,
+                          owner.id AS owner_user_id,
+                          owner.email AS owner_email,
+                          owner.display_name AS owner_display_name,
+                          COALESCE(owner.enabled, FALSE) AS owner_enabled,
+                          owner.tenant_id AS owner_tenant_id,
+                          tenant.id AS tenant_id,
+                          tenant.display_name AS tenant_name,
+                          tenant.enabled AS tenant_enabled,
+                          organization_unit.id AS organization_unit_id,
+                          organization_unit.display_name AS organization_unit_name,
+                          COALESCE(organization_unit.enabled, FALSE)
+                              AS organization_unit_enabled
                    FROM gateway_application application
                    JOIN gateway_application_subscription subscription
                      ON subscription.application_id = application.id
+                   JOIN tenant ON tenant.id = application.tenant_id
+                   LEFT JOIN app_user owner
+                     ON owner.id = application.owner_user_id
+                    AND owner.tenant_id = application.tenant_id
+                   LEFT JOIN organization_unit
+                     ON organization_unit.id = application.organization_unit_id
+                    AND organization_unit.tenant_id = application.tenant_id
                    WHERE application.gateway_profile_id = %s
                    ORDER BY subscription.apim_subscription_id""",
                 (gateway_profile_id,),
@@ -926,7 +1082,7 @@ class PostgreSqlApplicationRepositoryMixin:
         return cast(Sequence[dict[str, Any]], rows)
 
     def gateway_application_ledger_mappings(
-        self,
+        self, owner_user_id: UUID | None = None
     ) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
@@ -938,12 +1094,33 @@ class PostgreSqlApplicationRepositoryMixin:
                           application.status AS application_status,
                           subscription.apim_subscription_id,
                           subscription.state AS subscription_state,
-                          subscription.scope_exists
+                          subscription.scope_exists,
+                          owner.id AS owner_user_id,
+                          owner.email AS owner_email,
+                          owner.display_name AS owner_display_name,
+                          COALESCE(owner.enabled, FALSE) AS owner_enabled,
+                          owner.tenant_id AS owner_tenant_id,
+                          tenant.id AS tenant_id,
+                          tenant.display_name AS tenant_name,
+                          tenant.enabled AS tenant_enabled,
+                          organization_unit.id AS organization_unit_id,
+                          organization_unit.display_name AS organization_unit_name,
+                          COALESCE(organization_unit.enabled, FALSE)
+                              AS organization_unit_enabled
                    FROM gateway_application application
                    JOIN gateway_application_subscription subscription
                      ON subscription.application_id = application.id
+                   JOIN tenant ON tenant.id = application.tenant_id
+                   LEFT JOIN app_user owner
+                     ON owner.id = application.owner_user_id
+                    AND owner.tenant_id = application.tenant_id
+                   LEFT JOIN organization_unit
+                     ON organization_unit.id = application.organization_unit_id
+                    AND organization_unit.tenant_id = application.tenant_id
+                   WHERE (%s::uuid IS NULL OR application.owner_user_id = %s)
                    ORDER BY application.gateway_profile_id,
-                            subscription.apim_subscription_id"""
+                            subscription.apim_subscription_id""",
+                (owner_user_id, owner_user_id),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 

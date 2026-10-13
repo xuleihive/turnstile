@@ -4,7 +4,9 @@ import {
   ChartPie,
   LayoutDashboard,
   LineChart,
+  KeyRound,
   ShieldAlert,
+  UsersRound,
   WalletCards,
   type LucideIcon,
 } from "lucide-react"
@@ -25,6 +27,9 @@ export const apimPages = [
   { id: "finops-trends", label: "使用趋势", icon: LineChart },
   { id: "finops-governance", label: "异常治理", icon: ShieldAlert },
   { id: "finops-requests", label: "请求追踪", icon: Activity },
+  { id: "user-management", label: "用户与组织", icon: UsersRound },
+  { id: "security-audit", label: "安全审计", icon: ShieldAlert },
+  { id: "my-api-keys", label: "我的 API Key", icon: KeyRound },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: LucideIcon }>
 
 const apimPageIds = new Set([
@@ -37,6 +42,8 @@ const apimPageIds = new Set([
   "models",
   "pinned-report",
   "settings",
+  "security-audit",
+  "my-api-keys",
 ])
 
 export function normalizeApimPage(page: string) {

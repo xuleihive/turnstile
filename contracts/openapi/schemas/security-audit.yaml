@@ -1,0 +1,46 @@
+schemas:
+  SecurityAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - created_at
+    - actor_user_id
+    - actor_email
+    - actor_role
+    - action
+    - resource_type
+    - resource_id
+    - result
+    - request_id
+    - correlation_id
+    - client_ip
+    - user_agent
+    - before_data
+    - after_data
+    properties:
+      id: {type: string, format: uuid}
+      created_at: {type: string, format: date-time}
+      actor_user_id: {type: [string, 'null'], format: uuid}
+      actor_email: {type: [string, 'null'], maxLength: 320}
+      actor_role: {type: [string, 'null'], maxLength: 64}
+      action: {type: string, maxLength: 160}
+      resource_type: {type: string, maxLength: 100}
+      resource_id: {type: [string, 'null'], maxLength: 256}
+      result: {type: string, enum: [success, failure, denied]}
+      request_id: {type: [string, 'null'], maxLength: 128}
+      correlation_id: {type: [string, 'null'], maxLength: 128}
+      client_ip: {type: [string, 'null']}
+      user_agent: {type: [string, 'null'], maxLength: 500}
+      before_data: {type: object, additionalProperties: true}
+      after_data: {type: object, additionalProperties: true}
+  SecurityAuditEventPage:
+    type: object
+    additionalProperties: false
+    required: [items, next_cursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/SecurityAuditEvent
+      next_cursor: {type: [string, 'null'], format: uuid}

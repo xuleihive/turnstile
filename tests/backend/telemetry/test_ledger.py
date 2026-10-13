@@ -925,6 +925,21 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
         "application-sync-worker",
     )[0]
     application_id = UUID(str(application["id"]))
+    repository.gateway_applications[0].update(
+        {
+            "owner_user_id": UUID("20000000-0000-4000-8000-000000000001"),
+            "owner_email": "owner@example.com",
+            "owner_display_name": "Application Owner",
+            "owner_enabled": True,
+            "owner_tenant_id": UUID("10000000-0000-4000-8000-000000000001"),
+            "tenant_id": UUID("10000000-0000-4000-8000-000000000001"),
+            "tenant_name": "Contoso",
+            "tenant_enabled": True,
+            "organization_unit_id": UUID("10000000-0000-4000-8000-000000000002"),
+            "organization_unit_name": "Platform",
+            "organization_unit_enabled": True,
+        }
+    )
     subscription = repository.gateway_application_subscriptions[0]
     usage = _usage(
         "application-final",
@@ -983,6 +998,17 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
         "ApplicationStatus": "active",
         "SubscriptionState": "active",
         "ScopeExists": True,
+        "OwnerUserId": "20000000-0000-4000-8000-000000000001",
+        "OwnerEmail": "owner@example.com",
+        "OwnerDisplayName": "Application Owner",
+        "OwnerEnabled": True,
+        "OwnerTenantId": "10000000-0000-4000-8000-000000000001",
+        "TenantId": "10000000-0000-4000-8000-000000000001",
+        "TenantName": "Contoso",
+        "TenantEnabled": True,
+        "OrganizationUnitId": "10000000-0000-4000-8000-000000000002",
+        "OrganizationUnitName": "Platform",
+        "OrganizationUnitEnabled": True,
     }
     c_write = store.operations.index(("upsert", partition, "C"))
     reservation_delete = store.operations.index(("delete", partition, reservation))

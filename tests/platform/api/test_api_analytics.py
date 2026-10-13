@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import io
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,13 +12,19 @@ from backend.api import (
     app,
 )
 from backend.http.dependencies import get_repository
+from backend.http.security_audit_support import get_optional_security_audit_service
+from backend.http.session import get_auth_store
 from tests.platform.api.api_support import (
+    MEMBER_SESSION,
+    OWNER_SESSION,
+    StubAuthStore,
     _usage_record,
     client,
 )
 from turnstile_core.domain.models import (
     TokenUsageRecord,
 )
+from turnstile_core.domain.security_audit import AuditEventWrite
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
@@ -182,6 +191,203 @@ def test_request_trace_prioritizes_correlation_and_keeps_copilot_private() -> No
         assert client.get("/api/v1/observability/requests/copilot-correlation").status_code == 404
     finally:
         app.dependency_overrides.pop(get_repository, None)
+
+
+def test_usage_report_export_contains_summary_and_all_filtered_request_rows() -> None:
+    repository = InMemoryRepository()
+    app.dependency_overrides[get_repository] = lambda: repository
+    try:
+        for index in range(205):
+            record = _usage_record(f"export-{index:03d}", "Foundry via APIM", 1).model_copy(
+                update={
+                    "estimated_cost": 0.001,
+                    "user": " \t=HYPERLINK(\"https://example.invalid\")"
+                    if index == 0
+                    else "Analyst",
+                }
+            )
+            repository.write_token_usage(record)
+
+        outside_scope = _usage_record("export-outside", "Foundry via APIM", 50).model_copy(
+            update={"organization_id": "org-other", "organization": "Other"}
+        )
+        repository.write_token_usage(outside_scope)
+        repository.write_token_usage(
+            _usage_record("export-copilot", "GitHub Copilot CLI", 100).model_copy(
+                update={"usage_domain": "github_copilot", "ingest_source": "copilot_cli"}
+            )
+        )
+
+        response = client.get(
+            "/api/v1/observability/requests/export",
+            params={
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-08-01T00:00:00Z",
+                "organization_id": "org-contoso-global",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/zip")
+        assert response.headers["content-disposition"].endswith(
+            'filename="turnstile_usage_report_20260701_20260801.zip"'
+        )
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            assert set(archive.namelist()) == {"analysis.md", "requests.csv"}
+            report = archive.read("analysis.md").decode("utf-8")
+            assert "205" in report
+            assert "0.205" in report
+
+            csv_bytes = archive.read("requests.csv")
+            assert csv_bytes.startswith(b"\xef\xbb\xbf")
+            rows = list(csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig"))))
+            assert len(rows) == 205
+            assert rows[0]["request_id"] == "request-export-204"
+            assert rows[0]["usage_id"] == "export-204"
+            formula_row = next(row for row in rows if row["request_id"] == "request-export-000")
+            assert formula_row["user_name"] == "' \t=HYPERLINK(\"https://example.invalid\")"
+            assert "request-export-outside" not in {row["request_id"] for row in rows}
+            assert "request-export-copilot" not in {row["request_id"] for row in rows}
+            assert "cached_tokens" in rows[0]
+            assert "cache_write_tokens" in rows[0]
+            assert "input_price_per_million_usd" in rows[0]
+            assert "estimated_cost_usd" in rows[0]
+            assert not {"prompt", "completion", "content", "messages"}.intersection(rows[0])
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+
+
+def test_legacy_usage_report_export_records_audit_metadata() -> None:
+    class RecordingAuditService:
+        def __init__(self) -> None:
+            self.events: list[AuditEventWrite] = []
+
+        def record(
+            self, event: AuditEventWrite, connection: object | None = None
+        ) -> None:
+            self.events.append(event)
+
+    repository = InMemoryRepository()
+    repository.write_token_usage(_usage_record("audited-export", "Foundry via APIM", 1))
+    audit = RecordingAuditService()
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_optional_security_audit_service] = lambda: audit
+    try:
+        response = client.get(
+            "/api/v1/observability/requests/export",
+            params={
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-08-01T00:00:00Z",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+        app.dependency_overrides.pop(get_optional_security_audit_service, None)
+
+    assert response.status_code == 200
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.action == "usage_export.legacy_exported"
+    assert event.result == "success"
+    assert event.after["row_count"] == 1
+
+
+def test_usage_report_export_requires_an_authenticated_session() -> None:
+    client.cookies.clear()
+    try:
+        response = client.get(
+            "/api/v1/observability/requests/export",
+            params={
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-08-01T00:00:00Z",
+            },
+        )
+        assert response.status_code == 401
+    finally:
+        client.cookies.set("turnstile_session", OWNER_SESSION)
+
+
+def test_legacy_usage_report_export_rejects_ranges_over_31_days() -> None:
+    response = client.get(
+        "/api/v1/observability/requests/export",
+        params={"from": "2026-06-30T00:00:00Z", "to": "2026-08-01T00:00:00Z"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_legacy_usage_report_export_rejects_more_than_10000_rows() -> None:
+    class OverLimitRepository:
+        @staticmethod
+        def executive_overview(*_args: object) -> dict[str, object]:
+            return {"totals": {"total_requests": 10_001}}
+
+    app.dependency_overrides[get_repository] = OverLimitRepository
+    try:
+        response = client.get(
+            "/api/v1/observability/requests/export",
+            params={
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-08-01T00:00:00Z",
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+
+    assert response.status_code == 413
+
+
+def test_member_usage_queries_cannot_select_another_user() -> None:
+    repository = InMemoryRepository()
+    repository.write_token_usage(
+        _usage_record("member-own", "Foundry via APIM", 10).model_copy(
+            update={"user_id": "member@contoso.com"}
+        )
+    )
+    repository.write_token_usage(
+        _usage_record("member-own-uuid", "Foundry via APIM", 20).model_copy(
+            update={"user_id": "00000000-0000-4000-8000-000000000002"}
+        )
+    )
+    repository.write_token_usage(
+        _usage_record("member-other", "Foundry via APIM", 20).model_copy(
+            update={"user_id": "other@contoso.com"}
+        )
+    )
+    repository.write_token_usage(
+        _usage_record("member-other-uuid", "Foundry via APIM", 30).model_copy(
+            update={"user_id": "00000000-0000-4000-8000-000000000001"}
+        )
+    )
+    app.dependency_overrides[get_repository] = lambda: repository
+    app.dependency_overrides[get_auth_store] = lambda: StubAuthStore(role="member")
+    client.cookies.set("turnstile_session", MEMBER_SESSION)
+    try:
+        params = {"from": "2026-07-01T00:00:00Z", "to": "2026-08-01T00:00:00Z"}
+        own = client.get("/api/v1/observability/requests", params=params)
+        own_detail = client.get(
+            "/api/v1/observability/requests/request-member-own-uuid"
+        )
+        other_detail = client.get(
+            "/api/v1/observability/requests/request-member-other-uuid"
+        )
+        other = client.get(
+            "/api/v1/observability/requests",
+            params={**params, "user_id": "other@contoso.com"},
+        )
+    finally:
+        client.cookies.clear()
+        app.dependency_overrides.pop(get_repository, None)
+        app.dependency_overrides.pop(get_auth_store, None)
+
+    assert own.status_code == 200
+    assert {
+        item["user_id"] for item in own.json()["items"]
+    } == {"member@contoso.com", "00000000-0000-4000-8000-000000000002"}
+    assert own_detail.status_code == 200
+    assert own_detail.json()["user_id"] == "00000000-0000-4000-8000-000000000002"
+    assert other_detail.status_code == 404
+    assert other.status_code == 403
 
 
 def test_postgres_request_detail_prefers_attempt_correlation() -> None:

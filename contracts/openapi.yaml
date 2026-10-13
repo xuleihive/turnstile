@@ -18,6 +18,10 @@ security:
 tags:
 - name: Authentication
   description: Password and Microsoft sign-in backed by an HTTP-only session cookie.
+- name: User Management
+  description: Owner-managed users, organization units, and role permission visibility.
+- name: Security Audit
+  description: Read-only security event history and metadata export for platform owners.
 - name: Overview
 - name: Trends
 - name: Runs
@@ -50,10 +54,18 @@ tags:
 paths:
   /api/v1/model-gateway/images/generations:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-gateway~1images~1generations
+  /api/v1/model-gateway/invoke:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-gateway~1invoke
   /api/v1/application-access/applications:
     $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications
   /api/v1/application-access/applications/{application_id}:
     $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}
+  /api/v1/application-access/applications/{application_id}/owner:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1owner
+  /api/v1/application-access/applications/{application_id}/subscriptions/{application_subscription_id}/cancel:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1subscriptions~1{application_subscription_id}~1cancel
+  /api/v1/application-access/me/subscriptions:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1me~1subscriptions
   /api/v1/application-access/applications/{application_id}/avatar:
     $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1avatar
   /api/v1/application-access/applications/{application_id}/budget:
@@ -98,6 +110,14 @@ paths:
     $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1budget-requests~1{request_id}~1review
   /api/v1/copilot/assistant/ask:
     $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1ask
+  /api/v1/observability/requests/export:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1requests~1export
+  /api/v1/observability/export-jobs:
+    $ref: ./openapi/paths/usage-exports.yaml#/paths/~1api~1v1~1observability~1export-jobs
+  /api/v1/observability/export-jobs/{job_id}:
+    $ref: ./openapi/paths/usage-exports.yaml#/paths/~1api~1v1~1observability~1export-jobs~1{job_id}
+  /api/v1/observability/export-jobs/{job_id}/download:
+    $ref: ./openapi/paths/usage-exports.yaml#/paths/~1api~1v1~1observability~1export-jobs~1{job_id}~1download
   /api/v1/copilot/assistant/conversations:
     $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1conversations
   /api/v1/copilot/assistant/conversations/{conversation_id}:
@@ -154,6 +174,24 @@ paths:
     $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1me
   /api/v1/auth/logout:
     $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1logout
+  /api/v1/admin/users:
+    $ref: ./openapi/paths/user-management.yaml#/paths/~1api~1v1~1admin~1users
+  /api/v1/admin/users/{user_id}:
+    $ref: ./openapi/paths/user-management.yaml#/paths/~1api~1v1~1admin~1users~1{user_id}
+  /api/v1/admin/users/{user_id}/subscriptions:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1admin~1users~1{user_id}~1subscriptions
+  /api/v1/admin/subscriptions/keys/export:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1admin~1subscriptions~1keys~1export
+  /api/v1/admin/roles:
+    $ref: ./openapi/paths/user-management.yaml#/paths/~1api~1v1~1admin~1roles
+  /api/v1/admin/organization-units:
+    $ref: ./openapi/paths/user-management.yaml#/paths/~1api~1v1~1admin~1organization-units
+  /api/v1/admin/organization-units/{unit_id}:
+    $ref: ./openapi/paths/user-management.yaml#/paths/~1api~1v1~1admin~1organization-units~1{unit_id}
+  /api/v1/security/audit-events:
+    $ref: ./openapi/paths/security-audit.yaml#/paths/~1api~1v1~1security~1audit-events
+  /api/v1/security/audit-events/export:
+    $ref: ./openapi/paths/security-audit.yaml#/paths/~1api~1v1~1security~1audit-events~1export
   /api/v1/anomaly-rules:
     $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1anomaly-rules
   /api/v1/anomaly-rules/{rule_id}:
@@ -208,6 +246,8 @@ components:
   securitySchemes:
     sessionCookie:
       $ref: ./openapi/components/common.yaml#/securitySchemes/sessionCookie
+    apimSubscriptionKey:
+      $ref: ./openapi/components/common.yaml#/securitySchemes/apimSubscriptionKey
   parameters:
     From:
       $ref: ./openapi/components/common.yaml#/parameters/From
@@ -269,6 +309,18 @@ components:
       $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionKeySecret
     GatewayApplicationSubscriptionKeyRotation:
       $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionKeyRotation
+    GatewayUserSubscriptionCreate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayUserSubscriptionCreate
+    GatewayUserSubscriptionEntry:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayUserSubscriptionEntry
+    GatewayUserSubscriptionList:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayUserSubscriptionList
+    GatewayApplicationOwnerUpdate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationOwnerUpdate
+    GatewayApplicationSubscriptionCancel:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionCancel
+    GatewaySubscriptionKeysExportFilter:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewaySubscriptionKeysExportFilter
     GatewayApplicationAuditEvent:
       $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationAuditEvent
     GatewayApplicationAvatarUpdate:
@@ -375,6 +427,14 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationResponse
     ImageInvocationUsage:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationUsage
+    ModelInvocationMetadata:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelInvocationMetadata
+    InvocationUsage:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/InvocationUsage
+    ModelInvocationRequest:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelInvocationRequest
+    ModelInvocationResponse:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelInvocationResponse
     GeneratedImage:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/GeneratedImage
     GatewayReconcileRequest:
@@ -461,6 +521,26 @@ components:
       $ref: ./openapi/schemas/authentication.yaml#/schemas/EntraLogin
     AuthProfile:
       $ref: ./openapi/schemas/authentication.yaml#/schemas/AuthProfile
+    AuthMeProfile:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/AuthMeProfile
+    AdminUser:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/AdminUser
+    AdminUserCreate:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/AdminUserCreate
+    AdminUserPatch:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/AdminUserPatch
+    AccessRole:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/AccessRole
+    OrganizationUnit:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/OrganizationUnit
+    OrganizationUnitCreate:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/OrganizationUnitCreate
+    OrganizationUnitPatch:
+      $ref: ./openapi/schemas/user-management.yaml#/schemas/OrganizationUnitPatch
+    SecurityAuditEvent:
+      $ref: ./openapi/schemas/security-audit.yaml#/schemas/SecurityAuditEvent
+    SecurityAuditEventPage:
+      $ref: ./openapi/schemas/security-audit.yaml#/schemas/SecurityAuditEventPage
     TimeInterval:
       $ref: ./openapi/schemas/observability.yaml#/schemas/TimeInterval
     TrendDimension:
@@ -589,6 +669,16 @@ components:
       $ref: ./openapi/schemas/common.yaml#/schemas/ConversationRename
     ConversationTitleRequest:
       $ref: ./openapi/schemas/common.yaml#/schemas/ConversationTitleRequest
+    UsageExportStatus:
+      $ref: ./openapi/schemas/usage-exports.yaml#/schemas/UsageExportStatus
+    UsageExportJobFilterSet:
+      $ref: ./openapi/schemas/usage-exports.yaml#/schemas/UsageExportJobFilterSet
+    UsageExportJobCreate:
+      $ref: ./openapi/schemas/usage-exports.yaml#/schemas/UsageExportJobCreate
+    UsageExportJobResponse:
+      $ref: ./openapi/schemas/usage-exports.yaml#/schemas/UsageExportJobResponse
+    UsageExportJobList:
+      $ref: ./openapi/schemas/usage-exports.yaml#/schemas/UsageExportJobList
     AssistantSettingsWrite:
       $ref: ./openapi/schemas/assistant.yaml#/schemas/AssistantSettingsWrite
     AssistantSettings:

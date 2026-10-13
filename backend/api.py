@@ -13,6 +13,7 @@ from turnstile_core.config import get_settings
 from turnstile_core.security import CredentialCipher
 
 from .data_sources.github_copilot.router import router as github_copilot_router
+from .http.application_access import admin_key_router
 from .http.application_access import router as application_access_router
 from .http.assistant import router as assistant_router
 from .http.assistant import title_router as assistant_title_router
@@ -22,12 +23,16 @@ from .http.budgets import router as budgets_router
 from .http.dependencies import get_repository
 from .http.governance import router as governance_router
 from .http.model_platform import (
+    invocation_router as model_gateway_invocation_router,
+)
+from .http.model_platform import (
     protected_router as model_platform_protected_router,
 )
 from .http.model_platform import (
     publication_router as model_platform_publication_router,
 )
 from .http.observability import router as observability_router
+from .http.security_audit import router as security_audit_router
 from .http.service_dependencies import (
     application_access_service as _application_access_service,
 )
@@ -42,6 +47,7 @@ from .http.service_dependencies import (
 )
 from .http.session import require_allowed_write_origin, require_authenticated_session
 from .http.static_files import validate_production_web_dist
+from .http.user_management import router as user_management_router
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +83,7 @@ app.add_middleware(
     allow_origins=get_settings().cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "Ocp-Apim-Subscription-Key"],
 )
 
 
@@ -91,9 +97,13 @@ protected.routes.extend(governance_router.routes)
 protected.routes.extend(budgets_router.routes)
 protected.routes.extend(model_platform_protected_router.routes)
 protected.routes.extend(observability_router.routes)
+protected.routes.extend(security_audit_router.routes)
+protected.routes.extend(user_management_router.routes)
 protected.routes.extend(application_access_router.routes)
+protected.routes.extend(admin_key_router.routes)
 app.include_router(protected)
 app.include_router(assistant_title_router)
+app.include_router(model_gateway_invocation_router)
 app.include_router(model_platform_publication_router)
 app.include_router(github_copilot_router)
 app.include_router(authentication_router)

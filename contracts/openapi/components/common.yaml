@@ -159,3 +159,10 @@ securitySchemes:
     type: apiKey
     in: cookie
     name: finops_session
+  apimSubscriptionKey:
+    type: apiKey
+    in: header
+    name: Ocp-Apim-Subscription-Key
+    description: >-
+      APIM-issued key. Turnstile forwards it to the configured APIM gateway for validation;
+      the key is not stored or independently validated by Turnstile.

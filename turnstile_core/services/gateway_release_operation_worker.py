@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -180,24 +181,13 @@ class GatewayReleaseOperationWorker:
         if status == "validating_dependencies":
             if spec.provisioning_version == 2 and self._application_projector is None:
                 raise RuntimeError("Application admission ledger projection is not configured")
-            if self._cipher is None:
-                raise RuntimeError("Credential encryption is unavailable")
-            ciphertext = self._repository.gateway_release_operation_secret(
-                operation_id
-            )
-            secret = self._cipher.decrypt(ciphertext)
-            if secret is None:
-                raise RuntimeError("Application provisioning credential is missing")
-            values = json.loads(secret)
-            primary_key = values.get("primary_key")
-            secondary_key = values.get("secondary_key")
-            if not isinstance(primary_key, str) or not isinstance(
-                secondary_key, str
-            ):
-                raise RuntimeError("Application provisioning credential is invalid")
-            self._client.ensure_application_subscription(
-                spec, primary_key, secondary_key
-            )
+            legacy_pending_name = self._legacy_application_pending_name(operation_id)
+            if legacy_pending_name is None:
+                self._client.ensure_application_subscription(spec)
+            else:
+                self._client.ensure_application_subscription(
+                    spec, legacy_pending_name=legacy_pending_name
+                )
             self._transition(
                 row,
                 "promoting",
@@ -222,21 +212,23 @@ class GatewayReleaseOperationWorker:
                 raise RetryablePublicationError(
                     "Application admission ledger is not yet ready"
                 ) from error
-            if self._cipher is None:
-                raise RuntimeError("Credential encryption is unavailable")
-            secret = self._cipher.decrypt(
-                self._repository.gateway_release_operation_secret(operation_id)
+            legacy_pending_name = self._legacy_application_pending_name(operation_id)
+            if legacy_pending_name is None:
+                self._client.activate_application_subscription(spec)
+            else:
+                self._client.activate_application_subscription(
+                    spec, legacy_pending_name=legacy_pending_name
+                )
+            checkpoint = self._checkpoint(
+                row,
+                admission_ready=True,
+                subscription_active=True,
+                key_stored=False,
             )
-            if secret is None:
-                raise RuntimeError("Application provisioning credential is missing")
-            keys = json.loads(secret)
-            self._client.activate_application_subscription(
-                spec, keys["primary_key"], keys["secondary_key"]
+            checkpoint.pop("data_plane_authentication_ready", None)
+            self._transition(
+                row, "succeeded", {"checkpoint": checkpoint}, worker_id
             )
-            self._transition(row, "succeeded", {"checkpoint": self._checkpoint(
-                row, admission_ready=True, subscription_active=True,
-                data_plane_authentication_ready=True, key_stored=False,
-            )}, worker_id)
             return
         if status != "promoting":
             return
@@ -275,6 +267,26 @@ class GatewayReleaseOperationWorker:
             },
             worker_id,
         )
+
+    def _legacy_application_pending_name(self, operation_id: UUID) -> str | None:
+        ciphertext = self._repository.gateway_release_operation_secret(operation_id)
+        if ciphertext is None:
+            return None
+        if self._cipher is None:
+            raise RuntimeError("Legacy application provisioning secret cannot be decrypted")
+        secret = self._cipher.decrypt(ciphertext)
+        if secret is None:
+            raise RuntimeError("Legacy application provisioning secret is invalid")
+        try:
+            values = json.loads(secret)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("Legacy application provisioning secret is invalid") from error
+        primary_key = values.get("primary_key") if isinstance(values, Mapping) else None
+        secondary_key = values.get("secondary_key") if isinstance(values, Mapping) else None
+        if not isinstance(primary_key, str) or not isinstance(secondary_key, str):
+            raise RuntimeError("Legacy application provisioning secret is invalid")
+        marker = hashlib.sha256(f"{primary_key}\n{secondary_key}".encode()).hexdigest()[:32]
+        return f"Turnstile pending {marker}"
 
     def _advance_rollback(
         self, row: Mapping[str, Any], worker_id: str

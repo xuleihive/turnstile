@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -164,6 +164,11 @@ class QueryRepository(ABC):
     def list_usage_requests(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int
     ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def iter_usage_requests(
+        self, from_: datetime, to: datetime, filters: UsageFilters
+    ) -> Iterator[dict[str, Any]]: ...
 
     @abstractmethod
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None: ...
@@ -714,6 +719,22 @@ class QueryRepository(ABC):
     def get_gateway_application(self, application_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
+    def list_gateway_applications_for_owner(
+        self, owner_user_id: UUID
+    ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def update_gateway_application_owner(
+        self,
+        application_id: UUID,
+        owner_user_id: UUID | None,
+        tenant_id: UUID | None,
+        organization_unit_id: UUID | None,
+        owner_email: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
     def list_gateway_application_avatars(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]: ...
@@ -752,6 +773,14 @@ class QueryRepository(ABC):
     def list_gateway_application_subscriptions(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def update_gateway_application_subscription_state(
+        self,
+        application_subscription_id: UUID,
+        state: str,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def list_gateway_application_budgets(
@@ -817,7 +846,7 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def gateway_application_ledger_mappings(
-        self,
+        self, owner_user_id: UUID | None = None
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod

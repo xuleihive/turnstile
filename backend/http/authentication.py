@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from turnstile_core.config import Settings, get_settings
+from turnstile_core.domain.security_audit import AuditEventWrite
 from turnstile_core.persistence.auth_store import AuthStore
 
 from ..services.auth_service import (
@@ -17,6 +18,11 @@ from ..services.auth_service import (
     new_session_token,
     session_expiry,
     verify_password,
+)
+from .security_audit_support import (
+    OptionalAuditService,
+    audit_request_context,
+    record_audit_best_effort,
 )
 from .session import Config, CurrentSession, Store, require_allowed_write_origin
 
@@ -48,9 +54,13 @@ class Profile(BaseModel):
     id: str
     email: str
     name: str | None
-    role: Literal["owner", "member"]
+    role: str
     method: Literal["password", "entra"]
     session_expires_at: datetime
+
+
+class AuthMeProfile(Profile):
+    permissions: list[str]
 
 
 def _issue(
@@ -95,11 +105,53 @@ def _issue(
     response_model=Profile,
     dependencies=[Depends(require_allowed_write_origin)],
 )
-def login(body: PasswordLogin, response: Response, store: Store, settings: Config) -> Profile:
+def login(
+    body: PasswordLogin,
+    response: Response,
+    store: Store,
+    settings: Config,
+    request: Request,
+    audit_service: OptionalAuditService,
+) -> Profile:
     user = store.find_user_by_email(body.email)
     if not user or not user["enabled"] or not verify_password(body.password, user["password_hash"]):
+        context = audit_request_context(request, settings)
+        disabled = bool(user and not user["enabled"])
+        record_audit_best_effort(
+            audit_service,
+            AuditEventWrite(
+                action="login.password",
+                result="denied" if disabled else "failure",
+                resource_type="session",
+                actor_id=str(user["id"]) if user else None,
+                actor_email=str(user["email"]) if user else None,
+                actor_role=str(user["role"]) if user else None,
+                request_id=context.request_id,
+                correlation_id=context.correlation_id,
+                client_ip=context.client_ip,
+                user_agent=context.user_agent,
+                after={"reason_code": "account_disabled" if disabled else "invalid_credentials"},
+            ),
+        )
         raise HTTPException(status_code=401, detail="邮箱或密码不正确，请重新输入。")
-    return _issue(response, store, user, "password", settings)
+    profile = _issue(response, store, user, "password", settings)
+    context = audit_request_context(request, settings)
+    record_audit_best_effort(
+        audit_service,
+        AuditEventWrite(
+            action="login.password",
+            result="success",
+            resource_type="session",
+            actor_id=str(user["id"]),
+            actor_email=str(user["email"]),
+            actor_role=str(user["role"]),
+            request_id=context.request_id,
+            correlation_id=context.correlation_id,
+            client_ip=context.client_ip,
+            user_agent=context.user_agent,
+        ),
+    )
+    return profile
 
 
 @router.post(
@@ -108,27 +160,82 @@ def login(body: PasswordLogin, response: Response, store: Store, settings: Confi
     dependencies=[Depends(require_allowed_write_origin)],
 )
 def login_with_entra(
-    body: EntraLogin, response: Response, store: Store, verifier: Verifier, settings: Config
+    body: EntraLogin,
+    response: Response,
+    store: Store,
+    verifier: Verifier,
+    settings: Config,
+    request: Request,
+    audit_service: OptionalAuditService,
 ) -> Profile:
     try:
         identity = verifier.verify(body.id_token)
     except AuthError as error:
+        context = audit_request_context(request, settings)
+        record_audit_best_effort(
+            audit_service,
+            AuditEventWrite(
+                action="login.entra",
+                result="failure",
+                resource_type="session",
+                request_id=context.request_id,
+                correlation_id=context.correlation_id,
+                client_ip=context.client_ip,
+                user_agent=context.user_agent,
+                after={"reason_code": "token_invalid"},
+            ),
+        )
         raise HTTPException(status_code=401, detail=str(error)) from error
     user = store.upsert_entra_user(identity.email, identity.display_name)
     if not user.get("enabled", True):
+        context = audit_request_context(request, settings)
+        record_audit_best_effort(
+            audit_service,
+            AuditEventWrite(
+                action="login.entra",
+                result="denied",
+                resource_type="session",
+                actor_id=str(user.get("id")) if user.get("id") else None,
+                actor_email=str(user.get("email")) if user.get("email") else None,
+                actor_role=str(user.get("role")) if user.get("role") else None,
+                request_id=context.request_id,
+                correlation_id=context.correlation_id,
+                client_ip=context.client_ip,
+                user_agent=context.user_agent,
+                after={"reason_code": "account_disabled"},
+            ),
+        )
         raise HTTPException(status_code=403, detail="该账户已被停用。")
-    return _issue(response, store, user, "entra", settings)
+    profile = _issue(response, store, user, "entra", settings)
+    context = audit_request_context(request, settings)
+    record_audit_best_effort(
+        audit_service,
+        AuditEventWrite(
+            action="login.entra",
+            result="success",
+            resource_type="session",
+            actor_id=str(user["id"]),
+            actor_email=str(user["email"]),
+            actor_role=str(user["role"]),
+            request_id=context.request_id,
+            correlation_id=context.correlation_id,
+            client_ip=context.client_ip,
+            user_agent=context.user_agent,
+        ),
+    )
+    return profile
 
 
-@router.get("/api/v1/auth/me", response_model=Profile)
-def whoami(identity: CurrentSession) -> Profile:
-    return Profile(
+@router.get("/api/v1/auth/me", response_model=AuthMeProfile)
+def whoami(identity: CurrentSession) -> AuthMeProfile:
+    return AuthMeProfile(
         id=identity.id,
         email=identity.email,
         name=identity.name,
         role=identity.role,
         method=identity.method,
         session_expires_at=identity.session_expires_at,
+        permissions=sorted(identity.permissions),
     )
 
 
@@ -142,8 +249,26 @@ def logout(
     response: Response,
     store: Store,
     settings: Config,
+    audit_service: OptionalAuditService,
 ) -> None:
     session = request.cookies.get(settings.session_cookie_name)
+    user = store.session_owner(hash_session_token(session)) if session else None
     if session:
         store.delete_session(hash_session_token(session))
     response.delete_cookie(settings.session_cookie_name, path="/")
+    context = audit_request_context(request, settings)
+    record_audit_best_effort(
+        audit_service,
+        AuditEventWrite(
+            action="session.logout",
+            result="success",
+            resource_type="session",
+            actor_id=str(user["id"]) if user else None,
+            actor_email=str(user["email"]) if user else None,
+            actor_role=str(user["role"]) if user else None,
+            request_id=context.request_id,
+            correlation_id=context.correlation_id,
+            client_ip=context.client_ip,
+            user_agent=context.user_agent,
+        ),
+    )

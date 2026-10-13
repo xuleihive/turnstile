@@ -119,6 +119,195 @@ def test_agent_provision_persists_specialized_application_type() -> None:
     assert service.applications().items[0].application_type == "agent"
 
 
+def test_user_keys_share_the_owned_application_and_keep_owner_in_database() -> None:
+    repository = InMemoryRepository()
+    service = ApplicationAccessService(repository, sync_available=True)
+    owner_id = UUID("00000000-0000-4000-8000-000000000002")
+    app_id = application_id_for(APIM_ID, "user-00000000000040008000000000000002")
+    for subscription_id, label in (
+        ("ts-key-first", "First key"),
+        ("ts-key-second", "Second key"),
+    ):
+        service.provision(
+            APIM_ID,
+            GatewayApplicationSubscriptionProvisionSpec(
+                provisioning_version=2,
+                gateway_profile_id=APIM_ID,
+                initial_monthly_token_limit=100_000,
+                initial_tokens_per_minute=100_000,
+                application_id=app_id,
+                application_subscription_id=application_subscription_id_for(
+                    APIM_ID, subscription_id
+                ),
+                apim_subscription_id=subscription_id,
+                slug="user-00000000000040008000000000000002",
+                display_name=label,
+                application_display_name="Member API",
+                owner_user_id=owner_id,
+                tenant_id=UUID("10000000-0000-4000-8000-000000000001"),
+                scope_id="finops-applications",
+            ),
+            "member@contoso.com",
+        )
+
+    assert len(repository.gateway_applications) == 1
+    assert repository.gateway_applications[0]["id"] == app_id
+    assert repository.gateway_applications[0]["owner_user_id"] == owner_id
+    assert repository.gateway_applications[0]["tenant_id"] == UUID(
+        "10000000-0000-4000-8000-000000000001"
+    )
+    assert len(repository.gateway_application_subscriptions) == 2
+
+
+def test_claiming_application_owner_does_not_rewrite_historical_attribution() -> None:
+    repository = InMemoryRepository()
+    service = ApplicationAccessService(repository, sync_available=True)
+    service.sync_discovery(_discovery("unassigned-app"), "worker")
+    app_id = repository.gateway_applications[0]["id"]
+    old_attribution = UsageApplicationAttribution(
+        application_id=app_id,
+        application_subscription_id=repository.gateway_application_subscriptions[0]["id"],
+        application_name_snapshot="Unassigned App",
+        apim_subscription_id="unassigned-app",
+        actor_type="service",
+        actor_id="service:unassigned-app",
+    )
+    repository.usage_application_attributions["historical-request"] = old_attribution
+
+    service.claim_application_owner(
+        app_id,
+        UUID("00000000-0000-4000-8000-000000000001"),
+        UUID("10000000-0000-4000-8000-000000000001"),
+        None,
+        "owner@contoso.com",
+        "owner@contoso.com",
+    )
+
+    assert repository.gateway_applications[0]["owner_user_id"] == UUID(
+        "00000000-0000-4000-8000-000000000001"
+    )
+    assert repository.usage_application_attributions["historical-request"] == old_attribution
+
+
+def test_claiming_application_owner_projects_admission_mapping_immediately() -> None:
+    repository = InMemoryRepository()
+    projected_owners: list[object] = []
+    application_id = application_id_for(APIM_ID, "unassigned-app")
+
+    def projector(owner_user_id: UUID | None = None) -> int:
+        assert owner_user_id is None
+        projected_owners.append(repository.get_gateway_application(application_id)["owner_user_id"])
+        return 1
+
+    service = ApplicationAccessService(
+        repository,
+        sync_available=True,
+        application_mapping_projector=projector,
+    )
+    service.sync_discovery(_discovery("unassigned-app"), "worker")
+
+    service.claim_application_owner(
+        application_id,
+        UUID("00000000-0000-4000-8000-000000000001"),
+        UUID("10000000-0000-4000-8000-000000000001"),
+        None,
+        "owner@contoso.com",
+        "owner@contoso.com",
+    )
+
+    assert projected_owners == [UUID("00000000-0000-4000-8000-000000000001")]
+
+
+def test_failed_owner_mapping_projection_rolls_back_database_owner() -> None:
+    repository = InMemoryRepository()
+    application_id = application_id_for(APIM_ID, "unassigned-app")
+    service = ApplicationAccessService(
+        repository,
+        sync_available=True,
+        application_mapping_projector=lambda _owner_user_id: (_ for _ in ()).throw(
+            RuntimeError("table failure")
+        ),
+    )
+    service.sync_discovery(_discovery("unassigned-app"), "worker")
+
+    with pytest.raises(Exception, match="could not be projected"):
+        service.claim_application_owner(
+            application_id,
+            UUID("00000000-0000-4000-8000-000000000001"),
+            UUID("10000000-0000-4000-8000-000000000001"),
+            None,
+            "owner@contoso.com",
+            "owner@contoso.com",
+        )
+
+    assert repository.get_gateway_application(application_id)["owner_user_id"] is None
+
+
+def test_apim_ledger_mapping_projects_stable_owner_and_organization_identity() -> None:
+    repository = InMemoryRepository()
+    service = ApplicationAccessService(repository, sync_available=True)
+    service.provision(
+        APIM_ID,
+        GatewayApplicationSubscriptionProvisionSpec(
+            application_id=application_id_for(APIM_ID, "owner-bound-app"),
+            application_subscription_id=application_subscription_id_for(
+                APIM_ID, "owner-bound-key"
+            ),
+            apim_subscription_id="owner-bound-key",
+            slug="owner-bound-app",
+            display_name="Owner Bound App",
+            scope_id="finops-applications",
+        ),
+        "owner@example.com",
+    )
+    application = repository.gateway_applications[0]
+    application.update(
+        {
+            "owner_user_id": UUID("00000000-0000-4000-8000-000000000001"),
+            "owner_email": "member@example.com",
+            "owner_display_name": "Member",
+            "owner_enabled": True,
+            "tenant_id": UUID("10000000-0000-4000-8000-000000000001"),
+            "tenant_name": "Example Enterprise",
+            "tenant_enabled": True,
+            "organization_unit_id": UUID("10000000-0000-4000-8000-000000000002"),
+            "organization_unit_name": "Platform",
+            "organization_unit_enabled": True,
+        }
+    )
+
+    mapping = repository.gateway_application_ledger_mappings()[0]
+
+    assert mapping["owner_user_id"] == "00000000-0000-4000-8000-000000000001"
+    assert mapping["owner_email"] == "member@example.com"
+    assert mapping["owner_display_name"] == "Member"
+    assert mapping["owner_enabled"] is True
+    assert mapping["tenant_id"] == "10000000-0000-4000-8000-000000000001"
+    assert mapping["tenant_name"] == "Example Enterprise"
+    assert mapping["tenant_enabled"] is True
+    assert mapping["organization_unit_id"] == "10000000-0000-4000-8000-000000000002"
+    assert mapping["organization_unit_name"] == "Platform"
+    assert mapping["organization_unit_enabled"] is True
+
+
+def test_apim_ledger_mapping_can_be_projected_for_only_one_owner() -> None:
+    repository = InMemoryRepository()
+    service = ApplicationAccessService(repository, sync_available=True)
+    service.sync_discovery(_discovery("owner-one-key", "owner-two-key"), "worker")
+    first_owner = UUID("00000000-0000-4000-8000-000000000001")
+    second_owner = UUID("00000000-0000-4000-8000-000000000002")
+    for application in repository.gateway_applications:
+        application["owner_user_id"] = (
+            first_owner if application["slug"] == "owner-one-key" else second_owner
+        )
+
+    first_owner_mappings = repository.gateway_application_ledger_mappings(first_owner)
+
+    assert len(first_owner_mappings) == 1
+    assert first_owner_mappings[0]["apim_subscription_id"] == "owner-one-key"
+    assert first_owner_mappings[0]["owner_user_id"] == str(first_owner)
+
+
 def test_application_discovery_is_idempotent_and_preserves_budget() -> None:
     repository = InMemoryRepository()
     service = ApplicationAccessService(repository, sync_available=True)
@@ -386,8 +575,8 @@ def test_apim_subscription_provision_uses_put_without_list_secrets() -> None:
             if request.method == "GET":
                 return httpx.Response(404)
             body = json.loads(request.content)
-            assert body["properties"]["primaryKey"] == "primary-test-key"
-            assert body["properties"]["secondaryKey"] == "secondary-test-key"
+            assert "primaryKey" not in body["properties"]
+            assert "secondaryKey" not in body["properties"]
             return httpx.Response(
                 201,
                 json={
@@ -407,9 +596,7 @@ def test_apim_subscription_provision_uses_put_without_list_secrets() -> None:
         httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    client.ensure_application_subscription(
-        spec, "primary-test-key", "secondary-test-key"
-    )
+    client.ensure_application_subscription(spec)
 
     assert [request.method for request in requests] == ["GET", "GET", "PUT"]
     assert all("listSecrets" not in str(request.url) for request in requests)
@@ -453,3 +640,24 @@ def test_apim_subscription_keys_can_be_revealed_and_rotated() -> None:
         "regeneratePrimaryKey",
     ]
     assert all("owner%20app" in str(request.url) for request in requests)
+
+
+def test_apim_subscription_cancellation_deletes_the_arm_resource() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    client = AzureApimSubscriptionKeyClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.cancel_application_subscription("owner-created-app")
+
+    assert len(requests) == 1
+    assert requests[0].method == "DELETE"
+    assert requests[0].url.path.endswith("/subscriptions/owner-created-app")
+    assert requests[0].url.params["api-version"] == "2024-05-01"

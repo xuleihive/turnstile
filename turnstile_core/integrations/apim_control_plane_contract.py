@@ -142,6 +142,8 @@ class ApimSubscriptionKeyClient(Protocol):
         key_kind: Literal["primary", "secondary"],
     ) -> None: ...
 
+    def cancel_application_subscription(self, apim_subscription_id: str) -> None: ...
+
 
 class ApimPublisherClient(Protocol):
     def ensure_backend(self, backend: BackendResource) -> None: ...
@@ -191,13 +193,13 @@ class ApimPublisherClient(Protocol):
     def ensure_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None: ...
 
     def activate_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None: ...

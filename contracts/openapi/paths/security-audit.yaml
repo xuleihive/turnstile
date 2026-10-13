@@ -1,0 +1,87 @@
+paths:
+  /api/v1/security/audit-events:
+    get:
+      tags: [Security Audit]
+      operationId: listSecurityAuditEvents
+      summary: List read-only security audit metadata
+      parameters:
+      - name: from
+        in: query
+        schema: {type: string, format: date-time}
+      - name: to
+        in: query
+        schema: {type: string, format: date-time}
+      - name: actor_id
+        in: query
+        schema: {type: string, format: uuid}
+      - name: action
+        in: query
+        schema: {type: string, maxLength: 160}
+      - name: result
+        in: query
+        schema: {type: string, enum: [success, failure, denied]}
+      - name: cursor
+        in: query
+        schema: {type: string, format: uuid}
+      - name: limit
+        in: query
+        schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200':
+          description: A filtered page of security event metadata
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/SecurityAuditEventPage
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/security/audit-events/export:
+    get:
+      tags: [Security Audit]
+      operationId: exportSecurityAuditEvents
+      summary: Export filtered security audit metadata as CSV
+      description: Export contains allowlisted metadata only; credentials, request bodies and model content are excluded.
+      parameters:
+      - name: from
+        in: query
+        schema: {type: string, format: date-time}
+      - name: to
+        in: query
+        schema: {type: string, format: date-time}
+      - name: actor_id
+        in: query
+        schema: {type: string, format: uuid}
+      - name: action
+        in: query
+        schema: {type: string, maxLength: 160}
+      - name: result
+        in: query
+        schema: {type: string, enum: [success, failure, denied]}
+      - name: limit
+        in: query
+        schema: {type: integer, minimum: 1, maximum: 10000, default: 5000}
+      responses:
+        '200':
+          description: UTF-8 CSV attachment
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+            X-Export-Truncated:
+              schema: {type: string, enum: ['true', 'false']}
+          content:
+            text/csv:
+              schema: {type: string, format: binary}
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

@@ -153,6 +153,63 @@ class GatewayApplicationSubscription(StrictModel):
     last_synced_at: datetime
 
 
+class GatewayUserSubscriptionEntry(StrictModel):
+    id: UUID
+    application_id: UUID
+    application_display_name: str
+    application_type: ApplicationType
+    apim_subscription_id: str
+    display_name: str
+    scope_id: str
+    state: ApplicationSubscriptionState
+    source: ApplicationSubscriptionSource
+    created_at: datetime
+
+
+class GatewayUserSubscriptionList(StrictModel):
+    user_id: UUID
+    email: str
+    display_name: str | None
+    role: str
+    items: list[GatewayUserSubscriptionEntry]
+
+
+class GatewayUserSubscriptionCreate(StrictModel):
+    display_name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
+    application_type: Literal["service", "agent"] = "service"
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display_name cannot be blank")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class GatewayApplicationOwnerUpdate(StrictModel):
+    user_id: UUID | None
+
+
+class GatewayApplicationSubscriptionCancel(StrictModel):
+    confirmation: str = Field(min_length=1, max_length=256)
+
+
+class GatewaySubscriptionKeysExportFilter(StrictModel):
+    user_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    department_id: UUID | None = None
+    subscription_ids: list[str] = Field(default_factory=list, max_length=1000)
+
+
 class GatewayApplicationSubscriptionKeySecret(StrictModel):
     key_kind: Literal["primary", "secondary"]
     value: str = Field(min_length=1, max_length=256, repr=False)
@@ -172,6 +229,9 @@ class GatewayApplicationAuditEvent(StrictModel):
         "budget_updated",
         "models_updated",
         "subscription_synced",
+        "subscription_created",
+        "subscription_cancelled",
+        "owner_changed",
         "suspended",
         "resumed",
         "retired",
@@ -226,6 +286,9 @@ class GatewayApplicationSummary(StrictModel):
     display_name: str
     description: str | None
     owner_id: str | None
+    owner_user_id: UUID | None = None
+    tenant_id: UUID | None = None
+    organization_unit_id: UUID | None = None
     department_id: str | None
     application_type: ApplicationType
     status: ApplicationStatus
@@ -321,7 +384,12 @@ class GatewayApplicationSubscriptionProvisionSpec(StrictModel):
         pattern=r"^[a-z0-9][a-z0-9-]{0,126}$",
     )
     display_name: str = Field(min_length=1, max_length=100)
+    application_display_name: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=1000)
+    owner_user_id: UUID | None = None
+    owner_email: str | None = Field(default=None, max_length=320)
+    tenant_id: UUID | None = None
+    organization_unit_id: UUID | None = None
     application_type: Literal["service", "agent"] = "service"
     scope_type: Literal["product"] = "product"
     scope_id: str = Field(min_length=1, max_length=255)
@@ -334,6 +402,8 @@ class GatewayApplicationSubscriptionProvisionSpec(StrictModel):
             self.initial_tokens_per_minute,
         )):
             raise ValueError("Staged provisioning requires a gateway and snapshotted budget limits")
+        if self.owner_user_id is not None and self.tenant_id is None:
+            raise ValueError("Owned applications require a tenant ID")
         return self
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time as clock
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, cast
@@ -981,6 +981,51 @@ class PostgreSqlOpsDbProxy(
                 [from_, to, *filter_parameters, limit],
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
+
+    def iter_usage_requests(
+        self, from_: datetime, to: datetime, filters: UsageFilters
+    ) -> Iterator[dict[str, Any]]:
+        filter_sql, filter_parameters = self._filter_sql(filters)
+        query = f"""SELECT
+                        usage.id AS usage_id, usage.request_id, usage.correlation_id,
+                        usage.ts AS timestamp,
+                        usage.team,
+                        usage.organization_id, usage.organization AS organization_name,
+                        usage.department_id, usage.department AS department_name,
+                        usage.project_id, usage.project AS project_name,
+                        usage.user_id, usage.user_ref AS user_name,
+                        usage.agent_id, usage.agent AS agent_name,
+                        usage.workflow, usage.run_id, usage.turn_index,
+                        usage.model_id, usage.model AS model_name,
+                        usage.provider, usage.runtime, usage.request_source,
+                        usage.input_tokens, usage.cached_tokens,
+                        GREATEST(usage.cached_tokens - usage.cache_write_tokens, 0)::BIGINT
+                            AS cache_read_tokens,
+                        usage.cache_write_tokens, usage.output_tokens,
+                        (usage.input_tokens + usage.cached_tokens
+                            + usage.output_tokens)::BIGINT AS total_tokens,
+                        usage.latency_ms, usage.status_code,
+                        usage.input_price_per_million AS input_price_per_million_usd,
+                        usage.cached_price_per_million AS cached_price_per_million_usd,
+                        usage.cache_write_price_per_million
+                            AS cache_write_price_per_million_usd,
+                        usage.output_price_per_million AS output_price_per_million_usd,
+                        usage.estimated_cost AS estimated_cost_usd,
+                        usage.estimated AS usage_estimated,
+                        usage.ingest_source, usage.ingest_error,
+                        usage.reconciled_at, usage.budget_admission,
+                        usage.model_admission, usage.error_message
+                    FROM token_usage usage
+                    WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}
+                    ORDER BY usage.ts DESC, usage.id DESC"""
+        with (
+            self._connection() as connection,
+            connection.cursor(name="turnstile_usage_export") as cursor,
+        ):
+            cursor.execute(query, [from_, to, *filter_parameters])
+            while batch := cursor.fetchmany(1000):
+                for row in batch:
+                    yield dict(row)
 
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:

@@ -1,4 +1,57 @@
 paths:
+  /api/v1/model-gateway/invoke:
+    post:
+      tags: [Model Gateway]
+      operationId: invokeModel
+      summary: Invoke an assigned model with a session or APIM Subscription Key
+      description: >-
+        Accepts either a Turnstile session or an APIM-issued key. Session calls retain the
+        local user access and budget checks. Key calls forward `Ocp-Apim-Subscription-Key`
+        to the configured APIM gateway; APIM validates it, enforces the application mapping
+        and budget, and attributes the call to the active mapped user. Client-supplied user
+        identity is ignored for Key calls. Turnstile does not store the key. Successful
+        responses are marked no-store.
+      security:
+      - sessionCookie: []
+      - apimSubscriptionKey: []
+      parameters:
+      - name: Ocp-Apim-Subscription-Key
+        in: header
+        required: false
+        description: APIM-issued key, forwarded unchanged to APIM when no session is present.
+        schema: {type: string, minLength: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/ModelInvocationRequest
+      responses:
+        '200':
+          description: Model output, measured usage, and request correlation identifiers
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/ModelInvocationResponse
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '502':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '504':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
   /api/v1/model-gateway/images/generations:
     post:
       tags: [Model Gateway]

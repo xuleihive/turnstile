@@ -15,6 +15,7 @@ local.settings.json
 .turnstile/
 .agents/
 /AGENTS.md
+.codex/
 
 # Python
 .venv/

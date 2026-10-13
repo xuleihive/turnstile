@@ -1,4 +1,79 @@
 paths:
+  /api/v1/observability/requests/export:
+    get:
+      tags:
+      - Overview
+      operationId: exportUsageReport
+      summary: Export a filtered usage analysis report and complete APIM request detail
+      description: Returns a ZIP containing analysis.md and requests.csv. The CSV is queried
+        from the usage database without the interactive request-list limit. It contains metadata
+        and pricing snapshots only; prompts and completions are never exported. This synchronous
+        compatibility route accepts at most 31 days and 10,000 request rows.
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/From
+      - $ref: ../../openapi.yaml#/components/parameters/To
+      - name: organization_id
+        in: query
+        schema:
+          type: string
+      - name: department_id
+        in: query
+        schema:
+          type: string
+      - name: project_id
+        in: query
+        schema:
+          type: string
+      - name: agent_id
+        in: query
+        schema:
+          type: string
+      - name: model_id
+        in: query
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        schema:
+          type: string
+      - name: runtime
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            type: string
+      - name: status_code
+        in: query
+        schema:
+          type: integer
+          minimum: 100
+          maximum: 599
+      responses:
+        '200':
+          description: ZIP archive containing the analysis summary and all matching request rows
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: private, no-store
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '413':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
   /api/v1/anomaly-rules:
     get:
       tags:

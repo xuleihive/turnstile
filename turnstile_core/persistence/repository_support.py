@@ -53,7 +53,7 @@ class UsageFilters:
     project_id: str | None = None
     agent_id: str | None = None
     model_id: str | None = None
-    user_id: str | None = None
+    user_id: str | tuple[str, ...] | None = None
     # The access points a request arrived through, e.g. 'Microsoft Foundry via APIM' or
     # 'GitHub Copilot CLI'. Matched on the display name because token_usage.runtime is the
     # name itself; the registry UUID is never written into telemetry. Several names are

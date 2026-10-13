@@ -95,11 +95,13 @@ def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
     assert 'className="application-usage-controls"' in activity_card
     assert 'className="application-card application-usage-activity-card"' in activity_card
     assert 'title="后端尚未发布编辑能力"' in page
-    assert "primary_key" in types
+    assert "value: string" in types
+    assert "key_kind: GatewayApplicationSubscriptionKeyKind" in types
     creation = (
         FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx"
     ).read_text(encoding="utf-8")
-    assert "navigator.clipboard.writeText(primaryKey.current)" in creation
+    assert "primary_key" not in creation
+    assert "navigator.clipboard.writeText" not in creation
     assert "secondary_key" not in page.lower()
     assert "listsecrets" not in page.lower()
     assert "ApplicationSubscriptionCard" in page
@@ -176,3 +178,20 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert ":focus-visible" in styles
     assert "var(--border)" in styles
     assert "var(--muted)" in styles
+
+
+def test_user_key_secrets_stay_out_of_query_cache_and_export_is_explicit() -> None:
+    page = (FRONTEND_SOURCE / "pages/my-api-keys-page.tsx").read_text(encoding="utf-8")
+    api = (FRONTEND_SOURCE / "data-sources/apim/user-api-keys.ts").read_text(encoding="utf-8")
+    assert "userApiKeysApi.reveal" in page
+    assert "const secret = await userApiKeysApi.reveal" in page
+    assert "Do not put secret responses into TanStack Query or mutation caches." in page
+    assert "mutationFn: async ({ subscription, kind }" in page
+    assert "setRevealed({ ...secret" in page
+    assert "return secret" not in page
+    assert 'request<ApiKeySecret>' in api
+    assert 'requestBlob("/api/v1/admin/subscriptions/keys/export"' in api
+    assert "useQuery" not in api
+    assert "exportKeys" in page
+    assert "Cache-Control" not in api
+    assert "application_subscription_keys" not in page

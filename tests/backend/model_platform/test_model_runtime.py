@@ -1781,6 +1781,88 @@ def test_apim_invocation_uses_configured_gateway_when_registry_url_is_empty(
     assert response.content == "CONFIGURED_GATEWAY_OK"
 
 
+def test_apim_key_invocation_forwards_only_the_override_and_keeps_apim_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        assert incoming.headers["Ocp-Apim-Subscription-Key"] == "invalid-client-key"
+        assert "api-key" not in incoming.headers
+        assert "authorization" not in incoming.headers
+        return httpx.Response(
+            401,
+            json={"error": {"message": "Invalid subscription key"}},
+        )
+
+    repository = InMemoryRepository()
+    runtime, model = _foundry_route(repository)
+    monkeypatch.setattr(
+        repository,
+        "gateway_application_attribution_map",
+        lambda _: [
+            {
+                "application_status": "active",
+                "subscription_state": "active",
+                "scope_exists": True,
+                "owner_user_id": "00000000-0000-4000-8000-000000000001",
+                "owner_enabled": True,
+                "owner_tenant_id": "tenant-1",
+                "tenant_id": "tenant-1",
+                "tenant_enabled": True,
+            }
+        ],
+    )
+    service = ModelRuntimeService(
+        repository,
+        Settings(apim_dashboard_subscription_key=SecretStr("dashboard-key")),
+        GatewayRouter(httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+    invocation = request(
+        model=model["model_key"], runtime=runtime["name"]
+    ).model_copy(update={"runtime_id": runtime["id"], "model_id": model["id"]})
+
+    with pytest.raises(HTTPException) as error:
+        service.invoke(
+            invocation,
+            gateway_credential_override="invalid-client-key",
+            enforce_user_model_access=False,
+            enforce_local_user_budget=False,
+        )
+
+    assert error.value.status_code == 401
+    assert "message=Invalid subscription key" in error.value.detail
+    assert "invalid-client-key" not in error.value.detail
+
+
+def test_apim_key_invocation_fails_closed_without_user_attribution_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("unmapped APIM keys must not reach the gateway")
+
+    repository = InMemoryRepository()
+    runtime, model = _foundry_route(repository)
+    monkeypatch.setattr(repository, "gateway_application_attribution_map", lambda _: [])
+    service = ModelRuntimeService(
+        repository,
+        Settings(apim_dashboard_subscription_key=SecretStr("dashboard-key")),
+        GatewayRouter(httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+    invocation = request(
+        model=model["model_key"], runtime=runtime["name"]
+    ).model_copy(update={"runtime_id": runtime["id"], "model_id": model["id"]})
+
+    with pytest.raises(HTTPException) as error:
+        service.invoke(
+            invocation,
+            gateway_credential_override="unmapped-client-key",
+            enforce_user_model_access=False,
+            enforce_local_user_budget=False,
+        )
+
+    assert error.value.status_code == 403
+    assert "unmapped-client-key" not in str(error.value.detail)
+
+
 def test_apim_registry_excludes_github_copilot_telemetry_identity() -> None:
     repository = InMemoryRepository()
     service = ModelRuntimeService(repository, Settings())

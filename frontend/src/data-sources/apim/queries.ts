@@ -19,7 +19,7 @@ type UsageScope = {
   projectId: string | null
   agentId: string | null
   modelId: string | null
-  userId: string | null
+  userId: string | string[] | null
   runtime: string[] | null
   statusCode: number | null
 }
@@ -96,6 +96,7 @@ export const finopsKeys = {
   distribution: (scope: UsageScope, dimension: DistributionDimension, splitBy?: DistributionDimension) =>
     ["finops", "distribution", dimension, splitBy ?? null, scope] as const,
   requests: (scope: UsageScope) => ["finops", "requests", scope] as const,
+  exportJobs: ["finops", "usage-export-jobs"] as const,
   // The server buckets by timezone, so the zone is part of the response identity rather than a
   // display option that could be reapplied to a cached UTC result.
   usageActivity: (scope: UsageScope, interval: "hour" | "day" | "week", timezone: string) =>
@@ -261,6 +262,16 @@ export const finopsQueries = {
       ...cachePolicies.aggregate,
     })
   },
+  usageExportJobs: () => queryOptions({
+    queryKey: finopsKeys.exportJobs,
+    queryFn: dataSource.usageExportJobs,
+    retry: false,
+    refetchInterval: (query) => query.state.data?.items.some(
+      (job) => job.status === "queued" || job.status === "running",
+    ) ? 2_000 : false,
+    refetchIntervalInBackground: true,
+    ...cachePolicies.aggregate,
+  }),
   anomalyRules: () => queryOptions({
     queryKey: finopsKeys.anomalyRules,
     queryFn: dataSource.anomalyRules,

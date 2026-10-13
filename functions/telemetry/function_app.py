@@ -3,6 +3,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, List  # noqa: UP035 - required by the Azure Functions worker
+from uuid import uuid4
 
 import azure.functions as func
 
@@ -199,3 +200,56 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
         outcome.upper_bounds_settled,
         outcome.stale_application_reservations,
     )
+
+
+@app.timer_trigger(
+    arg_name="timer",
+    schedule="0 0 1 * * *",
+    run_on_startup=False,
+    use_monitor=True,
+)
+def cleanup_security_audit_events(timer: func.TimerRequest) -> None:
+    """Keep online security audit events for 365 days, using a strict UTC cutoff."""
+    del timer
+    from turnstile_core.config import get_settings
+    from turnstile_core.persistence.audit_store import AuditStore
+    from turnstile_core.services.security_audit import SecurityAuditService
+
+    settings = get_settings()
+    if not settings.database_url:
+        logger.warning("Security audit retention skipped: DATABASE_URL is not configured")
+        return
+    store = AuditStore(settings.database_url)
+    try:
+        deleted = SecurityAuditService(store).delete_expired_before(
+            datetime.now(UTC) - timedelta(days=365)
+        )
+    finally:
+        store.close()
+    logger.info("Security audit retention removed %s events older than 365 days", deleted)
+
+
+@app.timer_trigger(
+    arg_name="timer",
+    schedule="0 * * * * *",
+    run_on_startup=False,
+    use_monitor=True,
+)
+def process_usage_export_jobs(timer: func.TimerRequest) -> None:
+    """Claim and process at most one leased private report export per invocation."""
+    del timer
+    from turnstile_core.services.usage_export_worker import create_usage_export_worker
+
+    worker = create_usage_export_worker()
+    try:
+        processed = worker.run_once(f"telemetry-{uuid4().hex}", datetime.now(UTC))
+    except Exception as error:
+        logger.error(
+            "Usage export worker invocation failed; error_type=%s",
+            type(error).__name__,
+        )
+        raise RuntimeError("Usage export worker invocation failed") from None
+    else:
+        logger.info("Usage export worker processed %s job(s)", processed)
+    finally:
+        worker.close()

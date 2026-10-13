@@ -183,6 +183,14 @@ class AuthStore:
                     u.email,
                     u.display_name,
                     u.role,
+                    COALESCE(
+                        (
+                            SELECT array_agg(permission_code ORDER BY permission_code)
+                            FROM app_role_permission
+                            WHERE role_code = u.role
+                        ),
+                        ARRAY[]::text[]
+                    ) AS permissions,
                     s.method,
                     s.created_at,
                     s.expires_at

@@ -53,6 +53,15 @@ class AzureApimSubscriptionKeyClient:
         response.raise_for_status()
         return response
 
+    def cancel_application_subscription(self, apim_subscription_id: str) -> None:
+        token = self._token_provider.token(self._MANAGEMENT_RESOURCE)
+        response = self._client.delete(
+            f"{self._base}/subscriptions/{quote(apim_subscription_id, safe='')}",
+            params={"api-version": self._API_VERSION},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        response.raise_for_status()
+
     def application_subscription_keys(
         self, apim_subscription_id: str
     ) -> tuple[str, str]:

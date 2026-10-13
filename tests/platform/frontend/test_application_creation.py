@@ -35,13 +35,13 @@ def test_creation_and_model_editor_short_labels_have_exact_translations() -> Non
             assert f'"{phrase}":' in catalog
 
 
-def test_creation_credentials_never_enter_dom_or_query_cache() -> None:
+def test_application_creation_never_captures_apim_keys_in_the_browser() -> None:
     dialog = (FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx").read_text(
         encoding="utf-8"
     )
     page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
-    assert "const primaryKey = useRef<string | null>(null)" in dialog
-    assert "primaryKey.current = response.primary_key" in dialog
+    assert "primary_key" not in dialog
+    assert "primaryKey" not in dialog
     assert (
         "const safeAccepted = { operation: response.operation, status_url: response.status_url }"
         in dialog
@@ -51,8 +51,7 @@ def test_creation_credentials_never_enter_dom_or_query_cache() -> None:
     assert "{primaryKey.current}" not in dialog
     assert "{response.primary_key}" not in dialog
     assert "primary_key" not in page
-    assert 'window.addEventListener("beforeunload", protectUnsavedKey)' in dialog
-    assert "if (failed) primaryKey.current = null" in dialog
+    assert 'window.addEventListener("beforeunload", protectPendingCreation)' in dialog
     assert "applicationOperationIdFromUrl(window.location.href)" in page
     assert 'createOpen && user?.role === "owner"' in page
     assert "defaults.monthly_token_limit" in dialog

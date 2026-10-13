@@ -13,6 +13,7 @@ from tests.support.paths import FRONTEND_SOURCE, REPOSITORY_ROOT, read_frontend_
         "model-edit-form.test.mjs",
         "model-publication-connections.test.mjs",
         "openai-compatible.test.mjs",
+        "model-management-refresh.test.mjs",
     ),
 )
 def test_model_form_unit_cases(suite_name: str) -> None:
@@ -357,14 +358,6 @@ def test_connections_own_the_runtime_inventory_and_detail_route() -> None:
     assert "inventoryConnections.filter" in health_counts
     assert 'value === "active" || connectionHealthCounts[value] > 0' in page
     assert ">连接</a><ChevronRight" in page
-
-
-def test_gateway_creation_action_stays_hidden() -> None:
-    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'activeTab !== "gateways" && <div className="smh-header-actions"' in page
 
 
 def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:

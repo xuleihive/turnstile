@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -411,33 +412,33 @@ def test_application_sync_operation_adopts_read_only_apim_inventory() -> None:
     assert repository.gateway_applications[0]["display_name"] == "Outline Assistant"
 
 
-def test_owner_provisions_subscription_with_one_time_key_and_no_secret_storage() -> None:
+def test_owner_provisions_subscription_without_generating_or_storing_keys() -> None:
     class ProvisioningClient(FakeApimClient):
         def __init__(self) -> None:
             super().__init__()
-            self.provisioned: tuple[
-                GatewayApplicationSubscriptionProvisionSpec, str, str
-            ] | None = None
+            self.provisioned: GatewayApplicationSubscriptionProvisionSpec | None = None
 
         def ensure_application_subscription(
             self,
             spec: GatewayApplicationSubscriptionProvisionSpec,
-            primary_key: str,
-            secondary_key: str,
+            *,
+            legacy_pending_name: str | None = None,
         ) -> None:
-            self.provisioned = (spec, primary_key, secondary_key)
+            assert legacy_pending_name is None
+            self.provisioned = spec
 
         def activate_application_subscription(
             self,
             spec: GatewayApplicationSubscriptionProvisionSpec,
-            primary_key: str,
-            secondary_key: str,
+            *,
+            legacy_pending_name: str | None = None,
         ) -> None:
-            assert self.provisioned == (spec, primary_key, secondary_key)
+            assert legacy_pending_name is None
+            assert self.provisioned == spec
 
     repository = InMemoryRepository()
     cipher = CredentialCipher(Fernet.generate_key())
-    service = GatewayControlPlaneService(repository, cipher)
+    service = GatewayControlPlaneService(repository)
     client = ProvisioningClient()
 
     accepted = service.request_application_subscription_provision(
@@ -453,13 +454,11 @@ def test_owner_provisions_subscription_with_one_time_key_and_no_secret_storage()
 
     row = repository.get_gateway_release_operation(accepted.operation.id)
     assert row is not None
-    assert accepted.primary_key
-    assert accepted.primary_key not in str(row)
-    ciphertext = repository.gateway_release_operation_secret(
-        accepted.operation.id
-    )
-    assert ciphertext is not None
-    assert accepted.primary_key.encode() not in ciphertext
+    assert "primary_key" not in accepted.model_dump()
+    assert "secondary_key" not in accepted.model_dump()
+    assert repository.gateway_release_operation_secret(accepted.operation.id) is None
+    assert "primary_key" not in json.dumps(row, default=str)
+    assert "secondary_key" not in json.dumps(row, default=str)
 
     worker = GatewayReleaseOperationWorker(
         repository, client, cipher=cipher,
@@ -475,8 +474,6 @@ def test_owner_provisions_subscription_with_one_time_key_and_no_secret_storage()
     assert materialized is not None and materialized.status == "verifying_readback"
     assert completed is not None and completed.status == "succeeded"
     assert client.provisioned is not None
-    assert client.provisioned[1] == accepted.primary_key
-    assert client.provisioned[2] != accepted.primary_key
     assert repository.gateway_release_operation_secret(accepted.operation.id) is None
     application = repository.gateway_applications[0]
     subscription = repository.gateway_application_subscriptions[0]
@@ -517,10 +514,10 @@ def test_failed_subscription_provisioning_deletes_encrypted_keys() -> None:
         def ensure_application_subscription(
             self,
             spec: GatewayApplicationSubscriptionProvisionSpec,
-            primary_key: str,
-            secondary_key: str,
+            *,
+            legacy_pending_name: str | None = None,
         ) -> None:
-            del spec, primary_key, secondary_key
+            del spec, legacy_pending_name
             raise ValueError("injected APIM rejection")
 
     repository = InMemoryRepository()

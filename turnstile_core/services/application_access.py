@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from typing import Literal, Never
 from uuid import UUID, uuid4
@@ -19,6 +19,7 @@ from ..domain.application_access import (
     GatewayApplicationModelAccessUpdate,
     GatewayApplicationProvisioningDefaults,
     GatewayApplicationSubscription,
+    GatewayApplicationSubscriptionCancel,
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
     GatewayApplicationSubscriptionProvisionSpec,
@@ -71,6 +72,7 @@ class ApplicationAccessService:
         key_management_available: bool = False,
         key_management_unavailable_reason: str | None = None,
         key_client: ApimSubscriptionKeyClient | None = None,
+        application_mapping_projector: Callable[[UUID | None], int] | None = None,
         default_token_limit: int = 100_000,
         default_tokens_per_minute: int = 100_000,
     ) -> None:
@@ -82,6 +84,7 @@ class ApplicationAccessService:
         self._key_management_available = key_management_available and key_client is not None
         self._key_management_unavailable_reason = key_management_unavailable_reason
         self._key_client = key_client
+        self._application_mapping_projector = application_mapping_projector
         self._default_token_limit = default_token_limit
         self._default_tokens_per_minute = default_tokens_per_minute
 
@@ -134,9 +137,13 @@ class ApplicationAccessService:
             spec.initial_tokens_per_minute or self._default_tokens_per_minute,
         )
 
-    def applications(self) -> GatewayApplicationList:
+    def applications(self, owner_user_id: UUID | None = None) -> GatewayApplicationList:
         period_start, period_end = _period_bounds()
-        rows = list(self._repository.list_gateway_applications())
+        rows = list(
+            self._repository.list_gateway_applications()
+            if owner_user_id is None
+            else self._repository.list_gateway_applications_for_owner(owner_user_id)
+        )
         summaries = self._summaries(rows, period_start, period_end)
         return GatewayApplicationList(
             items=summaries,
@@ -164,10 +171,15 @@ class ApplicationAccessService:
             ),
         )
 
-    def application(self, application_id: UUID) -> GatewayApplicationDetail:
+    def application(
+        self, application_id: UUID, owner_user_id: UUID | None = None
+    ) -> GatewayApplicationDetail:
         period_start, period_end = _period_bounds()
         row = self._repository.get_gateway_application(application_id)
-        if row is None:
+        if row is None or (
+            owner_user_id is not None
+            and row.get("owner_user_id") != owner_user_id
+        ):
             raise ControlPlaneNotFoundError("Application not found")
         summary = self._summaries([row], period_start, period_end)[0]
         subscriptions = [
@@ -202,11 +214,142 @@ class ApplicationAccessService:
             ),
         )
 
-    def application_avatar(self, application_id: UUID) -> tuple[str, bytes]:
+    def user_subscription_rows(self, owner_user_id: UUID) -> list[dict[str, object]]:
+        applications = list(
+            self._repository.list_gateway_applications_for_owner(owner_user_id)
+        )
+        if not applications:
+            return []
+        application_by_id = {UUID(str(row["id"])): row for row in applications}
+        subscriptions = self._repository.list_gateway_application_subscriptions(
+            list(application_by_id)
+        )
+        return [
+            {
+                **dict(subscription),
+                "application_display_name": application_by_id[
+                    UUID(str(subscription["application_id"]))
+                ]["display_name"],
+                "application_type": application_by_id[
+                    UUID(str(subscription["application_id"]))
+                ]["application_type"],
+                "created_at": subscription["discovered_at"],
+            }
+            for subscription in subscriptions
+        ]
+
+    def subscription_export_rows(self) -> list[dict[str, object]]:
+        applications = list(self._repository.list_gateway_applications())
+        if not applications:
+            return []
+        application_by_id = {UUID(str(row["id"])): row for row in applications}
+        subscriptions = self._repository.list_gateway_application_subscriptions(
+            list(application_by_id)
+        )
+        rows: list[dict[str, object]] = []
+        for subscription in subscriptions:
+            application = application_by_id[UUID(str(subscription["application_id"]))]
+            owner_user_id = application.get("owner_user_id")
+            if owner_user_id is None or bool(application.get("system_managed")):
+                continue
+            rows.append(
+                {
+                    "user_id": str(owner_user_id),
+                    "department_id": str(application.get("organization_unit_id") or ""),
+                    "application_id": str(application["id"]),
+                    "application_name": str(application["display_name"]),
+                    "application_type": str(application["application_type"]),
+                    "subscription_record_id": str(subscription["id"]),
+                    "subscription_id": str(subscription["apim_subscription_id"]),
+                    "subscription_state": str(subscription["state"]),
+                    "created_at": subscription["discovered_at"],
+                }
+            )
+        return rows
+
+    def subscription_keys_for_export(self, apim_subscription_id: str) -> tuple[str, str]:
+        client = self._require_key_client()
+        try:
+            return client.application_subscription_keys(apim_subscription_id)
+        except (httpx.HTTPError, PolicyCompilationError) as error:
+            self._raise_key_management_error(error)
+
+    def claim_application_owner(
+        self,
+        application_id: UUID,
+        owner_user_id: UUID | None,
+        tenant_id: UUID | None,
+        organization_unit_id: UUID | None,
+        owner_email: str | None,
+        actor: str,
+    ) -> dict[str, object]:
+        current = self._repository.get_gateway_application(application_id)
+        if current is None:
+            raise ControlPlaneNotFoundError("Application not found")
+        previous = dict(current)
+        if bool(previous.get("system_managed")):
+            raise ControlPlaneConflictError(
+                "System-managed application ownership cannot be changed"
+            )
+        row = self._repository.update_gateway_application_owner(
+            application_id,
+            owner_user_id,
+            tenant_id,
+            organization_unit_id,
+            owner_email,
+            actor,
+        )
+        if row is None:
+            raise ControlPlaneNotFoundError("Application not found")
+        if self._application_mapping_projector is not None:
+            try:
+                self._application_mapping_projector(None)
+            except Exception as error:
+                try:
+                    self._repository.update_gateway_application_owner(
+                        application_id,
+                        UUID(str(previous["owner_user_id"]))
+                        if previous.get("owner_user_id")
+                        else None,
+                        UUID(str(previous["tenant_id"]))
+                        if previous.get("tenant_id")
+                        else None,
+                        UUID(str(previous["organization_unit_id"]))
+                        if previous.get("organization_unit_id")
+                        else None,
+                        str(previous.get("owner_email") or previous.get("owner_id") or "")
+                        or None,
+                        actor,
+                    )
+                    self._application_mapping_projector(None)
+                except Exception:
+                    # Keep the failure generic: neither database nor Azure errors may expose
+                    # request or credential data through an ownership operation.
+                    pass
+                raise ControlPlaneUnavailableError(
+                    "Application owner mapping could not be projected to APIM admission"
+                ) from error
+        return row
+
+    def application_avatar(
+        self, application_id: UUID, owner_user_id: UUID | None = None
+    ) -> tuple[str, bytes]:
+        application = self._repository.get_gateway_application(application_id)
+        if application is None or (
+            owner_user_id is not None
+            and application.get("owner_user_id") != owner_user_id
+        ):
+            raise ControlPlaneNotFoundError("Application not found")
         row = self._repository.get_gateway_application_avatar(application_id)
         if row is None:
             raise ControlPlaneNotFoundError("Application avatar not found")
         return str(row["media_type"]), bytes(row["image_bytes"])
+
+    def refresh_application_mappings(self, owner_user_id: UUID | None = None) -> int:
+        """Project current owner state to the APIM admission ledger immediately."""
+        if self._application_mapping_projector is None:
+            return 0
+        return self._application_mapping_projector(owner_user_id)
 
     def application_usage_activity(
         self,
@@ -215,8 +358,13 @@ class ApplicationAccessService:
         to: datetime,
         interval: str,
         timezone: str,
+        owner_user_id: UUID | None = None,
     ) -> TrendResponse:
-        if self._repository.get_gateway_application(application_id) is None:
+        application = self._repository.get_gateway_application(application_id)
+        if application is None or (
+            owner_user_id is not None
+            and application.get("owner_user_id") != owner_user_id
+        ):
             raise ControlPlaneNotFoundError("Application not found")
         return TrendResponse.model_validate(
             {
@@ -240,8 +388,16 @@ class ApplicationAccessService:
         application_id: UUID,
         application_subscription_id: UUID,
         key_kind: Literal["primary", "secondary"],
+        *,
+        actor_user_id: UUID | None = None,
+        can_manage_all: bool = True,
     ) -> GatewayApplicationSubscriptionKeySecret:
-        subscription = self._key_subscription(application_id, application_subscription_id)
+        subscription = self._key_subscription(
+            application_id,
+            application_subscription_id,
+            actor_user_id=actor_user_id,
+            can_manage_all=can_manage_all,
+        )
         client = self._require_key_client()
         try:
             primary_key, secondary_key = client.application_subscription_keys(
@@ -254,14 +410,40 @@ class ApplicationAccessService:
             value=primary_key if key_kind == "primary" else secondary_key,
         )
 
+    def apim_subscription_id_for_key_management(
+        self,
+        application_id: UUID,
+        application_subscription_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        can_manage_all: bool = True,
+        allow_cancelled: bool = False,
+    ) -> str:
+        subscription = self._key_subscription(
+            application_id,
+            application_subscription_id,
+            actor_user_id=actor_user_id,
+            can_manage_all=can_manage_all,
+            allow_cancelled=allow_cancelled,
+        )
+        return str(subscription["apim_subscription_id"])
+
     def rotate_application_subscription_key(
         self,
         application_id: UUID,
         application_subscription_id: UUID,
         key_kind: Literal["primary", "secondary"],
         request: GatewayApplicationSubscriptionKeyRotation,
+        *,
+        actor_user_id: UUID | None = None,
+        can_manage_all: bool = True,
     ) -> None:
-        subscription = self._key_subscription(application_id, application_subscription_id)
+        subscription = self._key_subscription(
+            application_id,
+            application_subscription_id,
+            actor_user_id=actor_user_id,
+            can_manage_all=can_manage_all,
+        )
         apim_subscription_id = str(subscription["apim_subscription_id"])
         if request.confirmation != apim_subscription_id:
             raise ValueError("confirmation must match the APIM subscription ID")
@@ -271,8 +453,47 @@ class ApplicationAccessService:
         except (httpx.HTTPError, PolicyCompilationError) as error:
             self._raise_key_management_error(error)
 
+    def cancel_application_subscription(
+        self,
+        application_id: UUID,
+        application_subscription_id: UUID,
+        request: GatewayApplicationSubscriptionCancel,
+        actor: str,
+        *,
+        actor_user_id: UUID | None = None,
+        can_manage_all: bool = True,
+    ) -> None:
+        subscription = self._key_subscription(
+            application_id,
+            application_subscription_id,
+            actor_user_id=actor_user_id,
+            can_manage_all=can_manage_all,
+            allow_cancelled=True,
+        )
+        apim_subscription_id = str(subscription["apim_subscription_id"])
+        if request.confirmation != apim_subscription_id:
+            raise ValueError("confirmation must match the APIM subscription ID")
+        if subscription.get("state") == "cancelled":
+            return
+        client = self._require_key_client()
+        try:
+            client.cancel_application_subscription(apim_subscription_id)
+        except (httpx.HTTPError, PolicyCompilationError) as error:
+            self._raise_key_management_error(error)
+        updated = self._repository.update_gateway_application_subscription_state(
+            application_subscription_id, "cancelled", actor
+        )
+        if updated is None:
+            raise ControlPlaneNotFoundError("Application subscription not found")
+
     def _key_subscription(
-        self, application_id: UUID, application_subscription_id: UUID
+        self,
+        application_id: UUID,
+        application_subscription_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        can_manage_all: bool = True,
+        allow_cancelled: bool = False,
     ) -> Mapping[str, object]:
         application = self._repository.get_gateway_application(application_id)
         if application is None:
@@ -281,6 +502,11 @@ class ApplicationAccessService:
             raise ControlPlaneConflictError(
                 "System-managed subscription keys cannot be managed here"
             )
+        if not can_manage_all and (
+            actor_user_id is None
+            or str(application.get("owner_user_id") or "") != str(actor_user_id)
+        ):
+            raise ControlPlaneNotFoundError("Application subscription not found")
         subscription = next(
             (
                 item
@@ -293,7 +519,7 @@ class ApplicationAccessService:
         )
         if subscription is None:
             raise ControlPlaneNotFoundError("Application subscription not found")
-        if subscription.get("state") == "cancelled":
+        if subscription.get("state") == "cancelled" and not allow_cancelled:
             raise ControlPlaneConflictError("APIM subscription is cancelled")
         return subscription
 

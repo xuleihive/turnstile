@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import json
 import re
-import secrets
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,6 +15,7 @@ from pydantic import HttpUrl
 from ..domain.application_access import (
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionProvisionSpec,
+    GatewayUserSubscriptionCreate,
     application_id_for,
     application_subscription_id_for,
 )
@@ -476,8 +476,6 @@ class GatewayControlPlaneService:
         self._require_release_worker()
         if not self._application_provisioning_enabled:
             raise ControlPlaneUnavailableError(_APPLICATION_PROVISIONING_UNAVAILABLE)
-        if self._cipher is None:
-            raise ControlPlaneUnavailableError("Credential encryption is unavailable")
         if request.subscription_id in {
             "master", "turnstile-dashboard", "turnstile-publisher-probe"
         }:
@@ -520,24 +518,12 @@ class GatewayControlPlaneService:
             application_type=request.application_type,
             scope_id=self._application_product_id,
         )
-        primary_key = secrets.token_urlsafe(32)
-        ciphertext = self._cipher.encrypt(
-            json.dumps(
-                {
-                    "primary_key": primary_key,
-                    "secondary_key": secrets.token_urlsafe(32),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
         try:
             row = self._repository.create_gateway_release_operation(
                 gateway_profile_id,
                 GatewayReleaseOperationKind.APPLICATION_PROVISION.value,
                 actor,
                 semantic_preview=spec.model_dump(mode="json"),
-                credential_ciphertext=ciphertext,
             )
         except ValueError as error:
             raise ControlPlaneConflictError(str(error)) from error
@@ -547,7 +533,84 @@ class GatewayControlPlaneService:
             status_url=(
                 f"/api/v1/model-management/release-operations/{operation.id}"
             ),
-            primary_key=primary_key,
+        )
+
+    def request_user_application_subscription_provision(
+        self,
+        request: GatewayUserSubscriptionCreate,
+        user: Mapping[str, Any],
+        actor: str,
+    ) -> GatewayApplicationSubscriptionProvisionAccepted:
+        self._require_release_worker()
+        if not self._application_provisioning_enabled:
+            raise ControlPlaneUnavailableError(_APPLICATION_PROVISIONING_UNAVAILABLE)
+        try:
+            owner_user_id = UUID(str(user["id"]))
+            tenant_id = UUID(str(user["tenant_id"]))
+        except (KeyError, ValueError) as error:
+            raise ControlPlaneConflictError("User identity is incomplete") from error
+        if not bool(user.get("enabled")):
+            raise ControlPlaneConflictError("Disabled users cannot own API keys")
+        gateways = [
+            item
+            for item in self._repository.registry()["gateways"]
+            if item.get("implementation") == "apim" and item.get("enabled")
+        ]
+        defaults = [item for item in gateways if item.get("is_default")]
+        if len(defaults) == 1:
+            gateway = defaults[0]
+        elif len(gateways) == 1:
+            gateway = gateways[0]
+        elif not gateways:
+            raise ControlPlaneNotFoundError("Enabled APIM gateway not found")
+        else:
+            raise ControlPlaneConflictError(
+                "A default APIM gateway is required for user key provisioning"
+            )
+        gateway_profile_id = UUID(str(gateway["id"]))
+        slug = f"user-{owner_user_id.hex}"
+        apim_subscription_id = f"ts-key-{uuid4().hex}"
+        application_name = str(
+            user.get("display_name") or user["email"]
+        ).strip()[:150] + " API"
+        spec = GatewayApplicationSubscriptionProvisionSpec(
+            provisioning_version=2,
+            gateway_profile_id=gateway_profile_id,
+            initial_monthly_token_limit=self._application_default_token_limit,
+            initial_tokens_per_minute=self._application_default_tokens_per_minute,
+            application_id=application_id_for(gateway_profile_id, slug),
+            application_subscription_id=application_subscription_id_for(
+                gateway_profile_id, apim_subscription_id
+            ),
+            apim_subscription_id=apim_subscription_id,
+            slug=slug,
+            display_name=request.display_name,
+            application_display_name=application_name,
+            description=request.description,
+            owner_user_id=owner_user_id,
+            owner_email=str(user["email"]),
+            tenant_id=tenant_id,
+            organization_unit_id=(
+                UUID(str(user["organization_unit_id"]))
+                if user.get("organization_unit_id")
+                else None
+            ),
+            application_type=request.application_type,
+            scope_id=self._application_product_id,
+        )
+        try:
+            row = self._repository.create_gateway_release_operation(
+                gateway_profile_id,
+                GatewayReleaseOperationKind.APPLICATION_PROVISION.value,
+                actor,
+                semantic_preview=spec.model_dump(mode="json"),
+            )
+        except ValueError as error:
+            raise ControlPlaneConflictError(str(error)) from error
+        operation = self._operation_view(row)
+        return GatewayApplicationSubscriptionProvisionAccepted(
+            operation=operation,
+            status_url=f"/api/v1/model-management/release-operations/{operation.id}",
         )
 
     def release_operation(self, operation_id: UUID) -> GatewayReleaseOperation:

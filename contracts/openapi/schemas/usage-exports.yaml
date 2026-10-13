@@ -1,0 +1,102 @@
+schemas:
+  UsageExportStatus:
+    type: string
+    enum:
+    - queued
+    - running
+    - ready
+    - failed
+    - expired
+  UsageExportJobFilterSet:
+    type: object
+    additionalProperties: false
+    properties:
+      organization_id:
+        type: [string, 'null']
+      department_id:
+        type: [string, 'null']
+      project_id:
+        type: [string, 'null']
+      agent_id:
+        type: [string, 'null']
+      model_id:
+        type: [string, 'null']
+      user_id:
+        type: [string, array, 'null']
+        items:
+          type: string
+      runtime:
+        type: [array, 'null']
+        items:
+          type: string
+      status_code:
+        type: [integer, 'null']
+        minimum: 100
+        maximum: 599
+  UsageExportJobCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - from
+    - to
+    properties:
+      from:
+        type: string
+        format: date-time
+      to:
+        type: string
+        format: date-time
+      filters:
+        $ref: ../../openapi.yaml#/components/schemas/UsageExportJobFilterSet
+  UsageExportJobResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - status
+    - from
+    - to
+    - filters
+    - row_count
+    - error_code
+    - created_at
+    - expires_at
+    - status_url
+    properties:
+      id:
+        type: string
+        format: uuid
+      status:
+        $ref: ../../openapi.yaml#/components/schemas/UsageExportStatus
+      from:
+        type: string
+        format: date-time
+      to:
+        type: string
+        format: date-time
+      filters:
+        $ref: ../../openapi.yaml#/components/schemas/UsageExportJobFilterSet
+      row_count:
+        type: [integer, 'null']
+        minimum: 0
+      error_code:
+        type: [string, 'null']
+      created_at:
+        type: string
+        format: date-time
+      expires_at:
+        type: string
+        format: date-time
+      status_url:
+        type: string
+        format: uri-reference
+  UsageExportJobList:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageExportJobResponse

@@ -6,8 +6,10 @@ export type AuthUser = {
   id: string
   name: string | null
   email: string
-  role: "owner" | "member"
+  role: string
   method: SignInMethod
+  /** Effective permissions from /auth/me, used only to shape navigation. */
+  permissions?: string[]
   /** Absent only while a newly built frontend is talking to a pre-expiry-field API. */
   session_expires_at?: string
 }
@@ -29,7 +31,10 @@ async function postIdentity(path: string, body: unknown): Promise<AuthUser> {
     const detail = (await response.json().catch(() => null)) as { detail?: string } | null
     throw new Error(detail?.detail || "登录失败，请重试。")
   }
-  return (await response.json()) as AuthUser
+  const signedIn = (await response.json()) as AuthUser
+  // Fetch the effective permissions before shaping management navigation. Every backend
+  // route still checks authorization independently.
+  return (await readProfile()) ?? signedIn
 }
 
 export const authApi = {

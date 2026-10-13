@@ -256,19 +256,19 @@ class FakeApimClient:
     def ensure_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None:
-        del spec, primary_key, secondary_key
+        del spec, legacy_pending_name
         raise AssertionError("unexpected Application subscription provisioning")
 
     def activate_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None:
-        del spec, primary_key, secondary_key
+        del spec, legacy_pending_name
         raise AssertionError("unexpected Application subscription activation")
 
     def inspect_revision_dependencies(

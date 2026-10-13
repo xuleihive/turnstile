@@ -935,7 +935,7 @@ class GatewayReleaseOperationAccepted(StrictModel):
 
 
 class GatewayApplicationSubscriptionProvisionAccepted(GatewayReleaseOperationAccepted):
-    primary_key: str = Field(min_length=1, max_length=256, repr=False)
+    pass
 
 
 class GatewayReleaseDetail(GatewayReleaseSummary):

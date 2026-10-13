@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+    trust_azure_arr_client_ip: bool = False
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
     model_coefficients_json: str = '{"default":1.0}'
     credential_encryption_key: SecretStr | None = None
     credential_key_file: Path = Path(".turnstile/credential.key")
@@ -35,6 +38,11 @@ class Settings(BaseSettings):
     ledger_table_name: str = "TurnstileLedger"
     ledger_reservation_recovery_lag_minutes: int = Field(default=10, ge=6, le=120)
     ledger_reservation_finalization_lag_hours: int = Field(default=24, ge=1, le=168)
+    usage_export_max_range_days: int = Field(default=366, ge=1, le=3660)
+    usage_export_max_rows: int = Field(default=1_000_000, ge=1, le=10_000_000)
+    usage_export_max_active_per_user: int = Field(default=2, ge=1, le=20)
+    usage_export_retention_days: int = Field(default=7, ge=1, le=90)
+    usage_export_blob_service_url: str | None = None
     management_api_key: SecretStr | None = None
     production: bool = False
     image_generation_enabled: bool = False
@@ -88,15 +96,9 @@ class Settings(BaseSettings):
     gateway_release_protected_labels: list[str] = Field(
         default_factory=lambda: ["milestone", "rollback"]
     )
-    gateway_application_default_monthly_token_limit: int = Field(
-        default=100_000, ge=1
-    )
-    gateway_application_default_tokens_per_minute: int = Field(
-        default=100_000, ge=1
-    )
-    apim_subscription_agent_map: dict[str, dict[str, str]] = Field(
-        default_factory=dict
-    )
+    gateway_application_default_monthly_token_limit: int = Field(default=100_000, ge=1)
+    gateway_application_default_tokens_per_minute: int = Field(default=100_000, ge=1)
+    apim_subscription_agent_map: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     # --- Sign-in -------------------------------------------------------------------
     # The client this deployment uses for Microsoft sign-in. A public identifier, not a
@@ -113,9 +115,7 @@ class Settings(BaseSettings):
     # Which mail domains may sign in with Microsoft. Empty means "any domain in the
     # tenant", which is a much weaker rule than it looks -- the tenant can invite guests --
     # so it is deliberately not the default.
-    entra_allowed_email_domains: list[str] = Field(
-        default_factory=list
-    )
+    entra_allowed_email_domains: list[str] = Field(default_factory=list)
     # Application sessions are role-bound because an Owner can change budgets, model
     # access and gateway credentials while a Member is primarily a reader/caller.
     member_session_ttl_hours: int = Field(default=24, ge=1, le=168)
@@ -165,12 +165,16 @@ class Settings(BaseSettings):
             raise ValueError("delegated invocation tester IDs must be unique")
         return normalized
 
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def normalize_trusted_proxy_cidrs(cls, values: list[str]) -> list[str]:
+        try:
+            return [str(ip_network(value.strip(), strict=False)) for value in values]
+        except ValueError as error:
+            raise ValueError("TRUSTED_PROXY_CIDRS must contain valid IP networks") from error
+
     def session_ttl_hours_for(self, role: str) -> int:
-        return (
-            self.owner_session_ttl_hours
-            if role == "owner"
-            else self.member_session_ttl_hours
-        )
+        return self.owner_session_ttl_hours if role == "owner" else self.member_session_ttl_hours
 
     @property
     def model_coefficients(self) -> dict[str, float]:

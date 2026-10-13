@@ -44,6 +44,10 @@ def test_main_creates_the_platform_resource_group_and_apim() -> None:
     assert "publisherEmail: publisherEmail" in APIM_SERVICE
 
 
+def test_app_service_enables_the_platform_overwritten_azure_client_ip_header() -> None:
+    assert "{ name: 'TRUST_AZURE_ARR_CLIENT_IP', value: 'true' }" in DATA_PLANE
+
+
 def test_new_apim_defaults_to_standard_v2() -> None:
     assert "param apimSkuName string = 'StandardV2'" in MAIN
     assert PARAMETERS["apimSkuName"]["value"] == "StandardV2"
@@ -290,6 +294,38 @@ def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
     assert "resource functionStorageTableContributor" in DATA_PLANE
 
 
+def test_usage_export_container_is_private_and_roles_are_scoped_to_it() -> None:
+    export_storage = DATA_PLANE.split("resource usageExportStorage ", 1)[1].split(
+        "resource functionDeploymentBlobService", 1
+    )[0]
+    container = DATA_PLANE.split("resource usageExportContainer ", 1)[1].split(
+        "resource virtualNetwork", 1
+    )[0]
+    function_role = DATA_PLANE.split("resource telemetryUsageExportBlobContributor ", 1)[
+        1
+    ].split("resource apiUsageExportBlobReader", 1)[0]
+    api_role = DATA_PLANE.split("resource apiUsageExportBlobReader ", 1)[1].split(
+        "resource apiKeyVaultRole", 1
+    )[0]
+
+    assert "name: 'turnstile-usage-exports'" in DATA_PLANE
+    assert "allowSharedKeyAccess: false" in export_storage
+    assert "allowBlobPublicAccess: false" in export_storage
+    assert "publicNetworkAccess: 'Disabled'" in export_storage
+    assert "publicAccess: 'None'" in container
+    assert "resource usageExportBlobPrivateEndpoint" in DATA_PLANE
+    assert "privateLinkServiceId: usageExportStorage.id" in DATA_PLANE
+    assert "scope: usageExportContainer" in function_role
+    assert "scope: usageExportContainer" in api_role
+    assert "ba92f5b4-2d11-453d-a403-e96b0029c9fe" in function_role
+    assert "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1" in api_role
+    assert "scope: storage" not in function_role + api_role
+    assert DATA_PLANE.count(
+        "{ name: 'USAGE_EXPORT_BLOB_SERVICE_URL', value: "
+        "usageExportStorage.properties.primaryEndpoints.blob }"
+    ) == 2
+
+
 def test_api_and_apim_share_the_same_gateway_path() -> None:
     assert "param gatewayApiRelativePath string = 'turnstile/llm'" in MAIN
     assert (
@@ -309,11 +345,10 @@ def test_api_and_apim_share_the_same_gateway_path() -> None:
 
 
 def test_api_bootstraps_initial_owner_between_migration_and_startup() -> None:
-    assert (
-        "appCommandLine: 'python -m backend.migrate && python -m backend.bootstrap "
-        "&& python -m uvicorn backend.api:app"
-        in DATA_PLANE
-    )
+    command = "appCommandLine: 'python -m backend.migrate && python -m backend.bootstrap "
+    assert command in DATA_PLANE
+    assert "&& python -m uvicorn backend.api:app" in DATA_PLANE
+    assert "{ name: 'MIGRATIONS_DIR', value: 'migrations' }" in DATA_PLANE
     assert "{ name: 'BOOTSTRAP_OWNER_EMAIL', value: bootstrapOwnerEmail }" in DATA_PLANE
     assert (
         "{ name: 'BOOTSTRAP_OWNER_PASSWORD_HASH', value: bootstrapOwnerPasswordHash }"

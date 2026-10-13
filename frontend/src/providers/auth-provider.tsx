@@ -18,6 +18,8 @@ type AuthStatus = "checking" | "authenticated" | "anonymous"
 type AuthContextValue = {
   status: AuthStatus
   user: AuthUser | null
+  /** Navigation hint from the backend permission set; API routes remain authoritative. */
+  can: (permission: string) => boolean
   /** The person's Entra profile photo as a data URL, or null. Separate from `AuthUser`
    *  because it does not come from this app's server -- it is fetched from Microsoft
    *  Graph in the browser, after sign-in, and only for the Microsoft path. */
@@ -283,6 +285,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus("authenticated")
   }, [queryClient])
 
+  const can = useCallback((permission: string) => {
+    if (!user) return false
+    return user.permissions?.includes(permission) ?? user.role === "owner"
+  }, [user])
+
   const signInWithPassword = useCallback(
     async (email: string, password: string) => {
       adopt(await authApi.signInWithPassword(email, password))
@@ -324,8 +331,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [expireLocalSession])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut }),
-    [status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut],
+    () => ({ status, user, can, photo, entraError, signInWithPassword, signInWithEntra, signOut }),
+    [status, user, can, photo, entraError, signInWithPassword, signInWithEntra, signOut],
   )
 
   return <AuthContext value={value}>{children}</AuthContext>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
-import { AlertTriangle, CheckCircle2, Copy, KeyRound, Plus, RefreshCw, X } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Plus, RefreshCw, X } from "lucide-react"
 
 import { ApiError, dataSource } from "../../data-sources/apim/api"
 import type { GatewayApplicationList, GatewayApplicationSubscriptionCreate, GatewayProfile, GatewayReleaseOperation, GatewayReleaseOperationAccepted } from "../../data-sources/apim/types"
@@ -34,13 +34,9 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
   const [subscriptionIdEdited, setSubscriptionIdEdited] = useState(false)
   const [description, setDescription] = useState("")
   const [accepted, setAccepted] = useState<GatewayReleaseOperationAccepted | null>(null)
-  const primaryKey = useRef<string | null>(null)
   const submittingRef = useRef(false)
   const mounted = useRef(true)
   const [submitting, setSubmitting] = useState(false)
-  const [copying, setCopying] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [closeWarning, setCloseWarning] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const currentOperation = accepted && operation?.id === accepted.operation.id ? operation : accepted?.operation
   const terminal = applicationOperationTerminal(currentOperation)
@@ -49,28 +45,24 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
   const blocker = inventoryError ? "无法读取创建能力，请重试。" : applicationProvisionBlocker(inventory)
   const defaults = inventory?.provisioning_defaults
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; primaryKey.current = null } }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
     if (!accepted && !availableGateways.some((item) => item.id === gatewayId)) {
       setGatewayId(availableGateways.find((item) => item.is_default)?.id ?? availableGateways[0]?.id ?? "")
     }
   }, [accepted, availableGateways, gatewayId])
   useEffect(() => {
-    const protectUnsavedKey = (event: BeforeUnloadEvent) => {
-      if (!submittingRef.current && (!primaryKey.current || copied)) return
+    const protectPendingCreation = (event: BeforeUnloadEvent) => {
+      if (!submittingRef.current) return
       event.preventDefault()
       event.returnValue = ""
     }
-    window.addEventListener("beforeunload", protectUnsavedKey)
-    return () => window.removeEventListener("beforeunload", protectUnsavedKey)
-  }, [copied])
-  useEffect(() => { if (failed) primaryKey.current = null }, [failed])
+    window.addEventListener("beforeunload", protectPendingCreation)
+    return () => window.removeEventListener("beforeunload", protectPendingCreation)
+  }, [])
 
   const mayClose = () => {
-    if (submittingRef.current || copying) return false
-    if (primaryKey.current && !copied && !closeWarning) { setCloseWarning(true); return false }
-    primaryKey.current = null
-    return true
+    return !submittingRef.current
   }
   const close = () => { if (mayClose()) onClose() }
   const submit = async (event: FormEvent) => {
@@ -89,7 +81,6 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
     try {
       const response = await dataSource.provisionGatewayApplicationSubscription(gateway.id, value)
       if (!mounted.current) return
-      primaryKey.current = response.primary_key
       const safeAccepted = { operation: response.operation, status_url: response.status_url }
       setAccepted(safeAccepted)
       onAccepted(safeAccepted)
@@ -98,24 +89,12 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
       setFormError(error instanceof ApiError && [404, 405, 503].includes(error.status)
         ? "创建服务当前不可用。请刷新能力状态并检查后台配置。"
         : error instanceof ApiError ? error.message
-        : "请求结果尚未确认。请先刷新库存，避免重复创建；已创建应用的密钥可在详情中按需复制。")
+        : "请求结果尚未确认。请先刷新库存和操作状态，再决定是否重试，避免创建重复订阅。")
     } finally {
       submittingRef.current = false
       if (mounted.current) setSubmitting(false)
     }
   }
-  const copyKey = async () => {
-    if (!primaryKey.current || copying || failed) return
-    setCopying(true)
-    setFormError(null)
-    try {
-      await navigator.clipboard.writeText(primaryKey.current)
-      if (mounted.current) { setCopied(true); setCloseWarning(false) }
-    } catch {
-      if (mounted.current) setFormError("密钥复制失败。请允许剪贴板访问后重试，不要关闭此窗口。")
-    } finally { if (mounted.current) setCopying(false) }
-  }
-
   return <Dialog open onOpenChange={(open) => { if (!open) close() }}>
     <DialogContent className="registry-editor-dialog application-create-dialog" finalFocus={false}>
       <form className="registry-editor application-create-form" onSubmit={(event) => void submit(event)}>
@@ -123,7 +102,7 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
           <DialogTitle>{accepted ? "应用创建进度" : applicationType === "agent" ? "添加智能体" : "添加应用"}</DialogTitle>
           <DialogDescription>{accepted ? displayName : "创建独立的 APIM 订阅、调用密钥和应用预算，不是新增一个空白记录。"}</DialogDescription>
         </DialogHeader>
-        <button type="button" className="registry-editor-close" onClick={close} disabled={submitting || copying} aria-label="关闭"><X size={16} /></button>
+        <button type="button" className="registry-editor-close" onClick={close} disabled={submitting} aria-label="关闭"><X size={16} /></button>
         <div className="registry-editor-body application-create-body">
           {!accepted ? <>
             {blocker && <div className="application-create-unavailable" role="status"><b>当前环境尚未启用创建</b><span>{blocker}</span><p>可以填写配置，但后台就绪前不会提交创建请求。</p><Button type="button" variant="outline" size="sm" disabled={refreshing} onClick={onRefresh}><RefreshCw size={13} className={refreshing ? "spin" : undefined} />重新检查</Button></div>}
@@ -147,23 +126,17 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
             <div className={`application-create-operation ${failed ? "failed" : currentOperation?.status}`} role="status"><span>{failed || currentOperation?.worker_available === false ? <AlertTriangle size={15} /> : terminal ? <CheckCircle2 size={15} /> : <RefreshCw className="spin" size={15} />}</span><b>{applicationProvisionStage(currentOperation)}</b></div>
             <dl className="application-create-defaults"><div><dt>订阅 ID</dt><dd><code data-no-localize>{accepted.operation.semantic_preview.apim_subscription_id as string}</code></dd></div><div><dt>操作 ID</dt><dd><code data-no-localize>{accepted.operation.id}</code></dd></div></dl>
             {currentOperation?.error_message && <div className="registry-error" role="alert">{currentOperation.error_message}</div>}
-            {failed && currentOperation?.checkpoint.apim_subscription_created === true && <p className="registry-error">部分资源已创建，但创建流程未完成。请检查现有订阅和操作记录；不会自动删除资源或重复生成密钥。</p>}
+            {failed && currentOperation?.checkpoint.apim_subscription_created === true && <p className="registry-error">部分资源已创建，但创建流程未完成。请检查现有订阅和操作记录，再决定是否重试。</p>}
             {currentOperation?.worker_available === false && !terminal && <div className="registry-error">{currentOperation.worker_unavailable_reason ?? "Release Worker 未部署。"}</div>}
             {operationError && <div className="registry-error" role="alert">{operationError}</div>}
-            {!failed && primaryKey.current && <>
-              <div className="application-key-warning"><KeyRound size={16} /><div><b>请妥善保存调用密钥</b><span>密钥只保留在此窗口，复制后存入安全位置。创建成功前请勿使用。</span></div></div>
-              <div className="application-key-value"><code aria-label="订阅密钥已隐藏">{"\u2022".repeat(32)}</code><Button type="button" variant="outline" size="icon-sm" disabled={copying} onClick={() => void copyKey()} aria-label="复制订阅密钥" title="复制订阅密钥"><Copy size={14} /></Button></div>
-            </>}
-            {copied && !failed && <p className="application-key-copied" role="status">已复制</p>}
-            {closeWarning && <p className="registry-error" role="alert">尚未复制密钥。再次关闭将丢弃此窗口中的密钥，创建任务不会取消。</p>}
             <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}><RefreshCw size={13} />刷新进度</Button>
           </>}
           {formError && <div className="registry-error" role="alert">{formError}</div>}
         </div>
         <DialogFooter className="registry-editor-footer">
-          <Button type="button" variant="outline" className="application-create-dismiss" onClick={close} disabled={submitting || copying}>{accepted ? "关闭" : "取消"}</Button>
+          <Button type="button" variant="outline" className="application-create-dismiss" onClick={close} disabled={submitting}>{accepted ? "关闭" : "取消"}</Button>
           {accepted ? applicationId && <Button type="button" onClick={() => { if (mayClose()) onOpenApplication(applicationId) }}>打开应用详情</Button>
-            : <Button type="submit" disabled={submitting || Boolean(blocker) || !gateway || !displayName.trim() || !subscriptionId.trim()}>{submitting ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />}{submitting ? "正在创建" : "创建并生成密钥"}</Button>}
+            : <Button type="submit" disabled={submitting || Boolean(blocker) || !gateway || !displayName.trim() || !subscriptionId.trim()}>{submitting ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />}{submitting ? "正在创建" : "创建应用"}</Button>}
         </DialogFooter>
       </form>
     </DialogContent>

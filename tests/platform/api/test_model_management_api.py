@@ -43,6 +43,7 @@ def publication_api() -> Iterator[InMemoryRepository]:
         email="owner@contoso.com",
         name="Owner",
         role="owner",
+        permissions=frozenset({"platform.manage"}),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
@@ -228,6 +229,7 @@ def test_gateway_release_reads_are_available_to_members(
         email="member@contoso.com",
         name="Member",
         role="member",
+        permissions=frozenset(),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
@@ -280,6 +282,7 @@ def test_gateway_release_mutations_are_owner_only_and_audited(
         email="member@contoso.com",
         name="Member",
         role="member",
+        permissions=frozenset(),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
@@ -309,6 +312,7 @@ def test_gateway_release_mutations_are_owner_only_and_audited(
         email="owner@contoso.com",
         name="Owner",
         role="owner",
+        permissions=frozenset({"platform.manage"}),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
@@ -1277,6 +1281,7 @@ def test_model_backend_pool_configuration_and_removal_are_publications(
         email="member@contoso.com",
         name="Member",
         role="member",
+        permissions=frozenset(),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
@@ -1914,6 +1919,7 @@ def test_non_owner_cannot_read_or_write_publications(
         email="member@contoso.com",
         name="Member",
         role="member",
+        permissions=frozenset(),
         method="password",
         session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
     )

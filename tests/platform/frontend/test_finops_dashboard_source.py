@@ -134,6 +134,17 @@ def test_member_governance_views_hide_owner_only_controls() -> None:
     assert "{canManage && editing !== undefined" in anomaly_source
 
 
+def test_member_finops_uses_server_owned_scope_without_directory_controls() -> None:
+    source = read_apim_dashboard_source()
+
+    assert 'const canReadDirectory = can("users.read")' in source
+    assert 'const canReadAllUsage = can("usage.read.all")' in source
+    assert "const effectiveScope = canReadAllUsage ? scope : EMPTY_FINOPS_SCOPE" in source
+    assert "entities && canReadDirectory && <>" in source
+    assert 'tab === "governance" && !canReadDirectory' in source
+    assert 'tab === "invoke" && !canReadDirectory' in source
+
+
 def test_budget_block_and_people_status_headers_are_centered() -> None:
     styles = (FRONTEND_SOURCE / "styles/finops.css").read_text(encoding="utf-8")
 
@@ -161,7 +172,7 @@ def test_data_source_switcher_replaces_the_legacy_access_channel_filter() -> Non
     assert '<ApimLogo size={17} />' in app_source
     assert '<CopilotLogo size={17} />' in app_source
     assert "function normalizePageForSource" in app_source
-    assert "normalizePageForSource(next, page)" in app_source
+    assert "normalizePageForSource(next, sourcePage)" in app_source
     assert "export function normalizeApimPage" in apim_source
     assert 'return apimPageIds.has(page) ? page : "finops-overview"' in apim_source
     assert "function AccessPointFilter" not in dashboard_source

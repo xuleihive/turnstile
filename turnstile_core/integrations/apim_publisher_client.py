@@ -64,7 +64,6 @@ class AzureApimPublisherClient:
     _AFFINITY_API_VERSION = "2025-09-01-preview"
     _MANAGEMENT_REQUEST_TIMEOUT_SECONDS = 30.0
     _CANDIDATE_PROBE_TIMEOUT_SECONDS = 120.0
-    _APPLICATION_AUTH_PROBE_TIMEOUT_SECONDS = 10.0
 
     def __init__(
         self,
@@ -2032,8 +2031,8 @@ class AzureApimPublisherClient:
     def ensure_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None:
         staged = spec.provisioning_version == 2
         if staged:
@@ -2058,7 +2057,7 @@ class AzureApimPublisherClient:
             f"/subscriptions/{quote(spec.apim_subscription_id, safe='')}"
         )
         scope = f"{self._resource_id_base}/products/{spec.scope_id}"
-        expected_name = self._application_pending_name(primary_key, secondary_key) if staged else spec.display_name
+        expected_name = spec.display_name
         expected_state = "suspended" if staged else "active"
         observed = self._request("GET", subscription_path, allow_not_found=True)
         if observed.status_code != 404:
@@ -2066,10 +2065,14 @@ class AzureApimPublisherClient:
             properties = (
                 raw_properties if isinstance(raw_properties, Mapping) else {}
             )
+            observed_name = str(properties.get("displayName") or "")
+            name_matches = observed_name == expected_name or (
+                legacy_pending_name is not None
+                and observed_name == legacy_pending_name
+            )
             if (
-                str(properties.get("displayName") or "") == expected_name
-                and str(properties.get("scope") or "").casefold()
-                == scope.casefold()
+                name_matches
+                and str(properties.get("scope") or "").casefold() == scope.casefold()
                 and str(properties.get("state") or "") == expected_state
             ):
                 return
@@ -2085,8 +2088,6 @@ class AzureApimPublisherClient:
                     "scope": scope,
                     "state": expected_state,
                     "allowTracing": False,
-                    "primaryKey": primary_key,
-                    "secondaryKey": secondary_key,
                 }
             },
         )
@@ -2135,8 +2136,8 @@ class AzureApimPublisherClient:
     def activate_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
-        primary_key: str,
-        secondary_key: str,
+        *,
+        legacy_pending_name: str | None = None,
     ) -> None:
         self._validate_application_admission_target(spec)
         path = f"/subscriptions/{quote(spec.apim_subscription_id, safe='')}"
@@ -2145,9 +2146,13 @@ class AzureApimPublisherClient:
         properties = observed.json().get("properties") or {}
         if str(properties.get("scope", "")).casefold() != scope.casefold():
             raise PolicyCompilationError("Application subscription scope changed before activation")
-        if not (properties.get("displayName") == spec.display_name and properties.get("state") == "active"):
+        is_active = (
+            properties.get("displayName") == spec.display_name
+            and properties.get("state") == "active"
+        )
+        if not is_active:
             if (
-                properties.get("displayName") != self._application_pending_name(primary_key, secondary_key)
+                properties.get("displayName") not in {spec.display_name, legacy_pending_name}
                 or properties.get("state") != "suspended"
             ):
                 raise PolicyCompilationError("Application subscription is not owned by this creation operation")
@@ -2161,8 +2166,6 @@ class AzureApimPublisherClient:
                     "scope": scope,
                     "state": "active",
                     "allowTracing": False,
-                    "primaryKey": primary_key,
-                    "secondaryKey": secondary_key,
                 }},
             )
             readback = self._request("GET", path).json().get("properties") or {}
@@ -2171,72 +2174,6 @@ class AzureApimPublisherClient:
                 or str(readback.get("scope", "")).casefold() != scope.casefold()
             ):
                 raise RetryablePublicationError("APIM subscription activation is not yet visible")
-        self._verify_application_subscription_authentication(primary_key)
-
-    def _application_models_url(self) -> str:
-        base = str(self._settings.apim_gateway_url).rstrip("/")
-        parsed = urlparse(base)
-        api_path = f"/apis/{quote(self._settings.apim_api_id, safe='')}"
-        api = self._request("GET", api_path).json().get("properties") or {}
-        if (
-            parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
-            or parsed.password is not None or parsed.query or parsed.fragment
-            or parsed.path.strip("/") != str(api.get("path", "")).strip("/")
-        ):
-            raise PolicyCompilationError("Application authentication probe gateway API path does not match")
-        operation_path = f"{api_path}/operations/{quote(self._settings.apim_models_operation_id, safe='')}"
-        operation = self._request("GET", operation_path).json().get("properties") or {}
-        if operation.get("method") != "GET" or operation.get("urlTemplate") != "/v1/models":
-            raise PolicyCompilationError("Application authentication probe requires GET /v1/models")
-        policy = self._policy_value(f"{operation_path}/policies/policy?format=rawxml")
-        try:
-            inbound = ElementTree.fromstring(policy or "").find("inbound")
-        except ElementTree.ParseError as error:
-            raise PolicyCompilationError("Application model catalog policy is not valid XML") from error
-        if inbound is None or not len(inbound) or inbound[0].tag != "base":
-            raise PolicyCompilationError("Application model catalog must inherit authentication before returning")
-        return f"{base}/v1/models"
-
-    @staticmethod
-    def _application_auth_diagnostic(category: str, response: httpx.Response | None = None) -> str:
-        correlation_id = None
-        if response is not None:
-            for name in ("apim-request-id", "x-correlation-id", "x-request-id"):
-                value = response.headers.get(name, "")
-                if re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
-                    correlation_id = value
-                    break
-        return "Application data-plane authentication: " + json.dumps({
-            "category": category,
-            "status_code": response.status_code if response is not None else None,
-            "correlation_id": correlation_id,
-        }, sort_keys=True)
-
-    def _verify_application_subscription_authentication(self, primary_key: str) -> None:
-        address = self._application_models_url()
-        for authenticated in (True, False):
-            headers = {"Accept": "application/json", "Cache-Control": "no-cache"}
-            if authenticated:
-                headers["Ocp-Apim-Subscription-Key"] = primary_key
-            request = httpx.Request(
-                "GET", address, headers=headers,
-                extensions={"timeout": httpx.Timeout(self._APPLICATION_AUTH_PROBE_TIMEOUT_SECONDS).as_dict()},
-            )
-            try:
-                response = self._client.send(request, auth=None, follow_redirects=False, stream=True)
-                try:
-                    if authenticated and response.status_code != 200:
-                        raise RetryablePublicationError(self._application_auth_diagnostic("subscription_not_ready", response))
-                    if not authenticated:
-                        if response.status_code == 200:
-                            raise PolicyCompilationError(self._application_auth_diagnostic("anonymous_catalog_access", response))
-                        if response.status_code not in {401, 403}:
-                            raise RetryablePublicationError(self._application_auth_diagnostic("authentication_control_inconclusive", response))
-                finally:
-                    response.close()
-            except httpx.TransportError as error:
-                category = "timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
-                raise RetryablePublicationError(self._application_auth_diagnostic(category)) from None
 
     def _managed_operation_ids(self, *, include_images: bool = False) -> tuple[str, ...]:
         return (

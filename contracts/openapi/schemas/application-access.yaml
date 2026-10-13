@@ -598,13 +598,122 @@ schemas:
   GatewayApplicationSubscriptionProvisionAccepted:
     allOf:
     - $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
-    - type: object
-      additionalProperties: false
-      required:
-      - primary_key
-      properties:
-        primary_key:
+  GatewayUserSubscriptionCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - display_name
+    properties:
+      display_name:
+        type: string
+        minLength: 1
+        maxLength: 100
+      description:
+        type: [string, 'null']
+        maxLength: 1000
+        default: null
+      application_type:
+        type: string
+        enum: [service, agent]
+        default: service
+  GatewayUserSubscriptionEntry:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - application_id
+    - application_display_name
+    - application_type
+    - apim_subscription_id
+    - display_name
+    - scope_id
+    - state
+    - source
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      application_id:
+        type: string
+        format: uuid
+      application_display_name:
+        type: string
+      application_type:
+        type: string
+        enum: [service, agent]
+      apim_subscription_id:
+        type: string
+      display_name:
+        type: string
+      scope_id:
+        type: string
+      state:
+        type: string
+        enum: [active, suspended, cancelled]
+      source:
+        type: string
+        enum: [bicep, discovered, managed]
+      created_at:
+        type: string
+        format: date-time
+  GatewayUserSubscriptionList:
+    type: object
+    additionalProperties: false
+    required: [user_id, email, display_name, role, items]
+    properties:
+      user_id:
+        type: string
+        format: uuid
+      email:
+        type: string
+        format: email
+      display_name:
+        type: [string, 'null']
+      role:
+        type: string
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayUserSubscriptionEntry
+  GatewayApplicationOwnerUpdate:
+    type: object
+    additionalProperties: false
+    required: [user_id]
+    properties:
+      user_id:
+        type: [string, 'null']
+        format: uuid
+  GatewayApplicationSubscriptionCancel:
+    type: object
+    additionalProperties: false
+    required: [confirmation]
+    properties:
+      confirmation:
+        type: string
+        minLength: 1
+        maxLength: 256
+  GatewaySubscriptionKeysExportFilter:
+    type: object
+    additionalProperties: false
+    properties:
+      user_ids:
+        type: array
+        maxItems: 1000
+        uniqueItems: true
+        items:
           type: string
-          minLength: 1
-          maxLength: 256
-          x-secret: true
+          format: uuid
+        default: []
+      department_id:
+        type: [string, 'null']
+        format: uuid
+        default: null
+      subscription_ids:
+        type: array
+        maxItems: 1000
+        uniqueItems: true
+        items:
+          type: string
+          maxLength: 127
+        default: []

@@ -188,7 +188,9 @@ async function probeRuntimeHealth(runtime: ModelRuntime, registry: ModelRegistry
         turn_index: 1,
       },
       messages: [{ role: "user", content: "Reply with OK." }],
-      max_output_tokens: 16,
+      // Foundry counts hidden reasoning in max_completion_tokens as well.
+      // A 16-token cap can be exhausted before even an "OK" answer is emitted.
+      max_output_tokens: runtime.config.max_tokens_field === "max_completion_tokens" ? 4096 : 16,
       stream: false,
     })
     return {
@@ -298,6 +300,8 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   // that was hardcoded green with a check mark, so a failed inference check announced
   // itself as a success -- the words said "failed" and everything around them said "ok".
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshInFlight = useRef(false)
   const [runtimeDetailId, setRuntimeDetailId] = useState(() => new URL(window.location.href).searchParams.get("runtime"))
   const runtimeHealthWindow = useMemo(() => usageWindow(30), [])
   // One scoped page per runtime matches the detail view. Filtering the global 200-row page
@@ -409,6 +413,41 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       setNotice({ text: "配置已保存", ok: true })
     },
   })
+  const refresh = async () => {
+    if (refreshInFlight.current) return
+    refreshInFlight.current = true
+    setRefreshing(true)
+    try {
+      const prefixes = [
+        finopsKeys.registry,
+        finopsKeys.gatewayPublications,
+        ["control-plane", "gateway-publication"],
+        ["finops", "requests"],
+      ]
+      const queries = client.getQueryCache().findAll({
+        type: "active",
+        predicate: (query) => prefixes.some((prefix) =>
+          prefix.every((part, index) => query.queryKey[index] === part)),
+      })
+      const results = await Promise.allSettled(queries.map((query) => client.refetchQueries(
+        { queryKey: query.queryKey, exact: true, type: "active" },
+        { throwOnError: true, cancelRefetch: false },
+      )))
+      const failed = results.find((result) => result.status === "rejected")
+      if (failed?.status === "rejected") throw failed.reason
+      save.reset()
+      setNotice({ text: "已刷新", ok: true })
+    } catch (refreshError) {
+      setNotice({
+        text: "刷新失败",
+        detail: refreshError instanceof Error ? refreshError.message : String(refreshError),
+        ok: false,
+      })
+    } finally {
+      refreshInFlight.current = false
+      setRefreshing(false)
+    }
+  }
   const health = useMutation({
     mutationFn: (runtime: ModelRuntime) => {
       if (!data) throw new Error("模型目录尚未加载")
@@ -512,7 +551,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   })
 
   if (isLoading) return <div className="registry-loading"><RefreshCw className="spin" />加载模型目录</div>
-  if (error || !data) return <div className="registry-error">无法加载模型管理 API：{String(error)}</div>
+  if (!data) return <div className="registry-error">无法加载模型管理 API：{String(error)}</div>
 
   const effectiveRegistry = {
     ...data,
@@ -620,6 +659,8 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       onDismissNotice={() => setNotice(null)}
       onNoticeAction={openPublicationRetry}
       onToggleSidebar={onToggleSidebar}
+      refreshing={refreshing}
+      onRefresh={refresh}
       onAdd={(kind) => {
         if (kind === "model") {
           openNewPublication()
@@ -1012,12 +1053,14 @@ function CredentialRotationDialog({ model, oauth = false, busy, error, onClose, 
   </Dialog>
 }
 
-function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId, loadingRuntimeHealthIds, removingModelKey, publications, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onToggleModel, onRotateCredential, onDeleteModel, onOpenPublication, onToggleRuntime, onDefaultRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway }: {
+function ModelWorkspace({ registry, tab, notice, error, busy, refreshing, onRefresh, checkingRuntimeId, loadingRuntimeHealthIds, removingModelKey, publications, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onToggleModel, onRotateCredential, onDeleteModel, onOpenPublication, onToggleRuntime, onDefaultRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway }: {
   registry: ModelRegistry
   tab: Tab
   notice: Notice | null
   error: Error | null
   busy: boolean
+  refreshing: boolean
+  onRefresh: () => Promise<void>
   checkingRuntimeId: string | null
   loadingRuntimeHealthIds: Set<string>
   removingModelKey: string | null
@@ -1134,7 +1177,12 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId,
   return <div className="smh-workspace model-workspace">
     <header className="smh-page-header">
       <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{registry.models.length}</span></div>
-      {activeTab !== "gateways" && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
+      <div className="smh-header-actions">
+        <button type="button" aria-label="刷新模型管理" aria-busy={refreshing} disabled={refreshing || busy} onClick={onRefresh}>
+          <RefreshCw size={14} className={refreshing ? "spin" : undefined} />{refreshing ? "刷新中" : "刷新"}
+        </button>
+        {activeTab !== "gateways" && <button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button>}
+      </div>
     </header>
     <div className="model-toolbar">
       <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : "网关"}<span>{value === "connections" ? scopedConnections.length : registry[value].length}</span></button>)}</ButtonGroup>

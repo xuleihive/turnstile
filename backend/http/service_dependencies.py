@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, Header
 
@@ -42,7 +43,6 @@ def _application_provisioning_available(settings: Settings) -> bool:
         settings.gateway_release_worker_enabled,
         settings.gateway_application_provisioning_enabled,
         settings.ledger_table_endpoint,
-        settings.credential_encryption_key,
         settings.azure_subscription_id,
         settings.apim_resource_group,
         settings.apim_service_name,
@@ -89,6 +89,17 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
         settings.gateway_application_key_management_enabled
         and key_settings_available
     )
+
+    def project_application_mappings(owner_user_id: UUID | None = None) -> int:
+        if not settings.ledger_table_endpoint:
+            raise RuntimeError("Application admission ledger is not configured")
+        with TableStorageLedger(
+            settings.ledger_table_endpoint, settings.ledger_table_name
+        ) as store:
+            return LedgerSyncService(repository, store).project_application_mappings(
+                owner_user_id
+            )
+
     return ApplicationAccessService(
         repository,
         sync_available=settings.gateway_release_worker_enabled,
@@ -101,7 +112,7 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
         provisioning_unavailable_reason=(
             None
             if provisioning_available
-            else "Application provisioning requires its worker, ledger, encryption and APIM target."
+            else "Application provisioning requires its worker, ledger and APIM target."
         ),
         key_management_available=key_management_available,
         key_management_unavailable_reason=(
@@ -113,6 +124,9 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
             AzureApimSubscriptionKeyClient(settings)
             if key_management_available
             else None
+        ),
+        application_mapping_projector=(
+            project_application_mappings if settings.ledger_table_endpoint else None
         ),
         default_token_limit=settings.gateway_application_default_monthly_token_limit,
         default_tokens_per_minute=(

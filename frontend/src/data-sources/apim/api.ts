@@ -60,12 +60,14 @@ import type {
   TrendDimension,
   TrendMetric,
   UsageAnomaly,
+  UsageExportJob,
+  UsageExportJobList,
   UsageFilters,
   UsageRequestDetail,
   UsageRequestSummary,
 } from "./types"
 import { getIntlLocale } from "../../locales/index"
-import { ApiError, request, writeJson } from "../../api/client"
+import { ApiError, request, requestBlob, writeJson } from "../../api/client"
 import { isUnsupportedOpenAICompatibleDetails } from "../../components/model-management/openai-compatible"
 
 export { ApiError } from "../../api/client"
@@ -228,6 +230,36 @@ export const dataSource = {
   requests: (filters: UsageFilters, limit = 50) => request<{ items: UsageRequestSummary[] }>(
     `/api/v1/observability/requests?${params(filters, { limit })}`,
   ).then((value) => value.items),
+  usageExportJobs: () => request<UsageExportJobList>(
+    "/api/v1/observability/export-jobs",
+  ),
+  createUsageExportJob: (filters: UsageFilters) => request<UsageExportJob>(
+    "/api/v1/observability/export-jobs",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({
+        from: filters.from,
+        to: filters.to,
+        filters: {
+          organization_id: filters.organization_id,
+          department_id: filters.department_id,
+          project_id: filters.project_id,
+          agent_id: filters.agent_id,
+          model_id: filters.model_id,
+          user_id: filters.user_id,
+          runtime: filters.runtime,
+          status_code: filters.status_code,
+        },
+      }),
+    },
+  ),
+  downloadUsageExportJob: (jobId: string) => requestBlob(
+    `/api/v1/observability/export-jobs/${encodeURIComponent(jobId)}/download`,
+  ),
   requestDetail: (requestId: string) => request<UsageRequestDetail>(
     `/api/v1/observability/requests/${encodeURIComponent(requestId)}`,
   ),

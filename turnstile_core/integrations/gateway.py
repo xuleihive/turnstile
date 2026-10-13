@@ -221,6 +221,10 @@ class OpenAICompatibleGatewayAdapter:
 
     def _auth_headers(self, route: dict[str, Any]) -> dict[str, str]:
         headers = {"content-type": "application/json"}
+        credential_override = route.get("gateway_credential_override")
+        if credential_override is not None:
+            headers["Ocp-Apim-Subscription-Key"] = str(credential_override)
+            return headers
         credential = route.get("gateway_credential") or route.get("provider_credential")
         auth_type = route.get("gateway_auth_type") or route.get("provider_auth_type")
         if credential and auth_type == "bearer":

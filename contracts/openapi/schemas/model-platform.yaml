@@ -1,4 +1,85 @@
 schemas:
+  ModelInvocationMetadata:
+    type: object
+    additionalProperties: false
+    required: [organization_id, organization, department_id, department, project_id, project,
+      agent_id, agent, user_id, user, workflow, model_id, model, runtime, request_source, run_id]
+    properties:
+      organization_id: {type: string, minLength: 1, maxLength: 255}
+      organization: {type: string, minLength: 1, maxLength: 255}
+      department_id: {type: string, minLength: 1, maxLength: 255}
+      department: {type: string, minLength: 1, maxLength: 255}
+      project_id: {type: string, minLength: 1, maxLength: 255}
+      project: {type: string, minLength: 1, maxLength: 255}
+      agent_id: {type: string, minLength: 1, maxLength: 255}
+      agent: {type: string, minLength: 1, maxLength: 255}
+      user_id: {type: string, minLength: 1, maxLength: 255}
+      user: {type: string, minLength: 1, maxLength: 255}
+      workflow: {type: string, minLength: 1, maxLength: 255}
+      model_id: {type: string, minLength: 1, maxLength: 255}
+      model: {type: string, minLength: 1, maxLength: 255}
+      runtime: {type: string, minLength: 1, maxLength: 255}
+      request_source: {type: string, minLength: 1, maxLength: 255}
+      usage_domain: {type: string, enum: [apim, github_copilot], default: apim}
+      run_id: {type: string, minLength: 1, maxLength: 255}
+      turn_index: {type: integer, minimum: 1, default: 1}
+  ModelInvocationRequest:
+    type: object
+    additionalProperties: false
+    required: [metadata, messages]
+    properties:
+      metadata:
+        $ref: ../../openapi.yaml#/components/schemas/ModelInvocationMetadata
+      runtime_id: {type: [string, 'null'], format: uuid}
+      model_id: {type: [string, 'null'], format: uuid}
+      messages:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items:
+          type: object
+          description: OpenAI-compatible chat message with optional tool-call fields.
+          additionalProperties: true
+      tools:
+        type: array
+        maxItems: 32
+        items: {type: object, additionalProperties: true}
+      temperature: {type: number, minimum: 0, maximum: 2}
+      max_output_tokens: {type: integer, minimum: 1, maximum: 1000000}
+      response_format: {type: string, const: json_object}
+      stream: {type: boolean, default: false}
+  InvocationUsage:
+    type: object
+    additionalProperties: false
+    required: [input_tokens, cached_tokens, output_tokens, estimated]
+    properties:
+      input_tokens: {type: integer, minimum: 0}
+      cached_tokens: {type: integer, minimum: 0}
+      cache_write_tokens: {type: integer, minimum: 0, default: 0}
+      output_tokens: {type: integer, minimum: 0}
+      estimated: {type: boolean}
+  ModelInvocationResponse:
+    type: object
+    additionalProperties: false
+    required: [request_id, correlation_id, content, provider, runtime, model, gateway,
+      latency_ms, usage]
+    properties:
+      request_id: {type: string}
+      correlation_id: {type: string}
+      content: {type: string}
+      tool_calls:
+        type: [array, 'null']
+        items: {type: object, additionalProperties: true}
+      provider: {type: string}
+      runtime: {type: string}
+      model: {type: string}
+      gateway: {type: string}
+      latency_ms: {type: integer, minimum: 0}
+      usage:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationUsage
+        - type: 'null'
+      estimated_cost: {type: [number, 'null'], minimum: 0, default: null}
   ImageGenerationLimits:
     type: object
     additionalProperties: false

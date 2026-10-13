@@ -623,9 +623,9 @@
             </return-response>
           </when>
         </choose>
-        <!-- A subscription caller that omits the attribution headers still names its model in the
-             request body. Deriving it here keeps that traffic out of the `unattributed` bucket
-             while `skip` preserves the richer registry IDs the dashboard BFF already sends. -->
+        <!-- Subscription callers do not control billing attribution. Resolve their model label
+             from the request body and overwrite model headers; employee/dashboard requests keep
+             the trusted model identity resolved by the application path above. -->
         <choose>
           <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;])">
             <set-variable name="subscriptionAgent" value="@{
@@ -635,6 +635,20 @@
               return JObject.Parse(&quot;__SUBSCRIPTION_AGENT_MAP__&quot;)[key] as JObject
                 ?? new JObject();
             }" />
+            <!-- Subscription callers do not own billing attribution. Start from safe values,
+                 then replace the agent only when the trusted projection has a mapping. -->
+            <set-header name="x-project-id" exists-action="override">
+              <value>unattributed</value>
+            </set-header>
+            <set-header name="x-project-name" exists-action="override">
+              <value>unattributed</value>
+            </set-header>
+            <set-header name="x-agent-id" exists-action="override">
+              <value>unattributed</value>
+            </set-header>
+            <set-header name="x-agent-name" exists-action="override">
+              <value>unattributed</value>
+            </set-header>
             <choose>
               <when condition="@(((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;id&quot;] != null &amp;&amp; ((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;name&quot;] != null)">
                 <set-header name="x-agent-id" exists-action="override">
@@ -657,13 +671,13 @@
                 return &quot;unattributed&quot;;
               }
             }" />
-            <set-header name="x-hive-model" exists-action="skip">
+            <set-header name="x-hive-model" exists-action="override">
               <value>@((string)context.Variables[&quot;subscriptionModel&quot;])</value>
             </set-header>
-            <set-header name="x-model-id" exists-action="skip">
+            <set-header name="x-model-id" exists-action="override">
               <value>@((string)context.Variables[&quot;subscriptionModel&quot;])</value>
             </set-header>
-            <set-header name="x-request-source" exists-action="skip">
+            <set-header name="x-request-source" exists-action="override">
               <value>@(context.Subscription.Name ?? &quot;apim-subscription&quot;)</value>
             </set-header>
           </when>
@@ -705,6 +719,17 @@
           state[&quot;applicationSlug&quot;] = &quot;&quot;;
           state[&quot;applicationName&quot;] = &quot;&quot;;
           state[&quot;applicationType&quot;] = &quot;&quot;;
+          state[&quot;ownerUserId&quot;] = &quot;&quot;;
+          state[&quot;ownerEmail&quot;] = &quot;&quot;;
+          state[&quot;ownerDisplayName&quot;] = &quot;&quot;;
+          state[&quot;ownerEnabled&quot;] = false;
+          state[&quot;ownerTenantId&quot;] = &quot;&quot;;
+          state[&quot;tenantId&quot;] = &quot;&quot;;
+          state[&quot;tenantName&quot;] = &quot;&quot;;
+          state[&quot;tenantEnabled&quot;] = false;
+          state[&quot;organizationUnitId&quot;] = &quot;&quot;;
+          state[&quot;organizationUnitName&quot;] = &quot;&quot;;
+          state[&quot;organizationUnitEnabled&quot;] = false;
           try
           {
             var response = (IResponse)context.Variables[&quot;applicationMapRead&quot;];
@@ -723,20 +748,85 @@
                 return state;
               }
               var row = (JObject)rows[0];
+              var ownerUserId = (string)row[&quot;OwnerUserId&quot;] ?? &quot;&quot;;
+              var ownerTenantId = (string)row[&quot;OwnerTenantId&quot;] ?? &quot;&quot;;
+              var tenantId = (string)row[&quot;TenantId&quot;] ?? &quot;&quot;;
+              var organizationUnitId = (string)row[&quot;OrganizationUnitId&quot;] ?? &quot;&quot;;
+              var applicationType = (string)row[&quot;ApplicationType&quot;] ?? &quot;&quot;;
+              var ownerActive = !string.IsNullOrWhiteSpace(ownerUserId)
+                &amp;&amp; ((bool?)row[&quot;OwnerEnabled&quot;] ?? false)
+                &amp;&amp; !string.IsNullOrWhiteSpace(tenantId)
+                &amp;&amp; string.Equals(ownerTenantId, tenantId, StringComparison.Ordinal)
+                &amp;&amp; ((bool?)row[&quot;TenantEnabled&quot;] ?? false)
+                &amp;&amp; (string.IsNullOrWhiteSpace(organizationUnitId)
+                  || ((bool?)row[&quot;OrganizationUnitEnabled&quot;] ?? false));
+              var ownerRequired = !(bool)context.Variables[&quot;hasEmployeeToken&quot;]
+                &amp;&amp; !string.Equals(applicationType, &quot;system&quot;, StringComparison.Ordinal);
               var active = string.Equals((string)row[&quot;ApplicationStatus&quot;], &quot;active&quot;, StringComparison.Ordinal)
                 &amp;&amp; string.Equals((string)row[&quot;SubscriptionState&quot;], &quot;active&quot;, StringComparison.Ordinal)
                 &amp;&amp; ((bool?)row[&quot;ScopeExists&quot;] ?? false);
-              state[&quot;status&quot;] = active ? &quot;ok&quot; : &quot;application_inactive&quot;;
+              state[&quot;status&quot;] = !active
+                ? &quot;application_inactive&quot;
+                : ownerRequired &amp;&amp; !ownerActive ? &quot;application_unassigned&quot; : &quot;ok&quot;;
               state[&quot;applicationId&quot;] = (string)row[&quot;ApplicationId&quot;] ?? &quot;&quot;;
               state[&quot;applicationSlug&quot;] = (string)row[&quot;ApplicationSlug&quot;] ?? &quot;&quot;;
               state[&quot;applicationName&quot;] = (string)row[&quot;ApplicationName&quot;] ?? &quot;&quot;;
-              state[&quot;applicationType&quot;] = (string)row[&quot;ApplicationType&quot;] ?? &quot;&quot;;
+              state[&quot;applicationType&quot;] = applicationType;
+              state[&quot;ownerUserId&quot;] = ownerUserId;
+              state[&quot;ownerEmail&quot;] = (string)row[&quot;OwnerEmail&quot;] ?? &quot;&quot;;
+              state[&quot;ownerDisplayName&quot;] = (string)row[&quot;OwnerDisplayName&quot;] ?? &quot;&quot;;
+              state[&quot;ownerEnabled&quot;] = (bool?)row[&quot;OwnerEnabled&quot;] ?? false;
+              state[&quot;ownerTenantId&quot;] = ownerTenantId;
+              state[&quot;tenantId&quot;] = tenantId;
+              state[&quot;tenantName&quot;] = (string)row[&quot;TenantName&quot;] ?? &quot;&quot;;
+              state[&quot;tenantEnabled&quot;] = (bool?)row[&quot;TenantEnabled&quot;] ?? false;
+              state[&quot;organizationUnitId&quot;] = organizationUnitId;
+              state[&quot;organizationUnitName&quot;] = (string)row[&quot;OrganizationUnitName&quot;] ?? &quot;&quot;;
+              state[&quot;organizationUnitEnabled&quot;] =
+                (bool?)row[&quot;OrganizationUnitEnabled&quot;] ?? false;
             }
           }
           catch (Exception) { }
           return state;
         }" />
         <set-variable name="applicationAdmission" value="@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;status&quot;])" />
+        <choose>
+          <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot; &amp;&amp; !(bool)context.Variables[&quot;hasEmployeeToken&quot;] &amp;&amp; (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationType&quot;] != &quot;system&quot;)">
+            <set-header name="x-user-id" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;ownerUserId&quot;])</value>
+            </set-header>
+            <set-header name="x-user-name" exists-action="override">
+              <value>@{
+                var state = (JObject)context.Variables[&quot;applicationMapState&quot;];
+                var name = (string)state[&quot;ownerDisplayName&quot;];
+                return string.IsNullOrWhiteSpace(name) ? (string)state[&quot;ownerEmail&quot;] : name;
+              }</value>
+            </set-header>
+            <set-header name="x-org-id" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;tenantId&quot;])</value>
+            </set-header>
+            <set-header name="x-org-name" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;tenantName&quot;])</value>
+            </set-header>
+            <set-header name="x-department-id" exists-action="override">
+              <value>@(string.IsNullOrWhiteSpace((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationUnitId&quot;]) ? &quot;unattributed&quot; : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationUnitId&quot;])</value>
+            </set-header>
+            <set-header name="x-department-name" exists-action="override">
+              <value>@(string.IsNullOrWhiteSpace((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationUnitName&quot;]) ? &quot;unattributed&quot; : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationUnitName&quot;])</value>
+            </set-header>
+          </when>
+        </choose>
+        <choose>
+          <when condition="@(!(bool)context.Variables[&quot;hasEmployeeToken&quot;] &amp;&amp; (string)context.Variables[&quot;applicationAdmission&quot;] != &quot;ok&quot;)">
+            <return-response>
+              <set-status code="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;application_map_unavailable&quot; ? 503 : 403)" reason="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;application_map_unavailable&quot; ? &quot;Service Unavailable&quot; : &quot;Forbidden&quot;)" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>@(new JObject(new JProperty(&quot;error&quot;, (string)context.Variables[&quot;applicationAdmission&quot;])).ToString(Newtonsoft.Json.Formatting.None))</set-body>
+            </return-response>
+          </when>
+        </choose>
         <choose>
           <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot; &amp;&amp; (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationType&quot;] == &quot;agent&quot;)">
             <set-header name="x-agent-id" exists-action="override">
@@ -944,6 +1034,19 @@
             <choose>
               <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;applicationDenialReason&quot;]))">
                 <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@((string)context.Variables[&quot;callerRequestId&quot;])">@{
+                  var applicationMap = (JObject)context.Variables[&quot;applicationMapState&quot;];
+                  var mappedOwnerId = (string)applicationMap[&quot;ownerUserId&quot;];
+                  var mappedOwnerType = (string)applicationMap[&quot;applicationType&quot;];
+                  var applicationActorType = (bool)context.Variables[&quot;hasEmployeeToken&quot;]
+                    ? &quot;person&quot;
+                    : !string.IsNullOrWhiteSpace(mappedOwnerId) &amp;&amp; mappedOwnerType != &quot;system&quot;
+                      ? &quot;person&quot;
+                      : &quot;service&quot;;
+                  var applicationActorId = (bool)context.Variables[&quot;hasEmployeeToken&quot;]
+                    ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;)
+                    : applicationActorType == &quot;person&quot;
+                      ? mappedOwnerId
+                      : &quot;service:&quot; + (string)context.Variables[&quot;apimSubscriptionId&quot;];
                   return new JObject(
                     new JProperty(&quot;id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
                     new JProperty(&quot;request_id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
@@ -970,8 +1073,8 @@
                     new JProperty(&quot;request_source&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;)),
                     new JProperty(&quot;gateway_profile_id&quot;, &quot;__GATEWAY_PROFILE_ID__&quot;),
                     new JProperty(&quot;apim_subscription_id&quot;, (string)context.Variables[&quot;apimSubscriptionId&quot;]),
-                    new JProperty(&quot;application_actor_type&quot;, (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? &quot;person&quot; : &quot;service&quot;),
-                    new JProperty(&quot;application_actor_id&quot;, (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;) : &quot;service:&quot; + (string)context.Variables[&quot;apimSubscriptionId&quot;]),
+                    new JProperty(&quot;application_actor_type&quot;, applicationActorType),
+                    new JProperty(&quot;application_actor_id&quot;, applicationActorId),
                     new JProperty(&quot;application_admission&quot;, (string)context.Variables[&quot;applicationAdmission&quot;]),
                     new JProperty(&quot;input_tokens&quot;, 0),
                     new JProperty(&quot;cached_tokens&quot;, 0),
@@ -1238,13 +1341,25 @@ __LEGACY_PROVIDER_ROUTING__
         <set-variable name="telemetryApplicationActorType" value="@{
           var subscriptionId = (string)context.Variables[&quot;apimSubscriptionId&quot;];
           if (string.IsNullOrEmpty(subscriptionId)) { return &quot;&quot;; }
-          return (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? &quot;person&quot; : &quot;service&quot;;
+          if ((bool)context.Variables[&quot;hasEmployeeToken&quot;]) { return &quot;person&quot;; }
+          var mapping = (JObject)context.Variables[&quot;applicationMapState&quot;];
+          return !string.IsNullOrWhiteSpace((string)mapping[&quot;ownerUserId&quot;])
+            &amp;&amp; (string)mapping[&quot;applicationType&quot;] != &quot;system&quot;
+            ? &quot;person&quot;
+            : &quot;service&quot;;
         }" />
         <set-variable name="telemetryApplicationActorId" value="@{
           var subscriptionId = (string)context.Variables[&quot;apimSubscriptionId&quot;];
           if (string.IsNullOrEmpty(subscriptionId)) { return &quot;&quot;; }
-          return (bool)context.Variables[&quot;hasEmployeeToken&quot;]
-            ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;)
+          if ((bool)context.Variables[&quot;hasEmployeeToken&quot;])
+          {
+            return context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;);
+          }
+          var mapping = (JObject)context.Variables[&quot;applicationMapState&quot;];
+          var ownerUserId = (string)mapping[&quot;ownerUserId&quot;];
+          return !string.IsNullOrWhiteSpace(ownerUserId)
+            &amp;&amp; (string)mapping[&quot;applicationType&quot;] != &quot;system&quot;
+            ? ownerUserId
             : &quot;service:&quot; + subscriptionId;
         }" />
     <set-variable name="telemetryWorkflow" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;))" />
@@ -1490,12 +1605,22 @@ __USAGE_OBSERVER_HEADERS__
       var apimSubscriptionId = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;apimSubscriptionId&quot;, &quot;&quot;);
       var applicationActorType = string.IsNullOrEmpty(apimSubscriptionId)
         ? &quot;&quot;
-        : context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;hasEmployeeToken&quot;, false) ? &quot;person&quot; : &quot;service&quot;;
+        : context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;hasEmployeeToken&quot;, false)
+          ? &quot;person&quot;
+          : context.Variables.ContainsKey(&quot;applicationMapState&quot;)
+            &amp;&amp; !string.IsNullOrWhiteSpace((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;ownerUserId&quot;])
+            &amp;&amp; (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationType&quot;] != &quot;system&quot;
+            ? &quot;person&quot;
+            : &quot;service&quot;;
       var applicationActorId = string.IsNullOrEmpty(apimSubscriptionId)
         ? &quot;&quot;
         : context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;hasEmployeeToken&quot;, false)
           ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;)
-          : &quot;service:&quot; + apimSubscriptionId;
+          : context.Variables.ContainsKey(&quot;applicationMapState&quot;)
+            &amp;&amp; !string.IsNullOrWhiteSpace((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;ownerUserId&quot;])
+            &amp;&amp; (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationType&quot;] != &quot;system&quot;
+            ? (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;ownerUserId&quot;]
+            : &quot;service:&quot; + apimSubscriptionId;
       return new JObject(
         new JProperty(&quot;id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;callerRequestId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-id&quot;, context.RequestId.ToString()))),
         new JProperty(&quot;request_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;callerRequestId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-id&quot;, context.RequestId.ToString()))),

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import inspect
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
+from turnstile_core.persistence.repository_support import UsageFilters
 
 UNREACHABLE = "postgresql://nobody@127.0.0.1:1/does-not-exist"
 
@@ -96,3 +98,63 @@ def test_a_registry_write_invalidates_the_cached_identities() -> None:
 
     assert proxy.model_identities()["uuid-1"].display_name == "Luna Renamed"
     assert len(reads) == 2
+
+
+class _ExportCursor:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.fetch_sizes: list[int] = []
+        self.query = ""
+        self.parameters: list[Any] = []
+        self.name = ""
+
+    def __enter__(self) -> _ExportCursor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(self, query: str, parameters: list[Any]) -> None:
+        self.query = query
+        self.parameters = parameters
+
+    def fetchmany(self, size: int) -> list[dict[str, Any]]:
+        self.fetch_sizes.append(size)
+        rows, self.rows = self.rows[:size], self.rows[size:]
+        return rows
+
+
+class _ExportConnection:
+    def __init__(self, cursor: _ExportCursor) -> None:
+        self.export_cursor = cursor
+
+    def cursor(self, *, name: str) -> _ExportCursor:
+        self.export_cursor.name = name
+        return self.export_cursor
+
+
+def test_usage_export_uses_filtered_server_cursor_in_batches() -> None:
+    rows = [{"request_id": f"request-{index}"} for index in range(1001)]
+    cursor = _ExportCursor(rows)
+    proxy = PostgreSqlOpsDbProxy(UNREACHABLE)
+
+    @contextmanager
+    def connection() -> Any:
+        yield _ExportConnection(cursor)
+
+    proxy._connection = connection  # type: ignore[method-assign]
+    from_ = datetime(2026, 7, 1, tzinfo=UTC)
+    to = datetime(2026, 8, 1, tzinfo=UTC)
+
+    exported = list(
+        proxy.iter_usage_requests(
+            from_, to, UsageFilters(organization_id="org-contoso-global")
+        )
+    )
+
+    assert len(exported) == 1001
+    assert cursor.name == "turnstile_usage_export"
+    assert cursor.parameters == [from_, to, "org-contoso-global"]
+    assert "usage_domain = 'apim'" in cursor.query
+    assert "LIMIT %s" not in cursor.query
+    assert cursor.fetch_sizes == [1000, 1000, 1000]

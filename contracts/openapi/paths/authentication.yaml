@@ -61,7 +61,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: ../../openapi.yaml#/components/schemas/AuthProfile
+                $ref: ../../openapi.yaml#/components/schemas/AuthMeProfile
         '401':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         default:

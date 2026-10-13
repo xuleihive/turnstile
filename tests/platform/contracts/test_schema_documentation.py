@@ -9,6 +9,7 @@ EXPECTED_DOCUMENTS = {
     "deployment.md",
     "e2e-validation.md",
     "security.md",
+    "security-audit.md",
     "testing.md",
     "troubleshooting.md",
 }

@@ -29,6 +29,7 @@ router = APIRouter(
 @router.get("/api/v1/budgets", response_model=TokenBudgetResponse)
 def get_token_budgets(
     service: TokenBudgetServiceDependency,
+    _identity: OwnerSession,
     period: Annotated[str, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")],
     include_users: bool = False,
 ) -> TokenBudgetResponse:
@@ -38,6 +39,7 @@ def get_token_budgets(
 @router.get("/api/v1/budgets/users", response_model=TokenBudgetPeopleResponse)
 def get_people_budgets(
     service: TokenBudgetServiceDependency,
+    _identity: OwnerSession,
     period: Annotated[str, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")],
     department_id: str,
     query: Annotated[str | None, Query(max_length=200)] = None,

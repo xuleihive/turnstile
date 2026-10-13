@@ -8,6 +8,7 @@ from backend.api import (
     app,
 )
 from backend.http.dependencies import get_repository
+from backend.http.session import SessionIdentity, require_authenticated_session
 from backend.services import budget_service
 from tests.platform.api.api_support import (
     MEMBER_SESSION,
@@ -52,6 +53,70 @@ def test_enterprise_entities_meet_acceptance_scale() -> None:
         "parent_id": "project-finops",
     } in payload["agents"]
     assert all(user["id"] == user["name"] and "@" in user["id"] for user in payload["users"])
+
+
+def test_member_enterprise_directory_contains_only_the_current_user() -> None:
+    repository = InMemoryRepository()
+    repository.application_owner_rows.extend(
+        [
+            {"email": "owner@contoso.com", "display_name": "Owner", "role": "owner"},
+            {"email": "other@contoso.com", "display_name": "Other", "role": "member"},
+        ]
+    )
+    app.dependency_overrides[get_repository] = lambda: repository
+    client.cookies.set("turnstile_session", MEMBER_SESSION)
+    try:
+        response = client.get("/api/v1/enterprise/entities")
+    finally:
+        client.cookies.clear()
+        app.dependency_overrides.pop(get_repository, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["users"] == [
+        {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "name": "Member",
+            "parent_id": None,
+        }
+    ]
+    assert payload["organizations"] == []
+    assert payload["departments"] == []
+    assert payload["projects"] == []
+    assert payload["agents"] == []
+    assert payload["invocation_testers"] == []
+
+
+def test_usage_auditor_gets_no_directory_without_users_read() -> None:
+    identity = SessionIdentity(
+        id="00000000-0000-4000-8000-000000000003",
+        email="auditor@contoso.com",
+        name="Auditor",
+        role="auditor",
+        permissions=frozenset({"usage.read.all", "reports.create.all"}),
+        method="password",
+        session_expires_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    app.dependency_overrides[require_authenticated_session] = lambda: identity
+    try:
+        response = client.get("/api/v1/enterprise/entities")
+    finally:
+        app.dependency_overrides.pop(require_authenticated_session, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["organizations"] == []
+    assert payload["departments"] == []
+    assert payload["projects"] == []
+    assert payload["agents"] == []
+    assert payload["users"] == [
+        {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "name": "Auditor",
+            "parent_id": None,
+        }
+    ]
+    assert payload["invocation_testers"] == []
 
 
 def test_enterprise_entities_expose_configured_directory_testers_only() -> None:
@@ -627,13 +692,7 @@ def test_monthly_token_budgets_track_usage_and_enforce_parent_limit() -> None:
             "/api/v1/budgets",
             params={"period": "2026-07"},
         )
-        assert member_view.status_code == 200
-        member_payload = member_view.json()
-        assert {
-            key: value for key, value in member_payload.items() if key != "generated_at"
-        } == {
-            key: value for key, value in compact_payload.items() if key != "generated_at"
-        }
+        assert member_view.status_code == 403
         client.cookies.set("turnstile_session", OWNER_SESSION)
 
         protected_parent = client.delete(

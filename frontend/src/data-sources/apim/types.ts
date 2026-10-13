@@ -20,10 +20,36 @@ export type UsageFilters = {
   project_id?: string
   agent_id?: string
   model_id?: string
-  user_id?: string
+  user_id?: string | string[]
   runtime?: string[]
   status_code?: number
 }
+
+export type UsageExportJobStatus = "queued" | "running" | "ready" | "failed" | "expired"
+
+export type UsageExportJob = {
+  id: string
+  status: UsageExportJobStatus
+  from: string
+  to: string
+  filters: {
+    organization_id: string | null
+    department_id: string | null
+    project_id: string | null
+    agent_id: string | null
+    model_id: string | null
+    user_id: string | string[] | null
+    runtime: string[] | null
+    status_code: number | null
+  }
+  row_count: number | null
+  error_code: string | null
+  created_at: string
+  expires_at: string
+  status_url: string
+}
+
+export type UsageExportJobList = { items: UsageExportJob[] }
 
 export type ExecutiveTotals = {
   total_tokens: number
@@ -1110,9 +1136,7 @@ export type GatewayApplicationSubscriptionCreate = {
   application_type?: "service" | "agent"
 }
 
-export type GatewayApplicationSubscriptionProvisionAccepted = GatewayReleaseOperationAccepted & {
-  primary_key: string
-}
+export type GatewayApplicationSubscriptionProvisionAccepted = GatewayReleaseOperationAccepted
 
 export type RuntimeHealth = {
   runtime_id: string

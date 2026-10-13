@@ -1,0 +1,172 @@
+paths:
+  /api/v1/admin/users:
+    get:
+      tags:
+      - User Management
+      operationId: listAdminUsers
+      summary: Search the tenant user directory
+      parameters:
+      - name: search
+        in: query
+        schema: {type: string, maxLength: 200}
+      - name: role
+        in: query
+        schema: {type: string, maxLength: 64}
+      - name: enabled
+        in: query
+        schema: {type: boolean}
+      - name: department_id
+        in: query
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: User directory entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: ../../openapi.yaml#/components/schemas/AdminUser}
+        '401': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+    post:
+      tags:
+      - User Management
+      operationId: createAdminUser
+      summary: Pre-provision a user or create a password account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ../../openapi.yaml#/components/schemas/AdminUserCreate}
+      responses:
+        '201':
+          description: Created user directory entry
+          content:
+            application/json:
+              schema: {$ref: ../../openapi.yaml#/components/schemas/AdminUser}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '409': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '422': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+  /api/v1/admin/users/{user_id}:
+    patch:
+      tags:
+      - User Management
+      operationId: updateAdminUser
+      summary: Update a user's role, status, display name, or department
+      description: A department change also updates current department attribution for the user's owned applications; historical usage snapshots are preserved. The database update is committed before the APIM ledger refresh, so 503 means that projection is pending scheduled retry.
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ../../openapi.yaml#/components/schemas/AdminUserPatch}
+      responses:
+        '200':
+          description: Updated user directory entry
+          content:
+            application/json:
+              schema: {$ref: ../../openapi.yaml#/components/schemas/AdminUser}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '404': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '409': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '422': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+  /api/v1/admin/roles:
+    get:
+      tags:
+      - User Management
+      operationId: listAccessRoles
+      summary: Read the role permission matrix
+      responses:
+        '200':
+          description: Role codes and their effective permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: ../../openapi.yaml#/components/schemas/AccessRole}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+  /api/v1/admin/organization-units:
+    get:
+      tags:
+      - User Management
+      operationId: listOrganizationUnits
+      summary: Read the tenant organization tree
+      responses:
+        '200':
+          description: Organization units in parent-before-child order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: ../../openapi.yaml#/components/schemas/OrganizationUnit}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+    post:
+      tags:
+      - User Management
+      operationId: createOrganizationUnit
+      summary: Add a department under an existing organization unit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ../../openapi.yaml#/components/schemas/OrganizationUnitCreate}
+      responses:
+        '201':
+          description: Created organization unit
+          content:
+            application/json:
+              schema: {$ref: ../../openapi.yaml#/components/schemas/OrganizationUnit}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '422': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+  /api/v1/admin/organization-units/{unit_id}:
+    patch:
+      tags:
+      - User Management
+      operationId: updateOrganizationUnit
+      summary: Rename or enable/disable an organization unit
+      parameters:
+      - name: unit_id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: ../../openapi.yaml#/components/schemas/OrganizationUnitPatch}
+      responses:
+        '200':
+          description: Updated organization unit
+          content:
+            application/json:
+              schema: {$ref: ../../openapi.yaml#/components/schemas/OrganizationUnit}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '404': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '422': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+    delete:
+      tags:
+      - User Management
+      operationId: deleteOrganizationUnit
+      summary: Delete an unused organization unit
+      parameters:
+      - name: unit_id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Organization unit deleted}
+        '403': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '404': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        '409': {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}
+        default: {$ref: ../../openapi.yaml#/components/responses/ErrorResponse}

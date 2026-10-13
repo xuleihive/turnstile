@@ -165,6 +165,42 @@ def test_standalone_labels_have_exact_catalog_entries() -> None:
         assert not missing, (locale, missing)
 
 
+def test_access_control_labels_have_exact_catalog_entries() -> None:
+    labels = (
+        "用户与组织",
+        "组织部门",
+        "角色权限",
+        "角色权限为只读。系统内置角色不可删除或编辑；扩展角色管理将在后续版本提供。",
+        "添加用户",
+        "同时设置本地初始密码",
+        "安全审计",
+        "导出 CSV",
+        "分析报告导出任务",
+        "等待处理",
+        "正在生成",
+        "已完成",
+        "导出失败",
+        "已过期",
+        "下载 ZIP",
+        "重试",
+        "记录数",
+        "创建时间",
+        "有效至",
+        "错误代码",
+        "暂无导出任务",
+        "导出任务会显示在这里。",
+        "提交失败：",
+        "下载失败：",
+        "正在提交",
+        "操作者 ID",
+        "来源 IP",
+    )
+    for locale in ("en", "ko", "ja"):
+        catalog = _catalog_source(locale)
+        missing = [label for label in labels if f'"{label}":' not in catalog]
+        assert not missing, (locale, missing)
+
+
 def test_relative_time_is_formatted_by_intl_not_the_phrase_converter() -> None:
     """Dynamic timestamps must have one locale-aware formatting path.
 

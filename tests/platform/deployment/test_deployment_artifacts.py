@@ -17,6 +17,8 @@ from scripts.stage_deployment import (
 EXACT_DEPENDENCY = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^=]+$")
 EXPECTED_DEPENDENCY_NAMES = {
     "requirements.txt": {
+        "azure-identity",
+        "azure-storage-blob",
         "cryptography",
         "fastapi",
         "httpx",
@@ -30,6 +32,8 @@ EXPECTED_DEPENDENCY_NAMES = {
     },
     "functions/telemetry/requirements.txt": {
         "azure-functions",
+        "azure-identity",
+        "azure-storage-blob",
         "httpx",
         "psycopg[binary]",
         "psycopg-pool",
@@ -67,6 +71,8 @@ def staging_root(tmp_path: Path) -> Path:
     for relative in (
         "backend",
         "turnstile_core",
+        "turnstile_core/services",
+        "turnstile_core/integrations",
         "frontend/dist",
         "migrations",
         "functions/telemetry",
@@ -79,6 +85,8 @@ def staging_root(tmp_path: Path) -> Path:
         "backend/api.py": "app = object()\n",
         "backend/migrate.py": "def migrate(): return []\n",
         "turnstile_core/config.py": "class Settings: pass\n",
+        "turnstile_core/services/usage_export_worker.py": "class UsageExportWorker: pass\n",
+        "turnstile_core/integrations/usage_export_blob.py": "class PrivateUsageExportBlob: pass\n",
         "frontend/dist/index.html": "<!doctype html>\n",
         "migrations/001_token_observability.up.sql": "SELECT 1;\n",
         "migrations/040_latest.up.sql": "SELECT 1;\n",
@@ -165,6 +173,8 @@ def test_api_staging_contains_runtime_contract(tmp_path: Path, staging_root: Pat
     assert (destination / "backend/api.py").is_file()
     assert (destination / "backend/migrate.py").is_file()
     assert (destination / "turnstile_core/config.py").is_file()
+    assert (destination / "turnstile_core/services/usage_export_worker.py").is_file()
+    assert (destination / "turnstile_core/integrations/usage_export_blob.py").is_file()
     assert (destination / "frontend/dist/index.html").is_file()
     assert (destination / "migrations/001_token_observability.up.sql").is_file()
     assert list((destination / "migrations").glob("040_*.up.sql"))
@@ -197,7 +207,7 @@ def test_function_staging_contains_runtime_contract(
 
 @pytest.mark.parametrize(
     ("target", "expected_functions"),
-    (("telemetry", 4), ("control-plane", 2)),
+    (("telemetry", 6), ("control-plane", 2)),
 )
 def test_staged_function_indexes_without_backend(
     tmp_path: Path,

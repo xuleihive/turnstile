@@ -5,7 +5,7 @@ from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
@@ -76,6 +76,8 @@ from .session import (
     Config,
     CurrentSession,
     OwnerSession,
+    SessionIdentity,
+    optional_authenticated_session,
     require_allowed_write_origin,
     require_authenticated_session,
 )
@@ -107,6 +109,10 @@ protected_router = APIRouter(
         Depends(require_allowed_write_origin),
     ]
 )
+invocation_router = APIRouter(
+    route_class=ModelPlatformRoute,
+    dependencies=[Depends(require_allowed_write_origin)],
+)
 publication_router = APIRouter(route_class=ModelPlatformRoute)
 
 
@@ -127,7 +133,9 @@ def create_gateway_profile(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_gateway(write)
 
 
@@ -141,7 +149,9 @@ def update_gateway_profile(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_gateway(write, item_id)
 
 
@@ -165,7 +175,9 @@ def create_provider(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_provider(write)
 
 
@@ -179,7 +191,9 @@ def update_provider(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_provider(write, item_id)
 
 
@@ -190,7 +204,9 @@ def create_runtime(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_runtime(write)
 
 
@@ -266,7 +282,9 @@ def update_runtime(
     identity: OwnerSession,
     authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(
+        identity.role, authorization, manage=True, authenticated_owner=True
+    )
     return service.save_runtime(write, item_id)
 
 
@@ -801,15 +819,43 @@ def check_runtime(
     return service.check_runtime(runtime_id)
 
 
-@protected_router.post("/api/v1/model-gateway/invoke", response_model=ModelInvocationResponse)
+@invocation_router.post("/api/v1/model-gateway/invoke", response_model=ModelInvocationResponse)
 def invoke_model(
     request: ModelInvocationRequest,
     service: RuntimeService,
-    identity: CurrentSession,
+    identity: Annotated[
+        SessionIdentity | None, Depends(optional_authenticated_session)
+    ],
     repository: Repository,
     settings: Config,
+    response: Response,
+    apim_subscription_key: Annotated[
+        str | None, Header(alias="Ocp-Apim-Subscription-Key")
+    ] = None,
 ) -> ModelInvocationResponse:
-    return service.invoke(_bind_invocation_identity(request, identity, repository, settings))
+    response.headers["Cache-Control"] = "no-store"
+    if identity is not None:
+        return service.invoke(_bind_invocation_identity(request, identity, repository, settings))
+    if not apim_subscription_key:
+        raise HTTPException(
+            status_code=401,
+            detail="A session or Ocp-Apim-Subscription-Key header is required",
+        )
+    # Client-supplied user identity is never used for Key calls. APIM resolves the
+    # validated Subscription ID to the owner and overwrites attribution headers.
+    untrusted_identity = request.model_copy(
+        update={
+            "metadata": request.metadata.model_copy(
+                update={"user_id": "unattributed", "user": "unattributed"}
+            )
+        }
+    )
+    return service.invoke(
+        untrusted_identity,
+        gateway_credential_override=apim_subscription_key,
+        enforce_user_model_access=False,
+        enforce_local_user_budget=False,
+    )
 
 
 @protected_router.post(

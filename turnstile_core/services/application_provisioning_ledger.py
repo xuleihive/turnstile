@@ -37,14 +37,14 @@ def prepare_application_ledger(
     ]
     if snapshot is None or not mappings:
         raise RetryablePublicationError("Application budget or attribution is not ready")
-    if len(mappings) != 1:
-        raise PolicyCompilationError("Application creation must have exactly one subscription")
-    mapping = mappings[0]
-    if (
-        mapping["application_status"] != "active"
-        or mapping["subscription_state"] != "active"
-        or not mapping["scope_exists"]
-    ):
+    active_mappings = [
+        mapping
+        for mapping in mappings
+        if mapping["application_status"] == "active"
+        and mapping["subscription_state"] == "active"
+        and mapping["scope_exists"]
+    ]
+    if not active_mappings:
         raise PolicyCompilationError("Application was disabled or its subscription scope changed")
     policy = next((
         item for item in service.application_model_access()
@@ -60,31 +60,47 @@ def prepare_application_ledger(
         "Enforce": snapshot.enforce,
     }
     access = {"Configured": policy is not None, "Models": identifiers}
-    identity = {
-        "ApplicationId": str(application_id),
-        "ApplicationSlug": str(mapping["application_slug"]),
-        "ApplicationName": str(mapping["application_name"]),
-        "ApplicationType": str(mapping["application_type"]),
-        "ApplicationStatus": str(mapping["application_status"]),
-        "SubscriptionState": str(mapping["subscription_state"]),
-        "ScopeExists": bool(mapping["scope_exists"]),
-    }
     map_partition = application_map_partition_key(gateway_id)
-    subscription_id = str(mapping["apim_subscription_id"])
     store.upsert(partition, "Q", quota)
     store.insert_if_missing(partition, "C", {"ConfirmedUsed": snapshot.confirmed_tokens})
     store.upsert(partition, "M", access)
-    store.upsert(map_partition, subscription_id, identity)
+    expected_mappings: dict[str, dict[str, object]] = {}
+    for item in mappings:
+        subscription_id = str(item["apim_subscription_id"])
+        identity: dict[str, object] = {
+            "ApplicationId": str(application_id),
+            "ApplicationSlug": str(item["application_slug"]),
+            "ApplicationName": str(item["application_name"]),
+            "ApplicationType": str(item["application_type"]),
+            "ApplicationStatus": str(item["application_status"]),
+            "SubscriptionState": str(item["subscription_state"]),
+            "ScopeExists": bool(item["scope_exists"]),
+            "OwnerUserId": str(item.get("owner_user_id") or ""),
+            "OwnerEmail": str(item.get("owner_email") or ""),
+            "OwnerDisplayName": str(item.get("owner_display_name") or ""),
+            "OwnerEnabled": bool(item.get("owner_enabled", False)),
+            "OwnerTenantId": str(item.get("owner_tenant_id") or ""),
+            "TenantId": str(item.get("tenant_id") or ""),
+            "TenantName": str(item.get("tenant_name") or ""),
+            "TenantEnabled": bool(item.get("tenant_enabled", False)),
+            "OrganizationUnitId": str(item.get("organization_unit_id") or ""),
+            "OrganizationUnitName": str(item.get("organization_unit_name") or ""),
+            "OrganizationUnitEnabled": bool(item.get("organization_unit_enabled", False)),
+        }
+        expected_mappings[subscription_id] = identity
+        store.upsert(map_partition, subscription_id, identity)
     for key, expected in (("Q", quota), ("M", access)):
         actual = store.read_entity(partition, key)
         if actual is None or any(actual.get(field) != value for field, value in expected.items()):
             raise RetryablePublicationError("Application admission ledger readback is incomplete")
     confirmed = store.read_entity(partition, "C")
-    actual_mapping = store.read_entity(map_partition, subscription_id)
     if (
         confirmed is None
         or int(confirmed.get("ConfirmedUsed", -1)) < 0
-        or actual_mapping is None
-        or any(actual_mapping.get(field) != value for field, value in identity.items())
+        or any(
+            (actual_mapping := store.read_entity(map_partition, subscription_id)) is None
+            or any(actual_mapping.get(field) != value for field, value in expected.items())
+            for subscription_id, expected in expected_mappings.items()
+        )
     ):
         raise RetryablePublicationError("Application attribution ledger readback is incomplete")
