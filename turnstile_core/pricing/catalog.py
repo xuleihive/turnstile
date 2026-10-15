@@ -53,6 +53,8 @@ _CONTEXT_RULES: dict[str, Any] = json.loads(
     files("turnstile_core.pricing").joinpath("context-rules.json").read_text(encoding="utf-8")
 )
 
+_Rates = tuple[float, float, float | None, float | None]
+
 # The index is read from one region because a model's Global rate is identical in every region --
 # measured across 24 to 28 regions per model, always one figure. This region is chosen for
 # breadth: it carries every model the narrower regions do.
@@ -513,8 +515,7 @@ class AzureRetailCatalog:
                 parsed.per_million
             )
 
-        Rates = tuple[float, float, float | None, float | None]
-        by_deployment: dict[str, dict[Rates, list[str]]] = {}
+        by_deployment: dict[str, dict[_Rates, list[str]]] = {}
         for (deployment, region), slot_prices in buckets.items():
             input_rate = slot_prices.get("input")
             output_rate = slot_prices.get("output")
@@ -522,7 +523,7 @@ class AzureRetailCatalog:
                 output_rate = 0.0
             if input_rate is None or output_rate is None:
                 continue
-            rates: Rates = (
+            rates: _Rates = (
                 input_rate,
                 output_rate,
                 slot_prices.get("cached"),
