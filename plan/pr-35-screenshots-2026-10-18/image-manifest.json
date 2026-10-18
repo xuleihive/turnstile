@@ -1,0 +1,37 @@
+{
+  "captured_on": "2026-10-18",
+  "timezone": "Asia/Shanghai",
+  "pull_request": 35,
+  "source": "live integrated test environment",
+  "deployment_record_source": "8e4b568",
+  "independent_pr_head_deployment_verified": false,
+  "redaction": "opaque raster masks and cropping, flattened RGB PNG, no metadata",
+  "review": [
+    "visual inspection",
+    "OCR scan"
+  ],
+  "new_model_invocations": 0,
+  "images": [
+    {
+      "file": "downloads.png",
+      "sha256": "e0484705cb7bf1c4a563b6a0e1173b75d7bf417e0facd77b28a06a038ad05054",
+      "bytes": 308075,
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "file": "budgets.png",
+      "sha256": "c3a5d86a9bc6f7677c15d55df6aa8fc5251510d644a9bed10141e25f9821003c",
+      "bytes": 269459,
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "file": "request-cost.png",
+      "sha256": "32b0600c59538847577b6e99ac5a4485442f522c51b92eea6b075686bb65a925",
+      "bytes": 235332,
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}

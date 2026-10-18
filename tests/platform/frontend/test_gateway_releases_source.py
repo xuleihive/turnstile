@@ -41,9 +41,9 @@ def test_gateway_releases_are_a_first_class_guarded_model_platform_page() -> Non
     styles = read_frontend_styles()
 
     assert '"gateway-releases"' in source
-    assert '{ label: "发布历史", icon: History, page: "gateway-releases" }' in app
+    assert '{ label: "网关发布", icon: History, page: "gateway-releases" }' in app
     assert 'const [gatewayReleaseDrawerOpen, setGatewayReleaseDrawerOpen]' in app
-    assert 'aria-label="打开发布列表"' in app
+    assert 'aria-label="打开网关发布列表"' in app
     assert "releaseDrawerOpen={gatewayReleaseDrawerOpen}" in app
     assert '"/api/v1/model-management/releases?limit=100"' in api
     assert "/integrity`" in api

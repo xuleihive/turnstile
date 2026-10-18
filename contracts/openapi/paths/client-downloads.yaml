@@ -1,0 +1,44 @@
+paths:
+  /api/v1/client-downloads/options:
+    get:
+      tags:
+      - Client Downloads
+      summary: Options
+      operationId: options_api_v1_client_downloads_options_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/ClientDownloadOptions'
+      security:
+      - sessionCookie: []
+  /api/v1/client-downloads/magpie:
+    post:
+      tags:
+      - Client Downloads
+      summary: Download
+      operationId: download_api_v1_client_downloads_magpie_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/ClientDownloadRequest'
+        required: true
+      responses:
+        '200':
+          description: Private magpie plugin ZIP including subscription credentials
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security:
+      - sessionCookie: []

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
@@ -25,6 +25,7 @@ from turnstile_core.domain.assistant_models import (
 
 from .service_dependencies import AssistantServiceDependency
 from .session import (
+    Config,
     CurrentSession,
     OwnerSession,
     require_allowed_write_origin,
@@ -47,11 +48,17 @@ def ask_assistant(
     request: AssistantAskRequest,
     service: AssistantServiceDependency,
     identity: CurrentSession,
+    settings: Config,
 ) -> AssistantReply:
+    if settings.directory_source == "database" and (
+        identity.governance_user_id is None or identity.directory_person_active is not True
+    ):
+        raise HTTPException(status_code=409, detail="Link an active person before model analysis")
     return service.ask(
         request,
         user_id=identity.email,
         user_name=identity.name or identity.email,
+        billing_user_id=identity.effective_user_id,
     )
 
 
@@ -102,10 +109,20 @@ def title_conversation(
     request: ConversationTitleRequest,
     service: AssistantServiceDependency,
     identity: CurrentSession,
+    settings: Config,
 ) -> ConversationSummary:
     # POST rather than PATCH: this asks the server to produce a value, it does not carry
     # one. Repeating it is safe because the service refuses to re-title.
-    return service.title_conversation(conversation_id, identity.email, request.locale)
+    if settings.directory_source == "database" and (
+        identity.governance_user_id is None or identity.directory_person_active is not True
+    ):
+        return service.list_one(conversation_id, identity.email)
+    return service.title_conversation(
+        conversation_id,
+        identity.email,
+        request.locale,
+        billing_user_id=identity.effective_user_id,
+    )
 
 
 @router.get("/api/v1/assistant/settings", response_model=AssistantSettings)

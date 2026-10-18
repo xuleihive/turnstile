@@ -15,6 +15,7 @@ from .apim_policy_components import (
   serialize_policy,
   validate_parent_policy,
 )
+from .budget_delegation_headers import DELEGATION_ENCODING_HEADER, DELEGATION_METADATA_HEADERS
 
 VERSION = 2
 
@@ -526,7 +527,7 @@ PLAN = """@{
         result["error"] = "budget_output_limit_invalid"; return result;
       }
       long samples = 1L;
-      if (!passthrough && operation == "chat-completions") {
+      if (operation == "chat-completions") {
         foreach (var sampleField in new[] { "n", "best_of" }) {
           var count = body[sampleField];
           if (count == null) { continue; }
@@ -544,7 +545,7 @@ PLAN = """@{
         ? context.Request.Body.As<byte[]>(preserveContent: true).LongLength
         : Encoding.UTF8.GetByteCount(normalizedBody);
       long bound = legacyEstimate ? checked(bodyBytes + (passthrough ? (long)contract["output_estimate"] : checked(output * samples)))
-        : passthrough ? (long)contract["request_token_ceiling"] : checked((long)contract["input_ceiling"] + checked(output * samples));
+        : passthrough ? checked((long)contract["request_token_ceiling"] * samples) : checked((long)contract["input_ceiling"] + checked(output * samples));
       if (normalizedBody != null) { result["normalized_body"] = normalizedBody; }
       if (!hasPerson && context.Subscription != null && (string)applicationMapping["status"] == "ok"
         && (string)applicationMapping["applicationType"] == "system") {
@@ -593,6 +594,7 @@ PLAN = """@{
       if (rejectionPolicy != null) { result["rejection_policy"] = rejectionPolicy; }
       result["output_samples"] = samples;
       result["algorithm"] = algorithm;
+      if (algorithm == "request_total_ceiling_v1") { result["request_token_ceiling"] = bound; }
       result["count_assurance"] = legacyEstimate ? "estimate" : "verified_upper_bound";
       result["contract_sha256"] = contract["evidence_sha256"];
       result["input_ceiling"] = contract["input_ceiling"];
@@ -763,9 +765,6 @@ USD_RESERVATION = """@{
         amount = (input * maxInputRate + output * maxOutputRate) / 100000000000000m;
       } else if ((string)plan["algorithm"] == "request_total_ceiling_v1") {
         amount = (long)plan["request_token_ceiling"] * maxAnyRate / 100000000000000m;
-      } else if ((string)plan["algorithm"] == "legacy_request_estimate_v1") {
-        amount = (long)((JObject)((JArray)plan["receipts"])[0])["reserved_tokens"]
-          * maxAnyRate / 100000000000000m;
       } else { result["error"] = "budget_count_bound_unavailable"; return result; }
       amount = Math.Ceiling(amount * 100000000000000m) / 100000000000000m;
       if (amount < 0m) { return result; }
@@ -1983,6 +1982,16 @@ def _delegation(inbound: ET.Element, trust: BudgetDelegationTrust | None) -> Non
         )
         for object_id in trust.object_ids:
             ET.SubElement(claims, "value").text = str(object_id)
+        encoding = ET.SubElement(ET.SubElement(branch, "choose"), "when", {
+            "condition": '@(context.Request.Headers.GetValueOrDefault("'
+            + DELEGATION_ENCODING_HEADER + '", "") == "percent-v1")',
+        })
+        for header in DELEGATION_METADATA_HEADERS:
+            _header(
+                encoding, header,
+                '@(Uri.UnescapeDataString(context.Request.Headers.GetValueOrDefault("'
+                + header + '", "")))',
+            )
         _deny(
             branch,
             """@{
@@ -2061,6 +2070,9 @@ def _delegation(inbound: ET.Element, trust: BudgetDelegationTrust | None) -> Non
             "set-header", {"name": "x-turnstile-delegation-token", "exists-action": "delete"}
         )
     )
+    inbound.append(ET.Element(
+        "set-header", {"name": DELEGATION_ENCODING_HEADER, "exists-action": "delete"},
+    ))
 
 
 def compose_budget_execution_parent(

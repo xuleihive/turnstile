@@ -36,6 +36,7 @@ from .session import (
     OwnerSession,
     require_allowed_write_origin,
     require_authenticated_session,
+    require_unscoped_read,
 )
 
 router = APIRouter(
@@ -43,6 +44,7 @@ router = APIRouter(
     tags=["Application Access"],
     dependencies=[
         Depends(require_authenticated_session),
+        Depends(require_unscoped_read),
         Depends(require_allowed_write_origin),
     ],
 )
@@ -229,9 +231,7 @@ def update_gateway_application_model_access(
     identity: OwnerSession,
 ) -> GatewayApplicationDetail:
     try:
-        return service.update_application_model_access(
-            application_id, request, identity.email
-        )
+        return service.update_application_model_access(application_id, request, identity.email)
     except ControlPlaneNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

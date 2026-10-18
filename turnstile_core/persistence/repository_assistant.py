@@ -26,9 +26,7 @@ class PostgreSqlAssistantRepositoryMixin:
         raise NotImplementedError
 
     @staticmethod
-    def _filter_sql(
-        filters: UsageFilters, *, alias: str = "usage"
-    ) -> tuple[str, list[Any]]:
+    def _filter_sql(filters: UsageFilters, *, alias: str = "usage") -> tuple[str, list[Any]]:
         raise NotImplementedError
 
     @staticmethod
@@ -51,7 +49,7 @@ class PostgreSqlAssistantRepositoryMixin:
     def list_pinned_reports(self, owner_id: str) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             reports = connection.execute(
-                     """SELECT report.*, access.created_by, access.visibility,
+                """SELECT report.*, access.created_by, access.visibility,
                                 COALESCE(
                                     saved_layout.layout,
                                     '{"version":1,"spans":{},"row_heights":{}}'::jsonb
@@ -79,7 +77,7 @@ class PostgreSqlAssistantRepositoryMixin:
     def get_pinned_report(self, report_id: UUID, owner_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
             report = connection.execute(
-                     """SELECT report.*, access.created_by, access.visibility,
+                """SELECT report.*, access.created_by, access.visibility,
                                 COALESCE(
                                     saved_layout.layout,
                                     '{"version":1,"spans":{},"row_heights":{}}'::jsonb
@@ -110,6 +108,7 @@ class PostgreSqlAssistantRepositoryMixin:
         description: str,
         original_question: str,
         chart: Mapping[str, Any],
+        directory_scope: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._connection() as connection:
             report = connection.execute(
@@ -128,6 +127,11 @@ class PostgreSqlAssistantRepositoryMixin:
                 (owner_id, title, description, owner_id),
             ).fetchone()
             assert report is not None
+            if directory_scope is not None:
+                connection.execute(
+                    "UPDATE pinned_report SET directory_scope=%s WHERE id=%s",
+                    (directory_scope, report["id"]),
+                )
             connection.execute(
                 """INSERT INTO pinned_chart (report_id, original_question, chart, position)
                    VALUES (%s, %s, %s, 0) RETURNING *""",
@@ -187,7 +191,7 @@ class PostgreSqlAssistantRepositoryMixin:
     ) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                                """UPDATE pinned_report AS report
+                """UPDATE pinned_report AS report
                                      SET title = %s, description = %s, updated_at = now()
                                      FROM pinned_report_access AS access
                                      WHERE report.id = %s
@@ -258,7 +262,7 @@ class PostgreSqlAssistantRepositoryMixin:
     def delete_pinned_report(self, report_id: UUID, owner_id: str) -> bool:
         with self._connection() as connection:
             row = connection.execute(
-                                """DELETE FROM pinned_report AS report
+                """DELETE FROM pinned_report AS report
                                      USING pinned_report_access AS access
                                      WHERE report.id = %s
                                          AND access.report_id = report.id
@@ -308,16 +312,13 @@ class PostgreSqlAssistantRepositoryMixin:
             return
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.executemany(
-                     """UPDATE pinned_report AS report
+                """UPDATE pinned_report AS report
                          SET position = %s, updated_at = now()
                          FROM pinned_report_access AS access
                          WHERE report.id = %s
                             AND access.report_id = report.id
                             AND access.created_by = %s""",
-                [
-                    (index, report_id, owner_id)
-                    for index, report_id in enumerate(ordered_ids)
-                ],
+                [(index, report_id, owner_id) for index, report_id in enumerate(ordered_ids)],
             )
 
     def reorder_pinned_charts(
@@ -345,7 +346,7 @@ class PostgreSqlAssistantRepositoryMixin:
     def list_conversations(self, owner_id: str, limit: int) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
-                                """SELECT c.*, ownership.created_by, count(t.id) AS turn_count
+                """SELECT c.*, ownership.created_by, count(t.id) AS turn_count
                    FROM assistant_conversation AS c
                                      JOIN assistant_conversation_owner AS ownership
                                          ON ownership.conversation_id = c.id
@@ -358,12 +359,10 @@ class PostgreSqlAssistantRepositoryMixin:
             ).fetchall()
         return [conversation_for_creator(row) for row in rows]
 
-    def get_conversation(
-        self, conversation_id: UUID, owner_id: str
-    ) -> dict[str, Any] | None:
+    def get_conversation(self, conversation_id: UUID, owner_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                                """SELECT c.*, ownership.created_by
+                """SELECT c.*, ownership.created_by
                                      FROM assistant_conversation AS c
                                      JOIN assistant_conversation_owner AS ownership
                                          ON ownership.conversation_id = c.id
@@ -390,6 +389,7 @@ class PostgreSqlAssistantRepositoryMixin:
         title: str,
         question: str,
         reply: Mapping[str, Any],
+        directory_scope: list[str] | None = None,
     ) -> None:
         with self._connection() as connection:
             # Upsert rather than "read, branch, write": the first two turns of a new
@@ -398,7 +398,7 @@ class PostgreSqlAssistantRepositoryMixin:
             # creates the conversation, so a later turn cannot rewrite a name the person
             # may have edited.
             connection.execute(
-                     """INSERT INTO assistant_conversation (id, owner_id, title)
+                """INSERT INTO assistant_conversation (id, owner_id, title)
                          VALUES (%s, %s, %s)
                    ON CONFLICT (id) DO UPDATE SET updated_at = now()
                          WHERE EXISTS (
@@ -406,8 +406,17 @@ class PostgreSqlAssistantRepositoryMixin:
                               WHERE ownership.conversation_id = assistant_conversation.id
                                  AND ownership.created_by = %s
                          )""",
-                     (conversation_id, owner_id, title, owner_id),
+                (conversation_id, owner_id, title, owner_id),
             )
+            if directory_scope is not None:
+                connection.execute(
+                    """UPDATE assistant_conversation SET directory_scope=%s
+                       WHERE id=%s AND directory_scope IS NULL
+                         AND NOT EXISTS(SELECT 1 FROM assistant_turn WHERE conversation_id=%s)
+                         AND EXISTS(SELECT 1 FROM assistant_conversation_owner
+                           WHERE conversation_id=%s AND created_by=%s)""",
+                    (directory_scope, conversation_id, conversation_id, conversation_id, owner_id),
+                )
             connection.execute(
                 """INSERT INTO assistant_turn (conversation_id, position, question, reply)
                    SELECT
@@ -441,7 +450,7 @@ class PostgreSqlAssistantRepositoryMixin:
     ) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                                """UPDATE assistant_conversation AS conversation
+                """UPDATE assistant_conversation AS conversation
                    SET title = %s, title_source = 'user', updated_at = now()
                                      FROM assistant_conversation_owner AS ownership
                                      WHERE conversation.id = %s
@@ -477,7 +486,7 @@ class PostgreSqlAssistantRepositoryMixin:
         """
         with self._connection() as connection:
             row = connection.execute(
-                                """UPDATE assistant_conversation AS conversation
+                """UPDATE assistant_conversation AS conversation
                                      SET title = %s, title_source = 'model'
                                      FROM assistant_conversation_owner AS ownership
                                      WHERE conversation.id = %s
@@ -500,7 +509,7 @@ class PostgreSqlAssistantRepositoryMixin:
     def delete_conversation(self, conversation_id: UUID, owner_id: str) -> bool:
         with self._connection() as connection:
             row = connection.execute(
-                                """DELETE FROM assistant_conversation AS conversation
+                """DELETE FROM assistant_conversation AS conversation
                                      USING assistant_conversation_owner AS ownership
                                      WHERE conversation.id = %s
                                          AND ownership.conversation_id = conversation.id
@@ -518,19 +527,25 @@ class PostgreSqlAssistantRepositoryMixin:
         return dict(cast(dict[str, Any], row)) if row else {"model_id": None, "auto_title": True}
 
     def save_assistant_settings(
-        self, *, model_id: UUID | None, auto_title: bool, updated_by: str
+        self,
+        *,
+        model_id: UUID | None,
+        auto_title: bool,
+        updated_by: str,
+        api_format: str | None = None,
     ) -> dict[str, Any]:
         with self._connection() as connection:
             row = connection.execute(
-                """INSERT INTO assistant_setting (id, model_id, auto_title, updated_by)
-                   VALUES (true, %s, %s, %s)
+                """INSERT INTO assistant_setting (id, model_id, auto_title, api_format, updated_by)
+                   VALUES (true, %s, %s, %s, %s)
                    ON CONFLICT (id) DO UPDATE SET
                        model_id = EXCLUDED.model_id,
                        auto_title = EXCLUDED.auto_title,
+                       api_format = EXCLUDED.api_format,
                        updated_at = now(),
                        updated_by = EXCLUDED.updated_by
                    RETURNING *""",
-                (model_id, auto_title, updated_by),
+                (model_id, auto_title, api_format, updated_by),
             ).fetchone()
         return dict(cast(dict[str, Any], row))
 
@@ -558,7 +573,7 @@ class PostgreSqlAssistantRepositoryMixin:
         # latency per bucket needs the bucket ungrouped. Grouping by a constant gives one row
         # per bucket whose percentile is the real one.
         id_field, name_field = (
-            ("'all'", "'all'") if group_by == "none" else fields[group_by]
+            ("'all'::text", "'all'::text") if group_by == "none" else fields[group_by]
         )
         filter_sql, filter_parameters = self._filter_sql(filters)
         with self._connection() as connection:
@@ -567,7 +582,7 @@ class PostgreSqlAssistantRepositoryMixin:
                         date_trunc(%s, usage.ts AT TIME ZONE %s) AT TIME ZONE %s
                             AS bucket_start,
                         {id_field} AS key,
-                        {name_field} AS label,
+                        (array_agg({name_field} ORDER BY usage.ts DESC, usage.id DESC))[1] AS label,
                         jsonb_build_object(
                             'et', SUM(usage.et)::DOUBLE PRECISION,
                             'total_tokens', SUM(
@@ -592,7 +607,7 @@ class PostgreSqlAssistantRepositoryMixin:
                         ) AS totals
                     FROM token_usage usage
                     WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}
-                    GROUP BY 1, 2, 3 ORDER BY 1, 2""",
+                    GROUP BY 1, 2 ORDER BY 1, 2""",
                 [interval, timezone, timezone, from_, to, *filter_parameters],
             ).fetchall()
             cache_dimension: str | None = None
@@ -623,12 +638,9 @@ class PostgreSqlAssistantRepositoryMixin:
                     for (bucket_start, _), delta in deltas.items():
                         collapsed[bucket_start] = collapsed.get(bucket_start, 0) + delta
                     deltas = {
-                        (bucket_start, "all"): delta
-                        for bucket_start, delta in collapsed.items()
+                        (bucket_start, "all"): delta for bucket_start, delta in collapsed.items()
                     }
-                rows_by_key = {
-                    (row["bucket_start"], str(row["key"])): row for row in rows
-                }
+                rows_by_key = {(row["bucket_start"], str(row["key"])): row for row in rows}
                 for key, delta in deltas.items():
                     row = rows_by_key.get(key)
                     if row is None:

@@ -1361,3 +1361,124 @@ schemas:
     - items
     - page
     title: OptimizationEventListResponse
+  UsageQueryEntity:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - name
+    - directory_status
+    - source
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        type:
+        - string
+        - 'null'
+        default: null
+      parent_ids:
+        type: array
+        items:
+          type: string
+        default: []
+      directory_status:
+        type: string
+        enum:
+        - active
+        - archived
+        - historical
+        - unattributed
+      source:
+        type: string
+        enum:
+        - directory
+        - historical
+  UsageQueryEntityCatalog:
+    type: object
+    additionalProperties: false
+    required:
+    - organizations
+    - departments
+    - projects
+    - agents
+    - users
+    properties:
+      organizations:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntity
+      departments:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntity
+      projects:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntity
+      agents:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntity
+      users:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntity
+      invocation_testers:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+        default: []
+  EnterpriseEntity:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - name
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        type:
+        - string
+        - 'null'
+        default: null
+  EnterpriseEntityCatalog:
+    type: object
+    additionalProperties: false
+    required:
+    - organizations
+    - departments
+    - projects
+    - agents
+    - users
+    properties:
+      organizations:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+      departments:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+      projects:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+      agents:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+      users:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity
+      invocation_testers:
+        type: array
+        default: []
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/EnterpriseEntity

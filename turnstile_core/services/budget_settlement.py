@@ -5,11 +5,10 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 from uuid import UUID
 
 from ..domain.budget_completion import rejection_completion, validate_terminal_observation
-from ..domain.enterprise import enterprise_catalog
 from ..domain.ledger import (
     BudgetPriceProjection,
     BudgetReservationResolution,
@@ -34,6 +33,8 @@ from ..integrations.ledger import (
     application_partition_key,
     partition_key,
 )
+from ..persistence.directory_catalog import catalog_for
+from ..persistence.repository_contract import QueryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,9 @@ class BudgetScopeService:
         if rollout["prepared_period"] != period:
             self._repository.roll_forward_budgets(period, ROLL_FORWARD_ACTOR)
             self._repository.roll_forward_gateway_application_budgets(period, ROLL_FORWARD_ACTOR)
+            catalog = catalog_for(cast(QueryRepository, self._repository))
             self._repository.prepare_budget_execution_period(
-                rollout["epoch"], period, [person.id for person in enterprise_catalog().users],
+                rollout["epoch"], period, [person.id for person in catalog.users],
             )
         candidates = self._repository.budget_scope_seed_candidates(application_id=application_id)
         if application_id is not None and not candidates:

@@ -28,9 +28,10 @@ export function CopilotSettingsSection() {
   const queryClient = useQueryClient()
   const { user } = useAuth()
   const canManage = user?.role === "owner"
-  const status = useQuery(copilotQueries.status())
-  const identities = useQuery(copilotQueries.identities(Boolean(canManage)))
-  const oauth = useQuery(copilotQueries.oauthConfig(Boolean(canManage)))
+  // These reads initialize form drafts, unlike the same queries on analytics pages.
+  const status = useQuery({ ...copilotQueries.status(), meta: { automaticRefresh: false } })
+  const identities = useQuery({ ...copilotQueries.identities(Boolean(canManage)), meta: { automaticRefresh: false } })
+  const oauth = useQuery({ ...copilotQueries.oauthConfig(Boolean(canManage)), meta: { automaticRefresh: false } })
   const [organization, setOrganization] = useState("")
   const [billingToken, setBillingToken] = useState("")
   const [billingWritesEnabled, setBillingWritesEnabled] = useState(false)

@@ -51,3 +51,27 @@ export function timezoneBucketKey(value: string | Date, grain: TimezoneGrain, ti
   const date = `${parts.year}-${parts.month}-${parts.day}`
   return grain === "hour" ? `${date}T${parts.hour}` : date
 }
+
+export function formatUsageBucket(
+  timestamp: string,
+  interval: "hour" | "day" | "week",
+  timezone: string,
+  locale: string,
+) {
+  const date = new Date(timestamp)
+  if (interval === "hour") return date.toLocaleString(locale, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    ...(locale === "en-US" ? { minute: "2-digit" as const } : {}),
+    hourCycle: "h23",
+    timeZone: timezone,
+  })
+  return date.toLocaleDateString(locale, {
+    month: "2-digit", day: "2-digit", timeZone: timezone,
+  })
+}
+
+export function formatUsageTimestamp(timestamp: string, timezone: string, locale: string) {
+  return new Date(timestamp).toLocaleString(locale, { timeZone: timezone })
+}

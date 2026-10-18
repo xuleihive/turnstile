@@ -28,9 +28,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm --prefix frontend ci
       - name: Lint Python
-        run: uv run ruff check backend scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
+        run: uv run ruff check backend turnstile_core scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
       - name: Type-check Python
-        run: uv run mypy backend scripts tests
+        run: uv run mypy backend turnstile_core scripts tests
       - name: Test
         run: uv run pytest -q
       - name: Build frontend

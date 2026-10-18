@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from ..domain.application_access import MAX_TOKENS_PER_MINUTE, application_organization
-from ..domain.enterprise import enterprise_catalog
 from ..integrations.apim_control_plane_contract import (
     PolicyCompilationError,
     RetryablePublicationError,
@@ -16,10 +15,12 @@ from ..integrations.ledger import (
     TableStorageLedger,
     application_map_partition_key,
     application_partition_key,
+    application_quota_entity,
     application_rate_limit_partition_key,
     model_access_value,
 )
 from ..persistence.repository import QueryRepository
+from .directory_catalog import catalog_for
 
 
 def read_application_rate_limit(
@@ -74,12 +75,16 @@ def prepare_application_ledger(
     now = datetime.now(UTC)
     service = LedgerSyncService(repository, store)
     snapshot = next(
-        (item for item in service.application_snapshot(now)
-         if item.application_id == str(application_id)),
+        (
+            item
+            for item in service.application_snapshot(now)
+            if item.application_id == str(application_id)
+        ),
         None,
     )
     mappings = [
-        item for item in repository.gateway_application_ledger_mappings()
+        item
+        for item in repository.gateway_application_ledger_mappings()
         if str(item["application_id"]) == str(application_id)
         and str(item["gateway_profile_id"]) == str(gateway_id)
     ]
@@ -93,22 +98,22 @@ def prepare_application_ledger(
             or not mapping["scope_exists"]):
         raise PolicyCompilationError("Application was disabled or its subscription scope changed")
     policy = next(
-        (item for item in service.application_model_access()
-         if item.application_id == str(application_id)),
+        (
+            item
+            for item in service.application_model_access()
+            if item.application_id == str(application_id)
+        ),
         None,
     )
-    partition = application_partition_key(application_id, now.strftime("%Y-%m"))
-    quota = {
-        "Limit": snapshot.token_limit,
-        "TokensPerMinute": snapshot.tokens_per_minute,
-        "Enforce": snapshot.enforce,
-    }
-    model_identifiers = model_access_value(policy.identifiers) if policy else ""
-    if len(model_identifiers) > MODEL_PROPERTY_LIMIT:
+    identifiers = model_access_value(policy.identifiers) if policy else ""
+    if len(identifiers) > MODEL_PROPERTY_LIMIT:
         raise PolicyCompilationError("Application model access exceeds the ledger property limit")
-    access = {"Configured": policy is not None, "Models": model_identifiers}
-    organization = application_organization(dict(mapping.get("tags") or {}))
-    department = next((item for item in enterprise_catalog().departments
+    partition = application_partition_key(application_id, now.strftime("%Y-%m"))
+    quota = application_quota_entity(snapshot)
+    access = {"Configured": policy is not None, "Models": identifiers}
+    catalog = catalog_for(repository, include_inactive=True)
+    organization = application_organization(dict(mapping.get("tags") or {}), catalog=catalog)
+    department = next((item for item in catalog.departments
                        if item.id == mapping.get("department_id")), None)
     identity = {
         "ApplicationId": str(application_id),

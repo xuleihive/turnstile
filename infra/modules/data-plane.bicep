@@ -38,6 +38,8 @@ param entraAllowedEmailDomains array = []
 param bootstrapOwnerEmail string
 @secure()
 param bootstrapOwnerPasswordHash string
+param directoryEmptyInitializationAllowed bool = false
+param directoryExpectedCoreDigest string = ''
 
 var storageName = 'st${resourcePrefix}${take(suffix, 10)}'
 var ledgerStorageName = 'st${resourcePrefix}ledger${take(suffix, 4)}'
@@ -55,7 +57,6 @@ var apiName = 'api-${resourcePrefix}-${suffix}'
 var functionName = 'func-${resourcePrefix}-telemetry-${suffix}'
 var virtualNetworkName = 'vnet-${resourcePrefix}-${suffix}'
 var telemetryFunctionSubnetName = 'snet-flex-telemetry'
-var controlFunctionSubnetName = 'snet-flex-control'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 var apiSubnetName = 'snet-api'
 var telemetryDeploymentContainerName = 'deploy-telemetry'
@@ -331,85 +332,23 @@ resource routeTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023
 
 var ledgerTableEndpoint = 'https://${ledgerStorage.name}.table.${environment().suffixes.storage}'
 
-resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
   name: virtualNetworkName
-  location: location
-  properties: {
-    addressSpace: {
-      addressPrefixes: [
-        '10.42.0.0/16'
-      ]
-    }
-  }
 }
 
-resource telemetryFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+resource telemetryFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: virtualNetwork
   name: telemetryFunctionSubnetName
-  properties: {
-    addressPrefix: '10.42.3.0/27'
-    delegations: [
-      {
-        name: 'flex-consumption-delegation'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
-  dependsOn: [
-    virtualNetwork
-  ]
 }
 
-resource controlFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
-  parent: virtualNetwork
-  name: controlFunctionSubnetName
-  properties: {
-    addressPrefix: '10.42.3.32/27'
-    delegations: [
-      {
-        name: 'flex-consumption-delegation'
-        properties: {
-          serviceName: 'Microsoft.App/environments'
-        }
-      }
-    ]
-  }
-  dependsOn: [
-    telemetryFunctionSubnet
-  ]
-}
-
-resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: virtualNetwork
   name: privateEndpointSubnetName
-  properties: {
-    addressPrefix: '10.42.2.0/24'
-    privateEndpointNetworkPolicies: 'Disabled'
-  }
-  dependsOn: [
-    controlFunctionSubnet
-  ]
 }
 
-resource apiSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+resource apiSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: virtualNetwork
   name: apiSubnetName
-  properties: {
-    addressPrefix: '10.42.3.64/27'
-    delegations: [
-      {
-        name: 'app-service-delegation'
-        properties: {
-          serviceName: 'Microsoft.Web/serverFarms'
-        }
-      }
-    ]
-  }
-  dependsOn: [
-    privateEndpointSubnet
-  ]
 }
 
 resource blobPrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
@@ -740,6 +679,12 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'BOOTSTRAP_OWNER_EMAIL', value: bootstrapOwnerEmail }
         { name: 'BOOTSTRAP_OWNER_PASSWORD_HASH', value: bootstrapOwnerPasswordHash }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directoryEmptyInitializationAllowed ? 'database' : 'legacy' }
+        { name: 'DIRECTORY_EMPTY_INITIALIZATION_ALLOWED', value: string(directoryEmptyInitializationAllowed) }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'ORGANIZATION_MANAGEMENT_ENABLED', value: string(directoryEmptyInitializationAllowed) }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'TRAFFIC_GENERATION_BUDGET_USD', value: '20' }
         { name: 'WEB_DIST_DIR', value: 'frontend/dist' }
@@ -806,6 +751,10 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'DATABASE_URL', value: postgresConnectionString }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directoryEmptyInitializationAllowed ? 'database' : 'legacy' }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: workspace.properties.customerId }
         { name: 'APIM_API_ID', value: apimApiId }
         { name: 'CACHE_READ_BACKFILL_HOURS', value: '720' }

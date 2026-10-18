@@ -1,18 +1,24 @@
+import { CLIENT_USER_PHRASES } from "./en/phrases-client-user"
 import { ENGLISH_CORE_PHRASES } from "./en/phrases-core"
 import { ENGLISH_COPILOT_PHRASES } from "./en/phrases-copilot"
 import { ENGLISH_AUTH_PHRASES } from "./en/phrases-auth"
+import { USER_SETTINGS_PHRASES } from "./en/phrases-user-settings"
+import { IMAGE_GENERATION_PHRASES } from "./en/phrases-image-generation"
 import { APPLICATION_CREATE_PHRASES } from "./en/phrases-application-create"
 import { POOL_AFFINITY_PHRASES } from "./en/phrases-pool-affinity"
-import { IMAGE_GENERATION_PHRASES } from "./en/phrases-image-generation"
+import { ORGANIZATION_PHRASES } from "./en/phrases-organization"
 import { DYNAMIC_RULES } from "./en/dynamic-rules"
 
 const ENGLISH_PHRASES: Record<string, string> = {
   ...ENGLISH_CORE_PHRASES,
   ...ENGLISH_COPILOT_PHRASES,
   ...ENGLISH_AUTH_PHRASES,
+  ...USER_SETTINGS_PHRASES,
+  ...IMAGE_GENERATION_PHRASES,
   ...APPLICATION_CREATE_PHRASES,
   ...POOL_AFFINITY_PHRASES,
-  ...IMAGE_GENERATION_PHRASES,
+  ...ORGANIZATION_PHRASES,
+  ...CLIENT_USER_PHRASES,
 }
 
 const orderedPhrases = Object.entries(ENGLISH_PHRASES).sort(([left], [right]) => right.length - left.length)

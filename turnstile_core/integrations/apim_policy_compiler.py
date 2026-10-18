@@ -26,6 +26,7 @@ from ..domain.control_plane import (
 from ..domain.image_profiles import validate_image_profile
 from ..domain.model_availability import ModelAvailabilityPublication
 from ..domain.runtime_models import BrandKey
+from .apim_application_tpm import compose_application_tpm_policy
 from .apim_control_plane_contract import (
         BackendCircuitBreakerResource,
         BackendPoolMemberResource,
@@ -1680,7 +1681,7 @@ class ApimPolicyCompiler:
             raise PolicyCompilationError(
                 "The live parent policy contains an invalid direct child under choose"
             )
-        return result
+        return compose_application_tpm_policy(result)
 
     @staticmethod
     def _patch_legacy_openai_stream_usage(source: str) -> str:

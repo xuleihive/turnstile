@@ -285,7 +285,7 @@ schemas:
         - type: 'null'
       tokens_per_minute:
         type: integer
-        maximum: 2147483647.0
+        maximum: 2147483647
         exclusiveMinimum: 0.0
       enforce:
         type: boolean
@@ -846,6 +846,10 @@ schemas:
           type:
           - string
           - 'null'
+        budget_projection:
+          anyOf:
+          - $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationBudgetProjection
+          - type: 'null'
   GatewayApplicationList:
     properties:
       items:
@@ -998,3 +1002,28 @@ schemas:
           minLength: 1
           maxLength: 256
           x-secret: true
+  GatewayApplicationBudgetProjection:
+    properties:
+      status:
+        type: string
+        enum:
+        - projected
+        - pending
+        - unavailable
+        title: Status
+      tokens_per_minute:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Tokens Per Minute
+      configuration_updated_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+        title: Configuration Updated At
+    additionalProperties: false
+    type: object
+    required:
+    - status
+    title: GatewayApplicationBudgetProjection

@@ -70,7 +70,7 @@ def test_candidate_probe_requires_fresh_managed_and_required_node_coverage(
     defect: str | None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, client = InMemoryRepository(), FakeApimClient()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "unit-owner",
     )
     serving = GatewayServingDeployment.model_validate({
@@ -126,7 +126,7 @@ def test_scoped_models_are_gated_in_operation_policy_and_discovery(operation: st
         ))
     publication = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal",
-    ).publish(request, "unit-owner")
+    image_generation_enabled=True).publish(request, "unit-owner")
     serving = GatewayServingDeployment.model_validate({
         "deployment_id": str(UUID(int=24)), "native_gateway_id": "unit-edge",
         "kind": "self_hosted", "endpoint_url": "https://edge.example.test/unit/llm",
@@ -215,7 +215,7 @@ def test_budget_parent_requires_exact_version_order_and_both_plan_branches(mutat
 def test_budget_worker_captures_contract_and_fences_epoch_change_before_backend_writes() -> None:
     repository = InMemoryRepository()
     repository.models = []
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "owner@example.com",
     )
     source = (ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
@@ -288,7 +288,7 @@ def test_compiler_native_counter_uses_existing_origin_and_auth_without_bearer_re
 
 def test_compiler_sets_trusted_metadata_before_parent_admission() -> None:
     repository = InMemoryRepository()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "owner@example.com"
     )
 
@@ -332,7 +332,9 @@ def test_compiler_sets_trusted_metadata_before_parent_admission() -> None:
 def test_databricks_compiler_preserves_native_messages_and_scoped_authentication(
     oauth: bool,
 ) -> None:
-    publication = GatewayControlPlaneService(InMemoryRepository()).publish(
+    publication = GatewayControlPlaneService(
+        InMemoryRepository(), image_generation_enabled=True,
+    ).publish(
         bedrock_publication(), "owner@example.com",
     )
     workspace = "https://adb-unit.1.azuredatabricks.net"
@@ -395,7 +397,7 @@ def test_parent_policy_hooks_are_idempotent_and_preserve_inference_invariants() 
     )
     assert 'token-quota="__MONTHLY_TOKEN_QUOTA__"' not in patched
     assert patched.index('name="applicationMapPartition"') < patched.index(
-        'name="applicationTokensPerMinute"'
+        'name="effectiveApplicationTpm"'
     )
 
 
@@ -418,7 +420,10 @@ def test_existing_application_tpm_upgrade_preserves_default_and_is_idempotent(
     assert observed is not None
     assert f"long defaultRate = {default_rate};" in observed.attrib["value"]
     assert upgrade_application_tpm_policy(upgraded) == upgraded
-    with pytest.raises(PolicyCompilationError, match="applicationTokensPerMinute"):
+    with pytest.raises(
+        PolicyCompilationError,
+        match="applicationTokensPerMinute|Image token policy isolation",
+    ):
         validate_parent_policy(upgraded, canonical)
 
 
@@ -608,7 +613,7 @@ def test_parent_policy_header_hygiene_patch_is_idempotent() -> None:
 
 def test_compiled_release_never_contains_a_literal_credential() -> None:
     repository = InMemoryRepository()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "owner@example.com"
     )
     compiled = ApimPolicyCompiler().compile(publication)
@@ -631,7 +636,7 @@ def test_compiled_release_never_contains_a_literal_credential() -> None:
 
 def test_worker_promotes_only_after_dependencies_policies_and_probes() -> None:
     repository = InMemoryRepository()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "owner@example.com"
     )
     client = FakeApimClient()
@@ -667,7 +672,9 @@ def test_worker_promotes_only_after_dependencies_policies_and_probes() -> None:
 
 def test_publication_permission_failure_precedes_all_resource_writes() -> None:
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "unit-owner",
+    )
     client = FakeApimClient()
     worker = GatewayPublicationWorker(repository, client, client.policy)
     failure = PublisherPermissionError(
@@ -682,7 +689,9 @@ def test_publication_permission_failure_precedes_all_resource_writes() -> None:
 
 def test_publication_retry_limit_is_checked_before_resolving_credentials() -> None:
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "unit-owner",
+    )
     resolver = Mock()
     worker = GatewayPublicationWorker(repository, resolver, FakeApimClient().policy)
     failed = worker.run_once("worker", max_attempts=0)
@@ -695,7 +704,9 @@ def test_promoted_publication_recovers_without_repeating_writes_or_probes(
     unknown_current: bool,
 ) -> None:
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "unit-owner",
+    )
     client = FakeApimClient()
     worker = GatewayPublicationWorker(repository, client, client.policy)
     for _ in range(5):
@@ -724,7 +735,9 @@ def test_parent_snapshot_accepts_xml_roundtrip_but_rejects_drift_before_writes(
     changed: bool,
 ) -> None:
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "unit-owner",
+    )
     client = FakeApimClient()
     worker = GatewayPublicationWorker(repository, client, client.policy)
     for _ in range(3):
@@ -778,7 +791,7 @@ def test_foundry_publication_waits_for_rbac_and_resumes_the_same_candidate() -> 
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    )
+    image_generation_enabled=True)
     service.publish(foundry_publication(), "owner@example.com")
     client = AuthorizationClient()
     worker = GatewayPublicationWorker(repository, client, client.policy)
@@ -828,7 +841,7 @@ def test_failed_foundry_publication_retries_without_an_api_key() -> None:
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    )
+    image_generation_enabled=True)
     publication = service.publish(foundry_publication(), "owner@example.com")
     transition_publication(
         repository,
@@ -853,7 +866,7 @@ def test_worker_removes_foundry_alias_before_physically_deleting_model() -> None
     model = next(
         item for item in repository.models if item["model_key"] == "gpt-5.6-luna"
     )
-    GatewayControlPlaneService(repository).remove_model(
+    GatewayControlPlaneService(repository, image_generation_enabled=True).remove_model(
         model["id"], "owner@example.com"
     )
     client = FakeApimClient()
@@ -890,7 +903,7 @@ def test_managed_foundry_removal_preserves_the_shared_project_connection() -> No
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    )
+    image_generation_enabled=True)
     client = FakeApimClient()
     worker = GatewayPublicationWorker(repository, client, client.policy)
 
@@ -954,7 +967,9 @@ def test_worker_failure_never_materializes_the_registry() -> None:
             raise RuntimeError(f"backend rejected: {backend.id}")
 
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "owner@example.com")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "owner@example.com",
+    )
     worker = GatewayPublicationWorker(
         repository,
         FailingClient(),
@@ -980,7 +995,9 @@ def test_transient_apim_failure_requeues_the_same_step() -> None:
             super().ensure_backend(backend)
 
     repository = InMemoryRepository()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "owner@example.com")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "owner@example.com",
+    )
     client = RetryClient()
     worker = GatewayPublicationWorker(
         repository,
@@ -1006,7 +1023,7 @@ def test_candidate_discovery_propagation_is_retryable(
     status_code: int, payload: dict[str, object]
 ) -> None:
     repository = InMemoryRepository()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "owner@example.com"
     )
 
@@ -1045,7 +1062,7 @@ def test_first_foundry_regression_probe_reports_missing_authorization() -> None:
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    ).publish(foundry_publication(), "owner@example.com")
+    image_generation_enabled=True).publish(foundry_publication(), "owner@example.com")
     alias = publication.desired_spec.bindings[-1].model.model_key
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1093,7 +1110,7 @@ def test_foundry_claude_candidate_probe_uses_messages_operation() -> None:
         managed_identity_resource="https://ai.azure.com",
         streaming_mode="native",
     )
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         GatewayPublicationCreate(
             gateway_profile_id=APIM_ID,
             provider=ProviderTarget(existing_id=provider["id"]),

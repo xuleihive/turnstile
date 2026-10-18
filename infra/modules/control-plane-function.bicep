@@ -40,6 +40,9 @@ param eventHubName string = 'llm-usage'
 param ledgerStorageName string
 param ledgerTableName string = 'TurnstileLedger'
 param ledgerTableEndpoint string
+@allowed(['legacy', 'database'])
+param directorySource string = 'legacy'
+param directoryExpectedCoreDigest string = ''
 
 var storageName = 'stturnstilecp${take(suffix, 11)}'
 var planName = 'plan-${resourcePrefix}-control-${suffix}'
@@ -164,6 +167,10 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${credentialEncryptionKeySecretUri})' }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directorySource }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'CONTROL_PLANE_ENABLED', value: string(effectiveEnabled) }
         { name: 'GATEWAY_PUBLICATION_WORKER_ENABLED', value: string(effectivePublicationWorkerEnabled) }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(effectiveReleaseWorkerEnabled) }

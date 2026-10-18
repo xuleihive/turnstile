@@ -15,6 +15,7 @@ import { Input } from "../ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -60,7 +61,7 @@ export function PinDialog({
   const [description, setDescription] = useState("")
 
   const creating = target === NEW_REPORT
-  const selected = reports.find((report) => report.id === target)
+  const selected = reports.find((report) => report.id === target && report.can_manage)
   const canSave = busy ? false : creating ? Boolean(title.trim()) : Boolean(selected)
 
   return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
@@ -77,7 +78,7 @@ export function PinDialog({
         <DialogHeader className="registry-editor-header">
           <DialogTitle>固定为报表</DialogTitle>
           <DialogDescription>
-            固定后会出现在左侧导航的「报表」分组，打开时按原始查询条件重新取数。
+            保存到报表中心。
           </DialogDescription>
         </DialogHeader>
 
@@ -89,13 +90,15 @@ export function PinDialog({
                 <SelectValue>{creating ? "新建报表" : selected?.title ?? "新建报表"}</SelectValue>
               </SelectTrigger>
               <SelectContent align="start" alignItemWithTrigger={false}>
+                <SelectGroup>
                 <SelectItem value={NEW_REPORT}>新建报表</SelectItem>
-                {reports.map((report) => <SelectItem key={report.id} value={report.id}>
-                  {report.title}
+                {reports.filter((report) => report.can_manage).map((report) => <SelectItem key={report.id} value={report.id}>
+                  <span data-no-localize>{report.title}</span>
                   <span className="assistant-pin-option-meta">
                     {alreadyIn.has(report.id) ? "已包含此图表" : `${report.charts.length} 个图表`}
                   </span>
                 </SelectItem>)}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </label>
@@ -145,7 +148,7 @@ export function PinDialog({
         <DialogFooter className="registry-editor-footer">
           <DialogClose render={<Button type="button" variant="outline" />}>取消</DialogClose>
           <Button type="submit" disabled={!canSave}>
-            <Save size={14} />{creating ? "固定到导航栏" : "加入该报表"}
+            <Save size={14} />{creating ? "保存报表" : "加入该报表"}
           </Button>
         </DialogFooter>
       </form>

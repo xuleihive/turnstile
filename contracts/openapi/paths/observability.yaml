@@ -1110,3 +1110,73 @@ paths:
       - sessionCookie: []
       tags:
       - Optimization
+  /api/v1/enterprise/query-entities:
+    get:
+      tags:
+      - Overview
+      operationId: getHistoricalEnterpriseEntities
+      summary: Read historical query dimensions
+      description: 'Authenticated query-only directory. Combines current authorized entities with original
+        archived and unknown identifiers observed in the requested UTC window. Current directory labels
+        win; parent_ids preserves all in-window parent edges. Department restrictions intersect every
+        requested filter in SQL. Results are not assignment or invocation identities and must not undergo
+        legacy user-ID rewriting. directory_status filters both query facets and observability aggregates;
+        omission preserves the legacy all-status API behavior. The UI explicitly defaults to active. Unknown
+        history and unattributed are separate from archived managed records.
+
+        '
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/From
+      - $ref: ../../openapi.yaml#/components/parameters/To
+      - name: department_id
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: organization_id
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: user_id
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: directory_status
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            enum:
+            - active
+            - archived
+            - historical
+            - unattributed
+      responses:
+        '200':
+          description: Query dimensions within an aware window of at most 366 days.
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/UsageQueryEntityCatalog
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

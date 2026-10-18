@@ -72,22 +72,23 @@ export function prefetchGithubCopilotPage(queryClient: QueryClient, page: string
 
 export function renderGithubCopilotPage(page: string, onToggleSidebar: () => void): ReactNode {
   if (page === "budgets") {
-    return <CopilotGovernancePage view="budgets" onToggleSidebar={onToggleSidebar} />
+    return <CopilotGovernancePage key={page} view="budgets" onToggleSidebar={onToggleSidebar} />
   }
   if (page === "copilot-cost-centers") {
-    return <CopilotGovernancePage view="cost-centers" onToggleSidebar={onToggleSidebar} />
+    return <CopilotGovernancePage key={page} view="cost-centers" onToggleSidebar={onToggleSidebar} />
   }
   if (page === "copilot-unassigned-users") {
-    return <CopilotGovernancePage view="unassigned" onToggleSidebar={onToggleSidebar} />
+    return <CopilotGovernancePage key={page} view="unassigned" onToggleSidebar={onToggleSidebar} />
   }
   if (page === "copilot-enterprise-teams") {
-    return <CopilotGovernancePage view="teams" onToggleSidebar={onToggleSidebar} />
+    return <CopilotGovernancePage key={page} view="teams" onToggleSidebar={onToggleSidebar} />
   }
   if (page === "copilot-requests") {
     return <CopilotBudgetPage onToggleSidebar={onToggleSidebar} />
   }
   if (page.startsWith("finops-")) {
     return <CopilotDashboardPage
+      key={page}
       initialTab={page === "finops-analytics" ? "analytics" : page === "finops-trends" ? "trends" : "overview"}
       onToggleSidebar={onToggleSidebar}
     />

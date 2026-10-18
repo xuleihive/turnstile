@@ -16,6 +16,18 @@ from .repository_support import BudgetConstraintViolation, proportional_budget_t
 _LEDGER_CORRELATION_BATCH_SIZE = 5000
 
 
+def _lock_directory_state(connection: Any) -> bool:
+    present = connection.execute(
+        "SELECT to_regclass('directory_control_state') AS present"
+    ).fetchone()
+    if present and present["present"]:
+        state = connection.execute(
+            "SELECT source FROM directory_control_state FOR UPDATE"
+        ).fetchone()
+        return bool(state and state["source"] == "database")
+    return False
+
+
 class PostgreSqlBudgetRepositoryMixin:
     def _connection(self) -> AbstractContextManager[Any]:
         raise NotImplementedError
@@ -52,82 +64,150 @@ class PostgreSqlBudgetRepositoryMixin:
             if mismatched is not None:
                 raise ValueError("Budget reservation admission is immutable")
 
-    def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]:
+    def list_token_budgets(
+        self,
+        period_start: date,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> Sequence[dict[str, Any]]:
+        personal = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
+        parameters: list[Any] = [period_start]
+        if user_id is not None:
+            parameters.append(user_id)
+        scope = ""
+        if allowed_department_ids is not None:
+            scope = """ AND ((scope_type='department' AND scope_id=ANY(%s))
+                      OR (scope_type='user' AND parent_scope_id=ANY(%s)))"""
+            parameters.extend([list(allowed_department_ids), list(allowed_department_ids)])
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT period_start, scope_type, scope_id, parent_scope_id,
-                          budget_mode, token_limit, usd_limit,
-                          warning_threshold_percent, updated_at, updated_by
+                f"""SELECT period_start, scope_type, scope_id, parent_scope_id,
+                          budget_mode, usd_limit,
+                          token_limit, warning_threshold_percent, updated_at, updated_by
                    FROM token_budget
-                   WHERE period_start = %s
+                   WHERE period_start = %s{personal}{scope}
                    ORDER BY scope_type, scope_id""",
-                (period_start,),
+                parameters,
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self,
+        from_: datetime,
+        to: datetime,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]:
+        usage_person = " AND usage.user_id = %s" if user_id is not None else ""
+        recovery_person = " AND recovery.scope_id = %s" if user_id is not None else ""
+        evidence_person = " AND scope_id = %s" if user_id is not None else ""
+        result_person = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
+        parameters: list[Any] = []
+        for _ in range(4):
+            parameters.extend([from_, to])
+            if user_id is not None:
+                parameters.append(user_id)
+        if user_id is not None:
+            parameters.append(user_id)
+        scope = ""
+        if allowed_department_ids is not None:
+            scope = " WHERE department_id=ANY(%s)"
+            parameters.insert(
+                len(parameters) - (1 if user_id is not None else 0), list(allowed_department_ids)
+            )
+        usd_scope = ""
+        usd_parameters: list[Any] = [from_, to]
+        if user_id is not None:
+            usd_scope += " AND user_id = %s"
+            usd_parameters.append(user_id)
+        if allowed_department_ids is not None:
+            usd_scope += " AND department_id = ANY(%s)"
+            usd_parameters.append(list(allowed_department_ids))
         with self._connection() as connection:
             rows = connection.execute(
-                """WITH canonical_correlations AS (
-                       SELECT DISTINCT user_id, correlation_id
-                       FROM token_usage
-                       WHERE usage_domain = 'apim'
-                   ), person_recovery AS (
-                       SELECT recovery.scope_id AS user_id,
-                              'unattributed'::TEXT AS organization_id,
-                              'unattributed'::TEXT AS department_id,
-                              recovery.total_tokens
-                       FROM budget_reservation_finalization_effective recovery
-                       WHERE recovery.scope_type = 'person'
-                                                 AND recovery.finalization_kind <> 'unverified_upper_bound'
-                                                    AND NOT strict_budget_evidence(recovery.reservation_created_at)
-                         AND recovery.reservation_created_at >= %s
-                         AND recovery.reservation_created_at < %s
-                         AND NOT EXISTS (
-                           SELECT 1 FROM canonical_correlations canonical
-                           WHERE canonical.user_id = recovery.scope_id
-                             AND canonical.correlation_id = recovery.correlation_id
-                         )
-                   ), period_usage AS (
+                f"""WITH period_usage AS (
                        SELECT organization_id, department_id, user_id,
                               input_tokens + cached_tokens + output_tokens AS total_tokens
-                                                FROM token_usage usage
-                                             WHERE ts >= %s AND ts < %s
-                                                 AND usage_domain = 'apim'
-                                                    AND NOT EXISTS (
-                                                        SELECT 1 FROM budget_usage_evidence evidence
-                                                        WHERE evidence.usage_id = usage.id AND evidence.scope_type = 'person'
-                                                            AND strict_budget_evidence(evidence.admitted_at)
-                                                    )
+                       FROM token_usage usage
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'{usage_person}
+                       AND EXISTS (
+                       SELECT 1 FROM budget_legacy_usage legacy
+                       WHERE legacy.scope_type = 'person'
+                       AND legacy.scope_id = usage.user_id
+                       AND legacy.correlation_id = usage.correlation_id
+                       )
+                       AND NOT EXISTS (
+                       SELECT 1 FROM budget_reservation_recovery recovery
+                       WHERE recovery.scope_type = 'person'
+                       AND recovery.scope_id = usage.user_id
+                       AND recovery.correlation_id = usage.correlation_id
+                       )
                        UNION ALL
-                       SELECT organization_id, department_id, user_id, total_tokens
-                       FROM person_recovery
-                                                UNION ALL
-                                                SELECT organization_id, department_id, scope_id, total_tokens
-                                                FROM budget_evidence_selected
-                                                WHERE scope_type = 'person' AND admitted_at >= %s AND admitted_at < %s
+                       SELECT COALESCE(department.parent_scope_id, 'unattributed'),
+                       COALESCE(person.parent_scope_id, 'unattributed'),
+                       recovery.scope_id, recovery.total_tokens
+                       FROM budget_reservation_recovery recovery
+                       LEFT JOIN token_budget person
+                       ON person.period_start = recovery.period_start
+                       AND person.scope_type = 'user' AND person.scope_id = recovery.scope_id
+                       LEFT JOIN token_budget department
+                       ON department.period_start = recovery.period_start
+                       AND department.scope_type = 'department'
+                       AND department.scope_id = person.parent_scope_id
+                       WHERE recovery.scope_type = 'person'
+                       AND recovery.reservation_created_at >= %s
+                       AND recovery.reservation_created_at < %s{recovery_person}
+                       AND EXISTS (
+                       SELECT 1 FROM budget_legacy_usage legacy
+                       WHERE legacy.scope_type = recovery.scope_type
+                       AND legacy.scope_id = recovery.scope_id
+                       AND legacy.correlation_id = recovery.correlation_id
+                       )
+                       UNION ALL
+                       SELECT organization_id, department_id, scope_id, total_tokens
+                       FROM budget_evidence_selected
+                       WHERE scope_type = 'person' AND admitted_at >= %s AND admitted_at < %s
+                       {evidence_person}
+                       UNION ALL
+                       SELECT COALESCE(department.parent_scope_id, 'unattributed'),
+                              COALESCE(person.parent_scope_id, 'unattributed'),
+                              attempt.scope_id, attempt.effective_tokens
+                       FROM billable_request_effective_v1 attempt
+                       LEFT JOIN token_budget person
+                         ON person.period_start = attempt.period_start
+                        AND person.scope_type = 'user' AND person.scope_id = attempt.scope_id
+                       LEFT JOIN token_budget department
+                         ON department.period_start = attempt.period_start
+                        AND department.scope_type = 'department'
+                        AND department.scope_id = person.parent_scope_id
+                       WHERE attempt.scope_type = 'person' AND attempt.effective_state = 'exact'
+                       AND NOT strict_budget_evidence(attempt.created_at)
+                       AND attempt.period_start >= %s::date AND attempt.period_start < %s::date
+                       {evidence_person.replace('scope_id', 'attempt.scope_id')}
+                   ), authorized_usage AS (
+                       SELECT * FROM period_usage{scope}
                    ), scoped_usage AS (
                        SELECT 'organization'::TEXT AS scope_type,
                               organization_id AS scope_id,
                               SUM(total_tokens)::BIGINT AS used_tokens
-                       FROM period_usage GROUP BY organization_id
+                       FROM authorized_usage GROUP BY organization_id
                        UNION ALL
                        SELECT 'department'::TEXT, department_id,
                               SUM(total_tokens)::BIGINT
-                       FROM period_usage GROUP BY department_id
+                       FROM authorized_usage GROUP BY department_id
                        UNION ALL
                        SELECT 'user'::TEXT, user_id, SUM(total_tokens)::BIGINT
-                       FROM period_usage GROUP BY user_id
+                       FROM authorized_usage GROUP BY user_id
                    )
                    SELECT scope_type, scope_id, used_tokens
                    FROM scoped_usage
-                   WHERE scope_id <> 'unattributed'""",
-                (from_, to, from_, to, from_, to),
+                   WHERE scope_id <> 'unattributed'{result_person}""",
+                tuple(parameters),
             ).fetchall()
             usd_rows = connection.execute(
-                """WITH usage_scopes AS (
+                f"""WITH usage_scopes AS (
                       SELECT organization_id AS scope_id, 'organization'::TEXT AS scope_type,
                           budget_usage_usd_cost(
                             usd_cost, estimated, input_tokens, cached_tokens,
@@ -136,7 +216,7 @@ class PostgreSqlBudgetRepositoryMixin:
                             output_price_per_million
                           ) AS usd_cost
                        FROM token_usage
-                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'{usd_scope}
                          AND organization_id <> 'unattributed'
                        UNION ALL
                                              SELECT department_id, 'department'::TEXT,
@@ -147,7 +227,7 @@ class PostgreSqlBudgetRepositoryMixin:
                                                                 output_price_per_million
                                                             )
                        FROM token_usage
-                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'{usd_scope}
                          AND department_id <> 'unattributed'
                        UNION ALL
                                              SELECT user_id, 'user'::TEXT,
@@ -158,14 +238,14 @@ class PostgreSqlBudgetRepositoryMixin:
                                                                 output_price_per_million
                                                             )
                        FROM token_usage
-                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'{usd_scope}
                          AND user_id <> 'unattributed'
                    )
                    SELECT scope_type, scope_id,
                           COALESCE(SUM(usd_cost), 0)::NUMERIC(30,14) AS used_usd,
                           COUNT(*) FILTER (WHERE usd_cost IS NULL)::BIGINT AS unpriced_usage_count
                    FROM usage_scopes GROUP BY scope_type, scope_id""",
-                (from_, to, from_, to, from_, to),
+                usd_parameters * 3,
             ).fetchall()
         usd_by_scope = {
             (row["scope_type"], row["scope_id"]): row for row in usd_rows
@@ -199,10 +279,40 @@ class PostgreSqlBudgetRepositoryMixin:
         ) or (budget_mode == "usd" and (token_limit is not None or usd_limit is None)):
             raise BudgetConstraintViolation("Budget limit does not match its mode")
         with self._connection() as connection, connection.transaction():
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"budget-config:{period_start}",),
-            )
+            directory_active = _lock_directory_state(connection)
+            if directory_active and scope_type == "user":
+                person = connection.execute(
+                    "SELECT id FROM directory_person WHERE governance_user_id=%s FOR UPDATE",
+                    (scope_id,),
+                ).fetchone()
+                existing_budget = connection.execute(
+                    """SELECT parent_scope_id FROM token_budget WHERE period_start=%s
+                       AND scope_type='user' AND scope_id=%s""",
+                    (period_start, scope_id),
+                ).fetchone()
+                if existing_budget and existing_budget["parent_scope_id"] != parent_scope_id:
+                    raise BudgetConstraintViolation(
+                        "Period attribution can only change through an approved directory transfer",
+                    )
+                if not existing_budget:
+                    current = connection.execute(
+                        """SELECT m.unit_id FROM directory_person p
+                           JOIN directory_membership m ON m.person_id=p.id
+                             AND m.membership_kind='primary_department' AND m.valid_from<=now()
+                             AND (m.valid_to IS NULL OR m.valid_to>now())
+                           JOIN directory_unit u ON u.id=m.unit_id AND u.status='active'
+                           JOIN directory_organization o ON o.id=u.organization_id
+                             AND o.status='active'
+                           WHERE p.governance_user_id=%s AND p.status='active'
+                             AND NOT p.manual_disabled
+                             AND NOT EXISTS(SELECT 1 FROM directory_external_binding e
+                               WHERE e.person_id=p.id AND e.source_disabled)""",
+                        (scope_id,),
+                    ).fetchone()
+                    if person is None or current is None or current["unit_id"] != parent_scope_id:
+                        raise BudgetConstraintViolation(
+                            "New user budgets require an active primary department"
+                        )
             lock_key = f"{period_start}:{scope_type}:{scope_id}"
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
@@ -383,10 +493,7 @@ class PostgreSqlBudgetRepositoryMixin:
         self, period_start: date, scope_type: str, scope_id: str, changed_by: str
     ) -> bool:
         with self._connection() as connection, connection.transaction():
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"budget-config:{period_start}",),
-            )
+            _lock_directory_state(connection)
             lock_key = f"{period_start}:{scope_type}:{scope_id}"
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
@@ -466,6 +573,7 @@ class PostgreSqlBudgetRepositoryMixin:
           copied before its parent.
         """
         with self._connection() as connection, connection.transaction():
+            _lock_directory_state(connection)
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (f"budget-roll-forward:{period_start}",),
@@ -551,21 +659,36 @@ class PostgreSqlBudgetRepositoryMixin:
         }
 
     def list_token_budget_audit(
-        self, period_start: date, limit: int
+        self,
+        period_start: date,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]:
+        scope = ""
+        parameters: list[Any] = [period_start]
+        if allowed_department_ids is not None:
+            scope = """ AND ((scope_type='department' AND scope_id=ANY(%s))
+                      OR (scope_type='user' AND EXISTS(
+                        SELECT 1 FROM token_budget b
+                        WHERE b.period_start=token_budget_audit.period_start
+                          AND b.scope_type='user' AND b.scope_id=token_budget_audit.scope_id
+                          AND b.parent_scope_id=ANY(%s))))"""
+            parameters.extend([list(allowed_department_ids), list(allowed_department_ids)])
+        parameters.append(limit)
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT id, period_start, scope_type, scope_id, action,
+                f"""SELECT id, period_start, scope_type, scope_id, action,
                           previous_budget_mode, new_budget_mode,
                           previous_token_limit, new_token_limit,
                           previous_usd_limit, new_usd_limit,
                           previous_warning_threshold_percent,
                           new_warning_threshold_percent, changed_at, changed_by
                    FROM token_budget_audit
-                   WHERE period_start = %s
+                   WHERE period_start = %s{scope}
                    ORDER BY changed_at DESC, id DESC
                    LIMIT %s""",
-                (period_start, limit),
+                parameters,
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -612,12 +735,18 @@ class PostgreSqlBudgetRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
-    def list_department_enforcement(self) -> Sequence[dict[str, Any]]:
+    def list_department_enforcement(
+        self,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> Sequence[dict[str, Any]]:
+        scope = " WHERE department_id=ANY(%s)" if allowed_department_ids is not None else ""
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT department_id, mode, updated_at, updated_by
-                   FROM department_enforcement
-                   ORDER BY department_id"""
+                f"""SELECT department_id, mode, updated_at, updated_by
+                   FROM department_enforcement{scope}
+                   ORDER BY department_id""",
+                (list(allowed_department_ids),) if allowed_department_ids is not None else (),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -658,17 +787,27 @@ class PostgreSqlBudgetRepositoryMixin:
         return True
 
     def list_department_enforcement_audit(
-        self, from_: datetime, to: datetime, limit: int
+        self,
+        from_: datetime,
+        to: datetime,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]:
+        scope = " AND department_id=ANY(%s)" if allowed_department_ids is not None else ""
+        parameters: list[Any] = [from_, to]
+        if allowed_department_ids is not None:
+            parameters.append(list(allowed_department_ids))
+        parameters.append(limit)
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT id, department_id, previous_mode, new_mode,
+                f"""SELECT id, department_id, previous_mode, new_mode,
                           changed_at, changed_by
                    FROM department_enforcement_audit
-                   WHERE changed_at >= %s AND changed_at < %s
+                   WHERE changed_at >= %s AND changed_at < %s{scope}
                    ORDER BY changed_at DESC, id DESC
                    LIMIT %s""",
-                (from_, to, limit),
+                parameters,
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -1045,6 +1184,42 @@ class PostgreSqlBudgetRepositoryMixin:
             list(dict.fromkeys(model_ids)) if model_ids is not None else None
         )
         with self._connection() as connection, connection.transaction():
+            directory_active = _lock_directory_state(connection)
+            if directory_active:
+                connection.execute(
+                    """SELECT id FROM directory_person WHERE governance_user_id=ANY(%s)
+                       ORDER BY id FOR UPDATE""",
+                    (user_ids,),
+                ).fetchall()
+                existing = connection.execute(
+                    """SELECT 1 FROM token_budget WHERE period_start=%s AND scope_type='user'
+                       AND scope_id=ANY(%s) AND parent_scope_id<>%s LIMIT 1""",
+                    (period_start, [user_id for user_id, _ in entries], department_id),
+                ).fetchone()
+                if existing:
+                    raise BudgetConstraintViolation(
+                        "Bulk allocation cannot move existing period attribution",
+                    )
+                required_users = (
+                    user_ids if model_ids is not None else [user_id for user_id, _ in entries]
+                )
+                active = connection.execute(
+                    """SELECT p.governance_user_id FROM directory_person p
+                       JOIN directory_membership m ON m.person_id=p.id
+                         AND m.membership_kind='primary_department' AND m.valid_from<=now()
+                         AND (m.valid_to IS NULL OR m.valid_to>now())
+                       JOIN directory_unit u ON u.id=m.unit_id AND u.status='active'
+                       JOIN directory_organization o ON o.id=m.organization_id AND o.status='active'
+                       WHERE p.governance_user_id=ANY(%s) AND m.unit_id=%s
+                         AND p.status='active' AND NOT p.manual_disabled
+                         AND NOT EXISTS(SELECT 1 FROM directory_external_binding e
+                           WHERE e.person_id=p.id AND e.source_disabled)""",
+                    (required_users, department_id),
+                ).fetchall()
+                if {row["governance_user_id"] for row in active} != set(required_users):
+                    raise BudgetConstraintViolation(
+                        "Selected people no longer belong to this active department",
+                    )
             if entries:
                 connection.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",

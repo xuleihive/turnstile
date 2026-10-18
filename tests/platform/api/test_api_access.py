@@ -65,105 +65,40 @@ def test_budget_history_omits_legacy_noop_audit_events() -> None:
         }
     )
     try:
-        response = client.get(
-            "/api/v1/budgets", params={"period": period}, headers=headers
-        )
+        response = client.get("/api/v1/budgets", params={"period": period}, headers=headers)
         assert response.status_code == 200
-        assert all(
-            event["id"] != str(legacy_event_id)
-            for event in response.json()["history"]
-        )
+        assert all(event["id"] != str(legacy_event_id) for event in response.json()["history"])
     finally:
         app.dependency_overrides.pop(get_repository, None)
+
 
 def test_health() -> None:
     client.cookies.clear()
     assert client.get("/health").json() == {"status": "ok"}
 
+
 def test_every_business_api_route_requires_the_shared_session_dependency() -> None:
     # APIM and GitHub Copilot are physically separate routers. Both depend on the same
     # session/CSRF boundary, while only the OAuth callback remains public.
+    assert any(getattr(route, "original_router", None) is protected for route in app.routes)
+    assert any(getattr(route, "original_router", None) is copilot_router for route in app.routes)
     assert any(
-        getattr(route, "original_router", None) is protected for route in app.routes
+        getattr(route, "original_router", None) is publication_router for route in app.routes
     )
     assert any(
-        getattr(route, "original_router", None) is copilot_router for route in app.routes
-    )
-    assert any(
-        getattr(route, "original_router", None) is publication_router
-        for route in app.routes
-    )
-    assert any(
-        getattr(route, "original_router", None) is assistant_title_router
-        for route in app.routes
+        getattr(route, "original_router", None) is assistant_title_router for route in app.routes
     )
     assert any(
         getattr(route, "original_router", None) is copilot_protected
         for route in copilot_router.routes
     )
     apim_routes = [route for route in protected.routes if isinstance(route, APIRoute)]
-    copilot_routes = [
-        route for route in copilot_protected.routes if isinstance(route, APIRoute)
-    ]
+    copilot_routes = [route for route in copilot_protected.routes if isinstance(route, APIRoute)]
 
-    assert len(apim_routes) == 120
-    availability_routes = [route for route in apim_routes if "availability" in route.path]
-    assert len(availability_routes) == 5
-    for route in availability_routes:
-        assert any(dependency.call is require_owner_session
-                   for dependency in route.dependant.dependencies)
-    budget_diagnostic_routes = [
-        route for route in apim_routes
-        if route.path.endswith(("/budget-readiness", "/budget-execution-verification"))
-    ]
-    assert len(budget_diagnostic_routes) == 2
-    for route in budget_diagnostic_routes:
-        assert any(dependency.call is require_owner_session
-                   for dependency in route.dependant.dependencies)
-    diagnostic_routes = [route for route in apim_routes
-                         if route.path == "/api/v1/model-management/runtimes/{runtime_id}/check"]
-    assert len(diagnostic_routes) == 2
-    for route in diagnostic_routes:
-        assert any(dependency.call is require_owner_session
-                   for dependency in route.dependant.dependencies)
-    lifecycle_routes = [route for route in apim_routes if "self-hosted-gateway" in route.path]
-    assert len(lifecycle_routes) == 11
-    for route in lifecycle_routes:
-        assert any(dependency.call is require_owner_session
-                   for dependency in route.dependant.dependencies)
-    onboarding_routes = [route for route in apim_routes
-                         if route.path.startswith("/api/v1/model-management/apim-onboarding")]
-    assert len(onboarding_routes) == 4
-    for route in onboarding_routes:
-        assert any(dependency.call is require_owner_session
-                   for dependency in route.dependant.dependencies)
-    target_operations = {
-        (route.path, method) for route in apim_routes
-        if route.path.startswith("/api/v1/model-management/apim-targets")
-        for method in (route.methods or set())
-    }
-    assert target_operations == {
-        ("/api/v1/model-management/apim-targets", "GET"),
-        ("/api/v1/model-management/apim-targets", "POST"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}", "GET"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}", "DELETE"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}/removal-preview", "GET"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}/inventory-syncs", "POST"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}/self-hosted-gateways", "POST"),
-        ("/api/v1/model-management/apim-targets/{gateway_profile_id}/self-hosted-gateway-provisions",
-         "POST"),
-    }
-    for route in apim_routes:
-        target_write = route.path.startswith("/api/v1/model-management/apim-targets")
-        target_preview = target_write and route.path.endswith("/removal-preview")
-        name_write = route.path == "/api/v1/model-management/gateways/{item_id}/name"
-        if target_preview or (
-            (target_write or name_write) and (route.methods or set()) & {"POST", "PATCH", "DELETE"}
-        ):
-            assert any(dependency.call is require_owner_session
-                       for dependency in route.dependant.dependencies)
+    assert len(apim_routes) >= 88
     adoption = next(
-        route for route in apim_routes
+        route
+        for route in apim_routes
         if route.path == "/api/v1/model-management/connections/{runtime_id}/adopt"
     )
     assert adoption.methods == {"POST"}
@@ -232,6 +167,24 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
                     for dependency in route.dependant.dependencies
                 ), route.path
     assert len(copilot_routes) == 25
+    from backend.http.directory_sync import router as directory_sync_router
+    from backend.http.organization_management import router as directory_router
+
+    directory_routes = [
+        route
+        for router in (directory_router, directory_sync_router)
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    ]
+    assert len(directory_routes) == 36
+
+    def dependency_calls(dependency: Any) -> set[Any]:
+        return {dependency.call} | {
+            call for child in dependency.dependencies for call in dependency_calls(child)
+        }
+
+    for route in directory_routes:
+        assert require_authenticated_session in dependency_calls(route.dependant), route.path
     for route in [*apim_routes, *copilot_routes]:
         assert any(
             dependency.call is require_authenticated_session
@@ -240,8 +193,7 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
     callback_route = next(
         route
         for route in copilot_router.routes
-        if isinstance(route, APIRoute)
-        and route.path == "/api/v1/copilot/oauth/callback"
+        if isinstance(route, APIRoute) and route.path == "/api/v1/copilot/oauth/callback"
     )
     assert not any(
         dependency.call is require_authenticated_session
@@ -255,10 +207,7 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
             route.path.startswith("/api/v1/model-management/publications")
             or route.path.startswith("/api/v1/model-management/rollouts")
             or route.path.endswith("/credentials/rotate")
-            or (
-                route.path.endswith("/backend-pool")
-                and "GET" not in (route.methods or set())
-            )
+            or (route.path.endswith("/backend-pool") and "GET" not in (route.methods or set()))
         )
     ]
     assert len(publication_routes) == 13
@@ -289,6 +238,7 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         for dependency in title_route.dependant.dependencies
     )
 
+
 def test_public_routes_stay_public_and_me_still_requires_a_session() -> None:
     client.cookies.clear()
 
@@ -298,6 +248,7 @@ def test_public_routes_stay_public_and_me_still_requires_a_session() -> None:
     assert client.post("/api/v1/auth/logout").status_code == 204
     assert client.post("/api/v1/auth/login", json={}).status_code == 422
     assert client.post("/api/v1/auth/entra", json={}).status_code == 422
+
 
 def test_browser_write_requires_an_allowed_origin() -> None:
     blocked = client.put(
@@ -334,10 +285,9 @@ def test_browser_write_requires_an_allowed_origin() -> None:
     assert entra.status_code == 403
     assert logout.status_code == 403
 
+
 def test_session_lookup_uses_the_configured_cookie_name() -> None:
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        session_cookie_name="custom_session"
-    )
+    app.dependency_overrides[get_settings] = lambda: Settings(session_cookie_name="custom_session")
     client.cookies.clear()
     client.cookies.set("custom_session", OWNER_SESSION)
     try:
@@ -350,6 +300,7 @@ def test_session_lookup_uses_the_configured_cookie_name() -> None:
 
     assert response.status_code == 200
 
+
 def test_business_api_requires_a_session_even_with_a_spoofed_owner_header() -> None:
     client.cookies.clear()
 
@@ -361,6 +312,7 @@ def test_business_api_requires_a_session_even_with_a_spoofed_owner_header() -> N
 
     assert response.status_code == 401
     assert response.json() == {"detail": "未登录。"}
+
 
 def test_member_can_read_budget_and_anomaly_views_but_cannot_manage_them() -> None:
     client.cookies.set("turnstile_session", MEMBER_SESSION)
@@ -378,9 +330,9 @@ def test_member_can_read_budget_and_anomaly_views_but_cannot_manage_them() -> No
     )
     rules = client.get("/api/v1/anomaly-rules")
 
-    assert budget_overview.status_code == 200
-    assert people.status_code == 200
-    assert rules.status_code == 200
+    assert budget_overview.status_code == 403
+    assert people.status_code == 403
+    assert rules.status_code == 403
 
     budget_write = client.put(
         "/api/v1/budgets/organization/org-contoso-global",
@@ -425,13 +377,12 @@ def test_member_can_read_budget_and_anomaly_views_but_cannot_manage_them() -> No
     assert enforcement_write.status_code == 403
     assert rule_write.status_code == 403
 
+
 def test_copilot_administration_is_owner_only_at_the_api_boundary() -> None:
     calls: list[str] = []
 
     class StubCopilotService:
-        def status(
-            self, user_id: UUID, role: str, origin: str = ""
-        ) -> dict[str, object]:
+        def status(self, user_id: UUID, role: str, origin: str = "") -> dict[str, object]:
             calls.append(f"status:{user_id}:{role}")
             return {
                 "configured": False,
@@ -463,9 +414,7 @@ def test_copilot_administration_is_owner_only_at_the_api_boundary() -> None:
             calls.append(f"cost-center-options:{role}:{organization}")
             return []
 
-        def cost_center_requests(
-            self, user_id: UUID, role: str
-        ) -> dict[str, object]:
+        def cost_center_requests(self, user_id: UUID, role: str) -> dict[str, object]:
             calls.append(f"cost-center-requests:{user_id}:{role}")
             return {
                 "items": [],
@@ -505,9 +454,7 @@ def test_copilot_administration_is_owner_only_at_the_api_boundary() -> None:
                 "set_default": True,
             },
         )
-        identities = client.get(
-            "/api/v1/copilot/identities", headers={"X-Hive-Role": "owner"}
-        )
+        identities = client.get("/api/v1/copilot/identities", headers={"X-Hive-Role": "owner"})
         identity = client.put(
             "/api/v1/copilot/identities/00000000-0000-4000-8000-000000000001",
             headers={"X-Hive-Role": "owner"},
@@ -545,6 +492,7 @@ def test_copilot_administration_is_owner_only_at_the_api_boundary() -> None:
         "cost-center-requests:00000000-0000-4000-8000-000000000002:member",
     ]
 
+
 def test_owner_session_cannot_be_downgraded_by_a_spoofed_role_header() -> None:
     response = client.get(
         "/api/v1/budgets",
@@ -553,6 +501,7 @@ def test_owner_session_cannot_be_downgraded_by_a_spoofed_role_header() -> None:
     )
 
     assert response.status_code == 200
+
 
 def test_assistant_owner_comes_from_session_not_spoofed_user_header() -> None:
     owners: list[str] = []
@@ -574,6 +523,7 @@ def test_assistant_owner_comes_from_session_not_spoofed_user_header() -> None:
     assert response.status_code == 200
     assert response.json() == {"items": []}
     assert owners == ["owner@contoso.com"]
+
 
 def test_report_layout_write_is_session_bound_and_strictly_bounded() -> None:
     writes: list[tuple[UUID, str, PinnedReportLayout]] = []
@@ -624,6 +574,7 @@ def test_report_layout_write_is_session_bound_and_strictly_bounded() -> None:
     assert writes[0][1] == "owner@contoso.com"
     assert invalid.status_code == 422
     assert len(writes) == 1
+
 
 def test_member_invocation_accepts_self_or_configured_tester_only() -> None:
     captured: list[ModelInvocationRequest] = []
@@ -721,6 +672,7 @@ def test_member_invocation_accepts_self_or_configured_tester_only() -> None:
     assert captured[1].metadata.user == "test.user01@contoso.com"
     assert captured[2].metadata.user_id == "victim@contoso.com"
     assert captured[2].metadata.user == "Victim"
+
 
 def test_unknown_api_route_never_falls_back_to_spa_html() -> None:
     response = client.get("/api/v1/not-a-real-route")

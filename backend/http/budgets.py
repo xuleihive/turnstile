@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from turnstile_core.config import get_settings
+from turnstile_core.domain.budget_delegation import BudgetCapabilities
 from turnstile_core.domain.ledger import (
     BudgetReservationResolution,
     BudgetReservationResolutionWrite,
@@ -22,9 +24,16 @@ from turnstile_core.domain.models import (
     TokenBudgetWrite,
 )
 
+from ..services.budget_readiness import budget_capabilities
 from ..services.budget_service import BudgetConflictError, BudgetNotFoundError
+from .dependencies import Repository
 from .service_dependencies import BudgetReservationServiceDependency, TokenBudgetServiceDependency
-from .session import OwnerSession, require_allowed_write_origin, require_authenticated_session
+from .session import (
+    CurrentSession,
+    OwnerSession,
+    require_allowed_write_origin,
+    require_authenticated_session,
+)
 
 router = APIRouter(
     dependencies=[
@@ -32,6 +41,16 @@ router = APIRouter(
         Depends(require_allowed_write_origin),
     ]
 )
+
+
+@router.get("/api/v1/budgets/capabilities", response_model=BudgetCapabilities)
+def get_budget_capabilities(
+    identity: CurrentSession, repository: Repository, response: Response,
+) -> BudgetCapabilities:
+    if identity.directory_department_ids == ():
+        raise HTTPException(status_code=403, detail="Budget scope access is not granted")
+    response.headers["Cache-Control"] = "no-store"
+    return budget_capabilities(repository, get_settings())
 
 
 @router.get("/api/v1/budgets/reservations", response_model=list[LedgerAttempt])
@@ -74,15 +93,24 @@ def approve_budget_reservation_resolution(
 @router.get("/api/v1/budgets", response_model=TokenBudgetResponse)
 def get_token_budgets(
     service: TokenBudgetServiceDependency,
+    identity: CurrentSession,
     period: Annotated[str, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")],
     include_users: bool = False,
 ) -> TokenBudgetResponse:
-    return service.overview(period, include_users=include_users)
+    if identity.directory_department_ids == ():
+        raise HTTPException(status_code=403, detail="Budget scope access is not granted")
+    return service.overview(
+        period,
+        include_users=include_users,
+        allowed_department_ids=identity.directory_department_ids,
+        data_scope=identity.data_scope,
+    )
 
 
 @router.get("/api/v1/budgets/users", response_model=TokenBudgetPeopleResponse)
 def get_people_budgets(
     service: TokenBudgetServiceDependency,
+    identity: CurrentSession,
     period: Annotated[str, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")],
     department_id: str,
     query: Annotated[str | None, Query(max_length=200)] = None,
@@ -90,8 +118,15 @@ def get_people_budgets(
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> TokenBudgetPeopleResponse:
+    if (
+        identity.directory_department_ids is not None
+        and department_id not in identity.directory_department_ids
+    ):
+        raise HTTPException(status_code=404, detail="Department budget scope not found")
     try:
-        return service.people(period, department_id, query, status, offset, limit)
+        return service.people(
+            period, department_id, query, status, offset, limit, data_scope=identity.data_scope,
+        )
     except BudgetNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 

@@ -4,10 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { App } from "./app"
 import { ApiError } from "./data-sources/apim/api"
 import { LoginPage } from "./pages/login-page"
+import { ClientAuthorizationPage } from "./pages/client-authorization-page"
 import { LocaleProvider } from "./locales/index"
 import { AuthProvider, useAuth } from "./providers/auth-provider"
 import { ThemeProvider } from "./providers/theme-provider"
 import { TimezoneProvider } from "./providers/timezone-provider"
+import { DataRefreshProvider } from "./providers/data-refresh-provider"
 import "@xyflow/react/dist/style.css"
 import "./styles.css"
 
@@ -36,6 +38,7 @@ const queryClient: QueryClient = import.meta.hot?.data.queryClient ?? new QueryC
     queries: {
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
+      refetchOnMount: "always",
       // One retry, but only for failures that could plausibly go away. A 4xx is the
       // server's considered answer -- retrying a 404 from an API older than this UI just
       // doubles how long the page sits on a spinner before saying so. Measured against a
@@ -46,6 +49,21 @@ const queryClient: QueryClient = import.meta.hot?.data.queryClient ?? new QueryC
     },
   },
 })
+
+function pendingClientAuthorization(): string | null {
+  const supplied = new URLSearchParams(window.location.search).get("client_authorization")
+  try {
+    if (supplied && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(supplied)) {
+      sessionStorage.setItem("turnstile-client-authorization", JSON.stringify({ code: supplied, until: Date.now() + 300_000 }))
+      return supplied
+    }
+    const pending = JSON.parse(sessionStorage.getItem("turnstile-client-authorization") ?? "null") as { code: string; until: number } | null
+    if (pending && pending.until > Date.now() && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(pending.code)) return pending.code
+    sessionStorage.removeItem("turnstile-client-authorization")
+  } catch { /* Login still works when browser storage is unavailable. */ }
+  return null
+}
+const clientAuthorization = pendingClientAuthorization()
 
 /** Nothing behind this renders until the session is known.
  *
@@ -92,7 +110,9 @@ root.render(
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
               <AuthGate>
-                <App />
+                <DataRefreshProvider>
+                  {clientAuthorization ? <ClientAuthorizationPage code={clientAuthorization} /> : <App />}
+                </DataRefreshProvider>
               </AuthGate>
             </AuthProvider>
           </QueryClientProvider>

@@ -15,16 +15,18 @@ export type MetricTotals = {
 export type UsageFilters = {
   from: string
   to: string
-  organization_id?: string
-  department_id?: string
-  project_id?: string
-  agent_id?: string
-  model_id?: string
-  user_id?: string
+  organization_id?: string | string[]
+  department_id?: string | string[]
+  project_id?: string | string[]
+  agent_id?: string | string[]
+  model_id?: string | string[]
+  user_id?: string | string[]
   runtime?: string[]
   status_code?: number
   apim_target_id?: string
   gateway_deployment_id?: string
+
+  directory_status?: UsageDirectoryStatus[]
 }
 
 export type ExecutiveTotals = {
@@ -309,6 +311,8 @@ export type TokenBudgetResponse = {
     TokenBudgetAuditEvent | UserModelAccessAuditEvent | DepartmentEnforcementAuditEvent
   >
   enforcement: DepartmentEnforcement[]
+
+  coverage?: "global" | "department"
 }
 
 export type TokenBudgetRiskItem = {
@@ -803,6 +807,8 @@ export type ManagedModel = {
   context_price_rule?: ContextPriceRule | null
   context_price_tiers?: StoredContextPriceTier[]
   pending_context_price_tiers?: StoredContextPriceTier[] | null
+
+  price_source_configured?: boolean
 }
 
 export type ModelRegistry = {
@@ -978,7 +984,11 @@ export type GatewayPublicationCreate = {
     price_discount_percent?: number | null
     context_price_references?: string[]
     context_price_rule?: ContextPriceRule
-  }
+
+  allow_unpriced?: boolean
+
+  price_entry_digest?: string | null
+}
   deployment_scope?: GatewayDeploymentScope
 }
 
@@ -1035,6 +1045,8 @@ export type GatewayPublication = {
   started_at: string | null
   completed_at: string | null
   updated_at: string
+
+  retry_can_authorize_image_probes?: boolean
 }
 
 export type GatewayProgramUpgradePreview = {
@@ -1487,6 +1499,11 @@ export type GatewayApplicationAuditEvent = {
 }
 
 export type GatewayApplicationDetail = GatewayApplicationSummary & {
+  budget_projection?: {
+    status: "projected" | "pending" | "unavailable"
+    tokens_per_minute: number | null
+    configuration_updated_at: string | null
+  } | null
   subscriptions: GatewayApplicationSubscription[]
   users: GatewayApplicationUserUsage[]
   user_count: number
@@ -1721,9 +1738,9 @@ export type ImageInvocationResponse = Pick<ModelInvocationResponse,
   data: Array<{ b64_json: string; media_type: "image/png" | "image/jpeg" | "image/webp" }>
 }
 
-export type PriceSource = "manual" | "azure_retail" | "anthropic"
+export type PriceSource = "models_dev" | "manual" | "azure_retail" | "anthropic"
 
-export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded"
+export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded" | "ambiguous" | "unsupported" | "deferred"
 
 export type PendingListPrice = {
   input: number | null
@@ -1818,8 +1835,10 @@ export type PriceCatalogOptionsResponse = {
 export type PriceSyncDetail = {
   model_id: string
   model_key: string
-  status: PriceSyncStatus
+  status: PriceSyncStatus | null
   message: string | null
+
+  outcome: string | null
 }
 
 export type PriceSyncResponse = {
@@ -1831,4 +1850,69 @@ export type PriceSyncResponse = {
   superseded: number
   details: PriceSyncDetail[]
   registry: ModelRegistry
+
+  partial_fields: number
+
+  deferred: number
+
+  unsupported: number
+
+  ambiguous: number
+
+  skipped_manual: number
+
+  unchanged: number
+
+  total: number
 }
+
+export type PricePreviewResponse = {
+  status: "matched" | "unmapped" | "ambiguous" | "stale" | "unsupported" | "deferred"
+  match: PriceMatch | null
+  context_window: number | null
+  effective_prices: { input: number | null; output: number | null; cached: number | null; cache_write: number | null } | null
+  entry_digest: string | null
+  warnings: string[]
+  candidates: PriceMatch[]
+}
+
+export type PricePreviewRequest = {
+  model_id?: string
+  runtime_id?: string
+  price_source?: PriceSource
+  deployment_name?: string
+  upstream_model_id?: string
+  display_name?: string
+  model_key?: string
+  operation?: "chat" | "image_generation" | "decision"
+  price_reference?: string | null
+  price_discount_percent?: number | null
+  refresh?: boolean
+  rematch?: boolean
+}
+
+export type PriceMatch = {
+  reference: string
+  provider_id: string
+  model_id: string
+  name: string
+  method: "exact" | "ai" | "manual" | "stored"
+  price_basis: "deployment" | "origin_reference"
+}
+
+export type UsageQueryEntityCatalog = {
+  organizations: UsageQueryEntity[]
+  departments: UsageQueryEntity[]
+  projects: UsageQueryEntity[]
+  agents: UsageQueryEntity[]
+  users: UsageQueryEntity[]
+  invocation_testers: EnterpriseEntity[]
+}
+
+export type UsageQueryEntity = EnterpriseEntity & {
+  directory_status: UsageDirectoryStatus
+  source: "directory" | "historical"
+  parent_ids: string[]
+}
+
+export type UsageDirectoryStatus = "active" | "archived" | "historical" | "unattributed"

@@ -39,7 +39,10 @@ def test_frontend_copilot_owns_its_api_queries_types_and_pages() -> None:
     assert sorted(path.name for path in (REPOSITORY_ROOT / "frontend/src/api").iterdir()) == [
         "auth.ts",
         "cache-policies.ts",
+        "client-downloads.ts",
         "client.ts",
+        "permissions.ts",
+        "user-settings.ts",
     ]
 
 

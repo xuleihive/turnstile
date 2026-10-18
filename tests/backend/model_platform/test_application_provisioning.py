@@ -839,6 +839,8 @@ def test_initial_admission_projection_does_not_reset_consumption_or_other_consum
     assert ledger.rows[(application_rate_limit_partition_key(spec.application_id), "T")] == {
         "TokensPerMinute": 24_000,
     }
+    quota_revision = ledger.rows[(partition, "Q")]["ConfigurationUpdatedAt"]
+    assert datetime.fromisoformat(quota_revision).tzinfo is not None
     ledger.rows[(partition, "C")] = {"ConfirmedUsed": 123}
     ledger.rows[(partition, "R|unit")] = {"Reserved": 456}
     ledger.rows[("other-consumer", "Q")] = {"Limit": 999}
@@ -846,6 +848,7 @@ def test_initial_admission_projection_does_not_reset_consumption_or_other_consum
     assert completed is not None and completed.status == "succeeded"
     assert ledger.rows[(partition, "Q")] == {
         "Limit": 420_000, "TokensPerMinute": 24_000, "Enforce": True,
+        "ConfigurationUpdatedAt": quota_revision,
     }
     assert ledger.rows[(partition, "C")] == {"ConfirmedUsed": 123}
     assert ledger.rows[(partition, "R|unit")] == {"Reserved": 456}

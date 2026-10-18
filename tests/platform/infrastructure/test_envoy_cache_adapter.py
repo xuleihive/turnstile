@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import re
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -96,6 +97,56 @@ def test_observer_execution_requires_complete_protocol_usage(protocol: str) -> N
     UsageEvent.model_validate(event)
     assert event["usage_event_source"] == "observer"
     assert event["tokens_consumed"] == (2358 if protocol == "anthropic_messages" else 1230)
+
+
+@pytest.mark.parametrize("completion,total,reasoning,expected", [
+    (1, 52, 43, 44),
+    (44, 52, 43, 44),
+    (1, 9, None, 1),
+])
+def test_chat_reasoning_is_counted_only_when_the_reported_total_requires_it(
+    completion: int, total: int, reasoning: int | None, expected: int,
+) -> None:
+    event = load_shipper().normalize_access_row(execution_row(
+        prompt_tokens=8, cache_read_tokens=0, cache_write_tokens=0,
+        output_tokens=completion, total_tokens=total, reasoning_tokens=reasoning,
+    ))
+    assert event is not None and event["usage_complete"] is True
+    assert event["input_tokens"] == 8 and event["output_tokens"] == expected
+    assert event["tokens_consumed"] == total
+    UsageEvent.model_validate(event)
+
+
+@pytest.mark.parametrize("reasoning", [None, -1, True, 42.5, 42])
+def test_chat_reasoning_never_fills_an_unproven_token_difference(reasoning: object) -> None:
+    event = load_shipper().normalize_access_row(execution_row(
+        prompt_tokens=8, cache_read_tokens=0, cache_write_tokens=0,
+        output_tokens=1, total_tokens=52, reasoning_tokens=reasoning,
+    ))
+    assert event is not None and event["usage_complete"] is False
+    assert event["tokens_consumed"] is None and event["estimated"] is True
+
+
+def test_usd_chat_reasoning_uses_the_admitted_output_price() -> None:
+    from turnstile_core.domain.budget_completion import usd_completion_charge
+
+    model_id = UUID(int=4)
+    admitted = identity(model_id=str(model_id))
+    projection = BudgetPriceProjection.create(model_id, ModelPrice(
+        input_price_per_million=2, cached_price_per_million=0.5,
+        cache_write_price_per_million=0, output_price_per_million=6,
+    ), admitted.admitted_at)
+    receipt = LedgerAdmissionReceipt(identity=admitted, epoch=EPOCH, reserved_tokens=2000,
+        budget_mode="usd", reserved_usd=Decimal("3"), price_snapshot=projection)
+    encoded = base64.b64encode(json.dumps([receipt.model_dump(mode="json")]).encode()).decode()
+    event = load_shipper().normalize_access_row(execution_row(
+        model_id=str(model_id), budget_execution=encoded,
+        prompt_tokens=8, cache_read_tokens=0, cache_write_tokens=0,
+        output_tokens=1, total_tokens=52, reasoning_tokens=43,
+    ))
+    assert event is not None and event["usage_complete"] is True
+    assert event["output_tokens"] == 44 and event["tokens_consumed"] == 52
+    assert usd_completion_charge(projection.model_dump(mode="json"), event) == Decimal("0.000280")
 
 
 @pytest.mark.parametrize("changes", [
@@ -260,6 +311,29 @@ def test_only_exact_pool_runtime_metadata_is_authoritative(runtime: object) -> N
     assert load_shipper().normalize_access_row(access_row(
         response_code=503, pool_runtime=runtime,
     )) is None
+
+
+@pytest.mark.parametrize("content_type,allowed", [
+    ("application/json", True),
+    ("application/json; charset=utf-8", True),
+    ("application/json;charset=UTF-8", True),
+    ('Application/JSON ; Charset="utf-8"', True),
+    ("text/event-stream", False),
+    ("text/html", False),
+    ("application/jsonp", False),
+    ("", False),
+])
+def test_json_usage_metadata_accepts_json_media_type_parameters_only(
+    content_type: str, allowed: bool,
+) -> None:
+    template = yaml.safe_load((ADAPTER / "envoy.yaml.template").read_text())
+    filters = template["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]["http_filters"]
+    json_filter = next(item["typed_config"] for item in filters
+                       if item["name"] == "envoy.filters.http.json_to_metadata")
+    pattern = json_filter["response_rules"]["allow_content_types_regex"]["regex"]
+    assert bool(re.fullmatch(pattern, content_type)) is allowed
 
 
 def test_observer_keeps_fallback_cache_and_pool_identity_in_separate_metadata() -> None:

@@ -60,6 +60,7 @@ static_resources:
                           cache_read_tokens_fallback: "%DYNAMIC_METADATA(turnstile.usage:cache_read_tokens_fallback)%"
                           cache_write_tokens: "%DYNAMIC_METADATA(turnstile.usage:cache_write_tokens)%"
                           output_tokens: "%DYNAMIC_METADATA(turnstile.usage:output_tokens)%"
+                          reasoning_tokens: "%DYNAMIC_METADATA(turnstile.usage:reasoning_tokens)%"
                           total_tokens: "%DYNAMIC_METADATA(turnstile.usage:total_tokens)%"
                           last_event_type: "%DYNAMIC_METADATA(turnstile.usage:last_event_type)%"
                           response_type: "%DYNAMIC_METADATA(turnstile.usage:response_type)%"
@@ -186,6 +187,7 @@ static_resources:
                               - rule: { selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cached_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cache_write_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_write_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: completion_tokens }], on_present: { metadata_namespace: turnstile.usage, key: output_tokens, type: NUMBER } }
+                              - rule: { selectors: [{ key: usage }, { key: completion_tokens_details }, { key: reasoning_tokens }], on_present: { metadata_namespace: turnstile.usage, key: reasoning_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: message }, { key: usage }, { key: input_tokens }], on_present: { metadata_namespace: turnstile.usage, key: prompt_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: message }, { key: usage }, { key: cache_read_input_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: message }, { key: usage }, { key: cache_creation_input_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_write_tokens, type: NUMBER } }
@@ -202,6 +204,9 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.json_to_metadata.v3.JsonToMetadata
                       response_rules:
+                        allow_content_types_regex:
+                          google_re2: {}
+                          regex: '(?i)^application/json(?:[ \t]*;.*)?$'
                         rules:
                           - selectors: [{ key: type }]
                             on_present: { metadata_namespace: turnstile.usage, key: response_type, type: STRING }
@@ -221,6 +226,8 @@ static_resources:
                             on_present: { metadata_namespace: turnstile.usage, key: cache_write_tokens, type: NUMBER }
                           - selectors: [{ key: usage }, { key: completion_tokens }]
                             on_present: { metadata_namespace: turnstile.usage, key: output_tokens, type: NUMBER }
+                          - selectors: [{ key: usage }, { key: completion_tokens_details }, { key: reasoning_tokens }]
+                            on_present: { metadata_namespace: turnstile.usage, key: reasoning_tokens, type: NUMBER }
                           - selectors: [{ key: usage }, { key: input_tokens }]
                             on_present: { metadata_namespace: turnstile.usage, key: prompt_tokens, type: NUMBER }
                           - selectors: [{ key: usage }, { key: input_tokens_details }, { key: cached_tokens }]

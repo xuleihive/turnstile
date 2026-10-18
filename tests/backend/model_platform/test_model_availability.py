@@ -1454,7 +1454,7 @@ def test_availability_arm_inventory_never_returns_partial_bounded_results(
 
 def test_publication_compiler_binds_all_diagnostics_to_the_same_immutable_snapshot() -> None:
     repository = InMemoryRepository()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "unit-owner"
     )
     original = ApimPolicyCompiler().compile(publication)
@@ -1530,7 +1530,7 @@ def test_publication_worker_projects_before_probes_and_recovers_promotion_read_o
 ) -> None:
     repository, client = InMemoryRepository(), FakeApimClient()
     repository.models = []
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "unit-owner"
     )
     canonical = client.policy
@@ -1614,7 +1614,9 @@ def test_publication_worker_rejects_uninstalled_availability_before_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, client = InMemoryRepository(), FakeApimClient()
-    GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
+    GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
+        bedrock_publication(), "unit-owner",
+    )
     monkeypatch.setattr(repository, "model_availability_supported", lambda: True)
     worker = GatewayPublicationWorker(
         repository, client, client.policy, availability_projector=Mock()
@@ -1650,7 +1652,9 @@ def test_publication_probe_requires_exact_disabled_contract_without_normal_infer
                 row["id"] for row in repository.providers if row["brand_key"] == "microsoft_foundry"
             )
         )
-    publication = GatewayControlPlaneService(repository, apim_principal_id="unit").publish(
+    publication = GatewayControlPlaneService(
+        repository, apim_principal_id="unit", image_generation_enabled=True,
+    ).publish(
         request, "unit-owner"
     )
     snapshot = ModelAvailabilityPublication.capture(publication, repository.registry(), "unit-api")
@@ -1702,7 +1706,7 @@ def test_rollback_keeps_current_disabled_state_and_rejects_unenforced_old_revisi
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, client = InMemoryRepository(), FakeApimClient()
-    publication = GatewayControlPlaneService(repository).publish(
+    publication = GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
         bedrock_publication(), "unit-owner"
     )
     snapshot = ModelAvailabilityPublication.capture(publication, repository.registry(), "unit-api")

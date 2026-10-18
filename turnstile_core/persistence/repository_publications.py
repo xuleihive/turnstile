@@ -2570,7 +2570,6 @@ class PostgreSqlPublicationRepositoryMixin:
                            provider_id, gateway_profile_id, name, runtime_kind,
                            enabled, is_default, config
                        ) VALUES (%s, %s, %s, %s, TRUE, FALSE, %s)
-                       ON CONFLICT (name) DO UPDATE SET updated_at = model_runtime.updated_at
                        RETURNING *""",
                     (
                         provider_id,
@@ -2735,11 +2734,19 @@ class PostgreSqlPublicationRepositoryMixin:
                         model_spec.get("list_cached_cost_per_million"),
                         model_spec.get("list_cache_write_cost_per_million"),
                         publication["created_at"]
-                        if model_spec.get("price_source", "manual") != "manual" else None,
-                        "ok" if model_spec.get("price_source", "manual") != "manual" else None,
+                        if model_spec.get("price_source", "manual") != "manual"
+                        and model_spec.get("price_reference") else None,
+                        "ok" if model_spec.get("price_source", "manual") != "manual"
+                        and model_spec.get("price_reference") else None,
                         Jsonb(model_spec.get("context_price_tiers") or []),
                     ),
                 )
+                if pricing := model_spec.get("price_configuration"):
+                    from .repository_registry import PostgreSqlRegistryRepositoryMixin
+
+                    PostgreSqlRegistryRepositoryMixin._write_price(
+                        connection, "model", model["id"], pricing,
+                    )
             self._sync_active_route_bindings(connection, publication)
             row = self._complete_gateway_activation(
                 connection, publication, publication_id, actor

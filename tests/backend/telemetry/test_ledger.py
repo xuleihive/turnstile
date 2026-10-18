@@ -700,7 +700,7 @@ def test_postgres_ledger_reads_bind_all_scope_and_period_parameters() -> None:
     assert connection.execute.call_count == 7
     for call in connection.execute.call_args_list:
         query, parameters = call.args
-        assert query % parameters
+        assert query % (parameters if isinstance(parameters, dict) else tuple(parameters))
 
 
 def test_postgres_snapshot_writes_one_complete_version_guarded_balance() -> None:
@@ -1066,6 +1066,9 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
         "Limit": 100_000,
         "TokensPerMinute": 100_000,
         "Enforce": True,
+        "ConfigurationUpdatedAt": repository.gateway_application_budgets[
+            (date(2026, 7, 1), application_id)
+        ]["updated_at"].isoformat(timespec="microseconds"),
     }
     assert store.entities[(partition, "C")] == {"ConfirmedUsed": 400}
     assert (partition, reservation) not in store.entities

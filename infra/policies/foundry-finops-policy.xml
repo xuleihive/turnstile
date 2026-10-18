@@ -1274,11 +1274,21 @@
     <choose>
       <when condition="@(context.Subscription != null &amp;&amp; (bool)context.Variables[&quot;isInferenceOperation&quot;])">
         <set-variable name="consumerId" value="@(context.Subscription.Id)" />
+        <set-variable name="effectiveApplicationTpm" value="@{
+          var fallback = (long)__TOKENS_PER_MINUTE__;
+          var state = context.Variables.GetValueOrDefault&lt;JObject&gt;(&quot;applicationLedgerState&quot;, null);
+          var mapping = context.Variables.GetValueOrDefault&lt;JObject&gt;(&quot;applicationMapState&quot;, null);
+          var mapped = mapping != null &amp;&amp; (string)mapping[&quot;status&quot;] == &quot;ok&quot;;
+          var configured = state != null &amp;&amp; ((bool?)state[&quot;available&quot;] ?? false);
+          var requested = configured ? ((long?)state[&quot;tokensPerMinute&quot;] ?? fallback) : fallback;
+          return (int)(mapped &amp;&amp; configured &amp;&amp; requested &gt; 0 &amp;&amp; requested &lt;= int.MaxValue
+            ? requested : fallback);
+        }" />
         <choose>
           <when condition="@(!(bool)context.Variables[&quot;isImagesOperation&quot;])">
         <llm-token-limit
           counter-key="@($&quot;finops:subscription:{(string)context.Variables[&quot;consumerId&quot;]}&quot;)"
-          tokens-per-minute="@((int)(long)context.Variables[&quot;applicationTokensPerMinute&quot;])"
+          tokens-per-minute="@((int)context.Variables[&quot;effectiveApplicationTpm&quot;])"
           estimate-prompt-tokens="true"
           retry-after-header-name="Retry-After"
           remaining-tokens-header-name="x-ratelimit-remaining-tokens"
@@ -1287,7 +1297,7 @@
           </when>
           <otherwise>
             <rate-limit-by-key
-              calls="@((int)(long)context.Variables[&quot;applicationTokensPerMinute&quot;])"
+              calls="@((int)context.Variables[&quot;effectiveApplicationTpm&quot;])"
               renewal-period="60"
               counter-key="@($&quot;finops:images:subscription:{(string)context.Variables[&quot;consumerId&quot;]}&quot;)"
               increment-count="32768"

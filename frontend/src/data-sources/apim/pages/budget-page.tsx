@@ -55,6 +55,14 @@ import {
 import { MonthPicker } from "../../../components/finops/month-picker"
 import { Switch } from "../../../components/ui/switch"
 import { ResizableGridTable } from "../../../components/ui/resizable-table"
+import { Badge } from "../../../components/ui/badge"
+import { directoryApi } from "../api/organization-management"
+import {
+  budgetDirectoryItems, budgetScopeDepartments, budgetScopeTeams, filterBudgetPeople,
+  readDepartmentBudgetPeople, readTeamBudgetMembers, selectedBudgetDepartment,
+  type BudgetDirectory, type BudgetDirectoryScope,
+} from "../../../lib/budget-directory"
+import type { DirectoryStatus, DirectoryUnit } from "../api/organization-management"
 import { dataSource } from "../api"
 import { getIntlLocale, useLocale, type LocalePreference } from "../../../locales/index"
 import { finopsKeys, finopsQueries } from "../queries"
@@ -171,7 +179,7 @@ function BudgetKpis({ data }: { data: TokenBudgetResponse }) {
     : formatTokens(tokens)
   const kpis = [
     {
-      label: "组织总预算",
+      label: data.coverage === "department" ? "可见部门预算" : "组织总预算",
       value: allocatedBudget || usdOrganizations.length ? amount(allocatedBudget, "usd_limit") : "未分配",
       detail: `${organizations.filter((item) => budgetLimit(item) != null).length} 个组织已配置`,
       icon: WalletCards,
@@ -330,6 +338,16 @@ function BudgetEditor({
   const inheritedMode = item.scope_type === "organization"
     ? item.budget_mode ?? "tokens" : parent?.budget_mode ?? item.budget_mode ?? "tokens"
   const [budgetMode, setBudgetMode] = useState<BudgetMode>(inheritedMode)
+  const capabilities = useQuery({
+    queryKey: ["apim", "budget-capabilities"],
+    queryFn: () => dataSource.budgetCapabilities(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const usdUnavailable = capabilities.data?.usd_available !== true
+  const capabilityMessage = capabilities.isPending ? "正在验证金额预算能力…"
+    : capabilities.isError ? "暂时无法验证金额预算能力，请刷新后重试。"
+      : capabilities.data?.message
   const switchingUnit = item.scope_type === "organization"
     && budgetLimit(item) != null && budgetMode !== (item.budget_mode ?? "tokens")
   const constraint = budgetConstraint(item, items, budgetMode)
@@ -357,6 +375,10 @@ function BudgetEditor({
   const [formError, setFormError] = useState<string | null>(null)
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (budgetMode === "usd" && usdUnavailable) {
+      setFormError(capabilityMessage ?? "金额预算尚未就绪。")
+      return
+    }
     const parsedLimit = Number(budgetMode === "usd" ? usdLimit : tokenLimit)
     const parsedThreshold = Number(warningThreshold)
     const validAmount = budgetMode === "usd"
@@ -400,14 +422,16 @@ function BudgetEditor({
           <div className="registry-field">
             <span className="registry-field-label">预算单位</span>
             <Select value={budgetMode} items={[{ value: "tokens", label: "Token" }, { value: "usd", label: "USD" }]} onValueChange={(value) => {
+              if (value === "usd" && usdUnavailable) return
               setBudgetMode(value as BudgetMode)
               setTokenLimit("")
               setUsdLimit("")
               setFormError(null)
             }} disabled={busy || item.scope_type !== "organization"}>
               <SelectTrigger aria-label="预算单位"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="tokens">Token</SelectItem><SelectItem value="usd">USD</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="tokens">Token</SelectItem><SelectItem value="usd" disabled={usdUnavailable}>USD</SelectItem></SelectContent>
             </Select>
+            {usdUnavailable && <small role="status">{capabilityMessage}</small>}
             {switchingUnit && <small>保存后下级额度按原分配比例调整，已用消费不清零；网关结清旧请求后生效。</small>}
           </div>
           <label className="registry-field">
@@ -511,6 +535,9 @@ function BudgetRow({
   enforcement,
   enforcementBusy,
   onToggleEnforcement,
+  selected,
+  onSelect,
+  directoryStatus,
 }: {
   item: TokenBudgetItem
   canManage: boolean
@@ -524,6 +551,9 @@ function BudgetRow({
   enforcement?: DepartmentEnforcement
   enforcementBusy?: boolean
   onToggleEnforcement?: (mode: EnforcementMode) => void
+  selected: boolean
+  onSelect: () => void
+  directoryStatus: DirectoryStatus
 }) {
   const ScopeIcon = item.scope_type === "organization"
     ? Building2
@@ -531,13 +561,17 @@ function BudgetRow({
       ? Users
       : UserRound
   const editDisabled = item.scope_type !== "organization" && !parentAllocated
-  return <div className="budget-table-row" data-depth={depth} data-status={item.status}>
+  return <div className="budget-table-row" data-depth={depth} data-status={item.status}
+    data-selected={selected || undefined} data-scope-id={item.scope_id} data-directory-status={directoryStatus}>
     <div className="budget-scope-cell" style={{ "--budget-depth": depth } as React.CSSProperties}>
       {hasChildren
-        ? <button type="button" className="budget-tree-toggle" onClick={onToggle} aria-label={expanded ? "折叠" : "展开"}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
+        ? <button type="button" className="budget-tree-toggle" onClick={onToggle} aria-label={expanded ? "折叠" : "展开"} aria-expanded={expanded}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
         : <span className="budget-tree-spacer" />}
-      <span className="budget-scope-icon"><ScopeIcon size={14} /></span>
-      <span><strong>{item.scope_name}</strong><small>{scopeLabels[item.scope_type]}</small></span>
+      <button type="button" className="budget-scope-select" onClick={onSelect} aria-pressed={selected} title={item.scope_name}>
+        <span className="budget-scope-icon"><ScopeIcon size={14} /></span>
+        <span><strong data-no-localize>{item.scope_name}</strong><small>{scopeLabels[item.scope_type]}</small></span>
+      </button>
+      {directoryStatus !== "active" && <Badge variant="outline">已归档</Badge>}
     </div>
     <div className="budget-number-cell" data-label="预算"><strong>{item.budget_mode === "usd" ? formatBudgetUsd(item.usd_limit) : item.token_limit == null ? "--" : formatFullTokens(item.token_limit)}</strong><small>{budgetLimit(item) == null ? "尚未分配" : `预警 ${item.warning_threshold_percent}%`}</small></div>
     <BudgetProgress item={item} />
@@ -585,6 +619,11 @@ function BudgetTable({
   enforcement,
   enforcementBusy,
   onToggleEnforcement,
+  directory,
+  hideArchived,
+  onHideArchivedChange,
+  scope,
+  onSelectScope,
 }: {
   items: TokenBudgetItem[]
   canManage: boolean
@@ -593,32 +632,40 @@ function BudgetTable({
   enforcement: DepartmentEnforcement[]
   enforcementBusy: boolean
   onToggleEnforcement: (departmentId: string, mode: EnforcementMode) => void
+  directory: BudgetDirectory
+  hideArchived: boolean
+  onHideArchivedChange: (value: boolean) => void
+  scope: BudgetDirectoryScope | null
+  onSelectScope: (scope: BudgetDirectoryScope) => void
 }) {
+  const { locale } = useLocale()
   const enforcementByDepartment = useMemo(
     () => new Map(enforcement.map((row) => [row.department_id, row])),
     [enforcement],
   )
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const visibleItems = useMemo(() => budgetDirectoryItems(items, directory, hideArchived, locale),
+    [items, directory, hideArchived, locale])
   const byKey = useMemo(
     () => new Map(items.map((item) => [`${item.scope_type}:${item.scope_id}`, item])),
     [items],
   )
   const rows = useMemo(() => {
-    const result: Array<{ item: TokenBudgetItem; depth: number; hasChildren: boolean; parentAllocated: boolean }> = []
-    const organizations = items.filter((item) => item.scope_type === "organization")
+    const result: Array<{ item: TokenBudgetItem; directoryStatus: DirectoryStatus; depth: number; hasChildren: boolean; parentAllocated: boolean }> = []
+    const organizations = visibleItems.filter((item) => item.scope_type === "organization")
     for (const organization of organizations) {
-      const departments = items.filter(
+      const departments = visibleItems.filter(
         (item) => item.scope_type === "department" && item.parent_scope_id === organization.scope_id,
       )
-      result.push({ item: organization, depth: 0, hasChildren: departments.length > 0, parentAllocated: true })
-      if (collapsed.has(organization.scope_id)) continue
+      result.push({ item: organization, directoryStatus: organization.directoryStatus, depth: 0, hasChildren: departments.length > 0, parentAllocated: true })
+      if (!expanded.has(organization.scope_id)) continue
       for (const department of departments) {
-        result.push({ item: department, depth: 1, hasChildren: false, parentAllocated: budgetLimit(organization) != null })
+        result.push({ item: department, directoryStatus: department.directoryStatus, depth: 1, hasChildren: false, parentAllocated: budgetLimit(organization) != null })
       }
     }
     return result
-  }, [collapsed, items])
-  const toggle = (scopeId: string) => setCollapsed((current) => {
+  }, [expanded, visibleItems])
+  const toggle = (scopeId: string) => setExpanded((current) => {
     const next = new Set(current)
     if (next.has(scopeId)) next.delete(scopeId)
     else next.add(scopeId)
@@ -628,25 +675,30 @@ function BudgetTable({
   return <div className="budget-allocation-section">
     <div className="budget-section-heading">
       <div><h2>层级预算分配</h2><p>组织额度约束部门，部门额度约束人员</p></div>
-      <div className="budget-section-summary">
+      <div className="budget-section-controls"><label className="budget-archive-filter"><span id="budget-hide-archived-label">隐藏已归档</span>
+        <Switch checked={hideArchived} aria-labelledby="budget-hide-archived-label" onCheckedChange={onHideArchivedChange} />
+      </label><div className="budget-section-summary">
         <span><strong>{assignedCount}</strong><small>已配置</small></span>
         <i />
         <span><strong>{items.length - assignedCount}</strong><small>待分配</small></span>
-      </div>
+      </div></div>
     </div>
     <section className="finops-panel budget-allocation-panel">
       <div className="budget-table-scroll">
         <ResizableGridTable className="budget-table" role="table" aria-label="预算层级" headerSelector=".budget-table-head" minWidths={[180, 100, 140, 160, 160, 94, 88, 52]}>
-          <div className="budget-table-head" role="row"><span>范围</span><span>预算</span><span>已使用</span><span>剩余</span><span>月底预测</span><span>状态</span><span title="开启后额度用尽的人员会被网关拒绝">拦截</span><span /></div>
-          {rows.map(({ item, depth, hasChildren, parentAllocated }) => <BudgetRow
+          <div className="budget-table-head" role="row"><span><span>范围</span></span><span><span>预算</span></span><span><span>已使用</span></span><span><span>剩余</span></span><span><span>月底预测</span></span><span><span>状态</span></span><span title="开启后额度用尽的人员会被网关拒绝"><span>拦截</span></span><span /></div>
+          {rows.map(({ item, directoryStatus, depth, hasChildren, parentAllocated }) => <BudgetRow
             key={`${item.scope_type}:${item.scope_id}`}
             item={item}
             canManage={canManage}
             depth={depth}
-            expanded={!collapsed.has(item.scope_id)}
+            expanded={expanded.has(item.scope_id)}
             hasChildren={hasChildren}
             parentAllocated={parentAllocated}
             onToggle={() => toggle(item.scope_id)}
+            directoryStatus={directoryStatus}
+            selected={scope?.type === item.scope_type && scope.id === item.scope_id}
+            onSelect={() => onSelectScope({ type: item.scope_type as BudgetDirectoryScope["type"], id: item.scope_id })}
             onEdit={() => onEdit(byKey.get(`${item.scope_type}:${item.scope_id}`) ?? item)}
             onManagePeople={item.scope_type === "department" ? () => onManagePeople(item.scope_id) : undefined}
             enforcement={item.scope_type === "department" ? enforcementByDepartment.get(item.scope_id) : undefined}
@@ -833,46 +885,63 @@ function PeopleBudgetWorkspace({
   canManage,
   departments,
   models,
-  departmentId,
-  onDepartmentChange,
+  scope,
+  scopeName,
+  teams,
+  teamId,
+  onTeamChange,
 }: {
   period: string
   canManage: boolean
   departments: TokenBudgetItem[]
   models: ManagedModel[]
-  departmentId: string
-  onDepartmentChange: (departmentId: string) => void
+  scope: BudgetDirectoryScope
+  scopeName: string
+  teams: DirectoryUnit[]
+  teamId: string
+  onTeamChange: (teamId: string) => void
 }) {
+  const { locale } = useLocale()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [status, setStatus] = useState<PeopleBudgetFilter>("all")
   const [offset, setOffset] = useState(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [allMatching, setAllMatching] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const limit = 50
-  const people = useQuery(finopsQueries.peopleBudgets(
-    period,
-    departmentId,
-    debouncedSearch,
-    status,
-    offset,
-    limit,
-  ))
+  const departmentIds = departments.map(row => row.scope_id)
+  const people = useQuery({
+    queryKey: ["finops", "budgets", "people", period, "directory-scope", departmentIds],
+    queryFn: () => readDepartmentBudgetPeople(departmentIds, (id, start, size) =>
+      dataSource.peopleBudgets(period, id, "", "all", start, size)),
+  })
+  const teamMembers = useQuery({
+    queryKey: ["directory", "budget-team-members", teamId],
+    queryFn: () => readTeamBudgetMembers(cursor => directoryApi.people({ team_id: teamId, cursor })),
+    enabled: Boolean(teamId),
+  })
+  const filteredItems = useMemo(() => filterBudgetPeople(
+    people.data?.items ?? [], debouncedSearch, status,
+    teamId ? teamMembers.data ?? new Set<string>() : null, locale,
+  ), [people.data, debouncedSearch, status, teamId, teamMembers.data, locale])
+  const departmentId = selectedBudgetDepartment(people.data?.items ?? [], selectedIds)
+  const bulkPeople = people.data?.departments.find(row => row.department_id === departmentId)
+  const useAllMatching = selectedIds.size > 500 && !teamId && !debouncedSearch
+    && selectedIds.size === filteredItems.length && Boolean(bulkPeople)
+  const selectionTooLarge = selectedIds.size > 500 && !useAllMatching
   const bulk = useMutation({
     mutationFn: (write: TokenBudgetBulkWrite) => dataSource.bulkSavePeopleBudgets(period, write),
     onSuccess: (result) => {
       setBulkOpen(false)
       setSelectedIds(new Set())
-      setAllMatching(false)
       const changes = [
         result.token_limit_per_user != null ? "预算" : null,
         result.model_policy_updated_count > 0 ? "模型访问" : null,
       ].filter(Boolean).join("和")
       setNotice(`已为 ${result.updated_count.toLocaleString(getIntlLocale())} 人更新${changes}`)
-      void queryClient.invalidateQueries({ queryKey: ["finops", "budgets", "people", period, departmentId] })
+      void queryClient.invalidateQueries({ queryKey: ["finops", "budgets", "people", period] })
       void queryClient.invalidateQueries({ queryKey: finopsKeys.budgets(period) })
     },
   })
@@ -883,17 +952,23 @@ function PeopleBudgetWorkspace({
   useEffect(() => {
     setOffset(0)
     setSelectedIds(new Set())
-    setAllMatching(false)
     setNotice(null)
     bulk.reset()
-  }, [departmentId, debouncedSearch, status])
-  const pageItems = people.data?.items ?? []
+  }, [scope.type, scope.id, teamId, debouncedSearch, status])
+  const pageItems = filteredItems.slice(offset, offset + limit)
   const pageIds = pageItems.map((item) => item.scope_id)
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
   const somePageSelected = pageIds.some((id) => selectedIds.has(id))
-  const selectedCount = allMatching ? people.data?.total ?? 0 : selectedIds.size
+  const selectedCount = selectedIds.size
+  const fetching = people.isFetching || Boolean(teamId && teamMembers.isFetching)
+  const loading = people.isLoading || Boolean(teamId && teamMembers.isPending)
+  const peopleError = people.error || teamMembers.error
+  const counts = {
+    assigned: filteredItems.filter(row => budgetLimit(row) != null).length,
+    models: filteredItems.filter(row => row.model_policy_configured).length,
+    risk: filteredItems.filter(row => row.status === "warning" || row.status === "exceeded").length,
+  }
   const setPageSelected = (checked: boolean) => {
-    setAllMatching(false)
     setSelectedIds((current) => {
       const next = new Set(current)
       for (const id of pageIds) {
@@ -904,7 +979,6 @@ function PeopleBudgetWorkspace({
     })
   }
   const togglePerson = (id: string, checked: boolean) => {
-    setAllMatching(false)
     setSelectedIds((current) => {
       const next = new Set(current)
       if (checked) next.add(id)
@@ -912,35 +986,41 @@ function PeopleBudgetWorkspace({
       return next
     })
   }
-  const total = people.data?.total ?? 0
+  const total = filteredItems.length
   const pageStart = total === 0 ? 0 : offset + 1
   const pageEnd = Math.min(offset + limit, total)
   return <section className="finops-panel people-budget-panel">
     <div className="people-budget-heading">
       <div><h2>人员预算与模型</h2><p>月度预算与长期模型访问分开管理；列表按需加载。</p></div>
-      <div className="people-budget-summary">{people.data && <><span>{`${people.data.assigned_count.toLocaleString(getIntlLocale())} 预算已配置`}</span><i /><span>{`${people.data.model_configured_count.toLocaleString(getIntlLocale())} 模型已配置`}</span>{people.data.risk_count > 0 && <><i /><span className="risk">{`${people.data.risk_count.toLocaleString(getIntlLocale())} 风险`}</span></>}</>}</div>
+      <div className="people-budget-summary">{people.data && !loading && !peopleError && <><span>{`${counts.assigned.toLocaleString(getIntlLocale())} 预算已配置`}</span><i /><span>{`${counts.models.toLocaleString(getIntlLocale())} 模型已配置`}</span>{counts.risk > 0 && <><i /><span className="risk">{`${counts.risk.toLocaleString(getIntlLocale())} 风险`}</span></>}</>}</div>
     </div>
+    <div className="people-budget-scope"><span>{scope.type === "organization" ? "组织" : "部门"}</span><strong data-no-localize>{scopeName}</strong></div>
     <div className="people-budget-toolbar">
-      <Select value={departmentId} onValueChange={(value) => value && onDepartmentChange(value)}>
-        <SelectTrigger aria-label="人员预算部门" className="people-department-trigger"><SelectValue>{departments.find((item) => item.scope_id === departmentId)?.scope_name ?? "选择部门"}</SelectValue></SelectTrigger>
-        <SelectContent align="start" alignItemWithTrigger={false}>{departments.map((item) => <SelectItem key={item.scope_id} value={item.scope_id}>{item.scope_name}</SelectItem>)}</SelectContent>
+      <Select value={teamId || "all"} onValueChange={(value) => value && onTeamChange(value === "all" ? "" : value)}>
+        <SelectTrigger aria-label="人员预算团队" className="people-team-trigger"><SelectValue data-no-localize={Boolean(teamId) || undefined}>{teams.find(row => row.id === teamId)?.name ?? "全部团队"}</SelectValue></SelectTrigger>
+        <SelectContent align="start" alignItemWithTrigger={false}><SelectItem value="all">全部团队</SelectItem>
+          {teams.map(row => <SelectItem key={row.id} value={row.id} data-no-localize>{row.name}</SelectItem>)}
+        </SelectContent>
       </Select>
       <label className="people-search"><Search size={14} /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索姓名或邮箱" aria-label="搜索人员" /></label>
       <Select value={status} onValueChange={(value) => value && setStatus(value as PeopleBudgetFilter)}>
         <SelectTrigger aria-label="人员预算状态" className="people-status-trigger"><SelectValue>{status === "all" ? "全部状态" : status === "assigned" ? "已配置" : statusLabels[status]}</SelectValue></SelectTrigger>
         <SelectContent align="start" alignItemWithTrigger={false}><SelectItem value="all">全部状态</SelectItem><SelectItem value="assigned">已配置</SelectItem><SelectItem value="unallocated">未分配</SelectItem><SelectItem value="healthy">正常</SelectItem><SelectItem value="warning">预警</SelectItem><SelectItem value="exceeded">已超额</SelectItem></SelectContent>
       </Select>
-      {canManage && <Button type="button" disabled={selectedCount === 0 || people.isFetching} onClick={() => { bulk.reset(); setBulkOpen(true) }}><Users size={14} />批量分配{selectedCount > 0 ? ` (${selectedCount.toLocaleString(getIntlLocale())})` : ""}</Button>}
+      {canManage && <Button type="button" disabled={selectedCount === 0 || fetching || !bulkPeople || selectionTooLarge}
+        title={selectedCount > 0 && !bulkPeople ? "请选择同一部门的人员进行批量分配"
+          : selectionTooLarge ? "单次最多选择 500 人" : "批量分配"}
+        onClick={() => { bulk.reset(); setBulkOpen(true) }}><Users size={14} />批量分配{selectedCount > 0 ? ` (${selectedCount.toLocaleString(getIntlLocale())})` : ""}</Button>}
     </div>
     {notice && <div className="people-budget-notice"><CheckCircle2 size={14} />{notice}<button type="button" aria-label="关闭" onClick={() => setNotice(null)}><X size={13} /></button></div>}
-    {people.error && <div className="finops-state error"><AlertTriangle size={18} /><b>人员预算加载失败</b><span>{queryError(people.error)}</span></div>}
-    {!people.error && <div className="people-table-scroll"><ResizableGridTable className="people-table" role="table" aria-label="人员预算列表" headerSelector=".people-table-head" minWidths={[32, 180, 160, 100, 90, 90, 80, 42]} horizontalPadding={24}>
-      <div className="people-table-head" role="row"><span>{canManage && <Checkbox checked={allPageSelected} indeterminate={!allPageSelected && somePageSelected} onCheckedChange={(checked) => setPageSelected(checked === true)} aria-label="选择当前页" />}</span><span className="people-name-heading">人员</span><span className="people-data-heading">模型访问</span><span className="people-data-heading">预算</span><span className="people-data-heading">已使用</span><span className="people-data-heading">剩余</span><span className="people-status-heading">状态</span><span /></div>
-      {people.isLoading && <div className="people-table-state"><RefreshCw className="spin" size={16} />正在加载人员</div>}
-      {!people.isLoading && pageItems.length === 0 && <div className="people-table-state"><UserRound size={18} />没有符合条件的人员</div>}
-      {!people.isLoading && pageItems.map((item) => <div className="people-table-row" role="row" key={item.scope_id}>
-        {canManage ? <Checkbox checked={selectedIds.has(item.scope_id) || allMatching} disabled={allMatching} onCheckedChange={(checked) => togglePerson(item.scope_id, checked === true)} aria-label={`选择 ${item.scope_name}`} /> : <span />}
-        <div className="people-name-cell"><strong title={item.scope_name}>{item.scope_name}</strong>{item.scope_id !== item.scope_name && <small>{item.scope_id}</small>}</div>
+    {peopleError && <div className="finops-state error"><AlertTriangle size={18} /><b>人员预算加载失败</b><span>{queryError(peopleError)}</span></div>}
+    {!peopleError && <div className="people-table-scroll"><ResizableGridTable className="people-table" role="table" aria-label="人员预算列表" headerSelector=".people-table-head" minWidths={[32, 180, 160, 100, 90, 90, 80, 42]} horizontalPadding={24}>
+      <div className="people-table-head" role="row"><span>{canManage && <Checkbox checked={allPageSelected} indeterminate={!allPageSelected && somePageSelected} onCheckedChange={(checked) => setPageSelected(checked === true)} aria-label="选择当前页" />}</span><span className="people-name-heading"><span>人员</span></span><span className="people-data-heading"><span>模型访问</span></span><span className="people-data-heading"><span>预算</span></span><span className="people-data-heading"><span>已使用</span></span><span className="people-data-heading"><span>剩余</span></span><span className="people-status-heading"><span>状态</span></span><span /></div>
+      {loading && <div className="people-table-state"><RefreshCw className="spin" size={16} />正在加载人员</div>}
+      {!loading && pageItems.length === 0 && <div className="people-table-state"><UserRound size={18} />没有符合条件的人员</div>}
+      {!loading && pageItems.map((item) => <div className="people-table-row" role="row" key={item.scope_id}>
+        {canManage ? <Checkbox checked={selectedIds.has(item.scope_id)} onCheckedChange={(checked) => togglePerson(item.scope_id, checked === true)} aria-label={`选择 ${item.scope_name}`} /> : <span />}
+        <div className="people-name-cell"><strong title={item.scope_name} data-no-localize>{item.scope_name}</strong>{item.scope_id !== item.scope_name && <small data-no-localize>{item.scope_id}</small>}</div>
         <div className="people-model-cell">{item.model_policy_configured
           ? item.allowed_model_ids.length > 0
             ? <><strong title={item.allowed_model_ids.map((id) => models.find((model) => model.id === id)?.display_name ?? id).join("、")}>{models.find((model) => model.id === item.allowed_model_ids[0])?.display_name ?? "已分配模型"}</strong><small>{item.allowed_model_ids.length > 1 ? `另有 ${item.allowed_model_ids.length - 1} 个` : "长期有效"}</small></>
@@ -950,14 +1030,14 @@ function PeopleBudgetWorkspace({
         <BudgetProgress item={item} />
         <div><strong>{item.budget_mode === "usd" ? budgetUsdMetric(item, "remaining_usd") : item.remaining_tokens == null ? "--" : formatFullTokens(item.remaining_tokens)}</strong><small>{item.budget_mode === "usd" ? "USD" : "Token"}</small></div>
         <div className="budget-status-cell"><span data-status={item.status}>{budgetStatusLabel(item)}</span></div>
-        {canManage ? <Button type="button" variant="ghost" size="icon-sm" className="people-budget-edit-button" title="设置人员预算与模型" onClick={() => { setSelectedIds(new Set([item.scope_id])); setAllMatching(false); bulk.reset(); setBulkOpen(true) }}><Pencil size={14} /></Button> : <span />}
+        {canManage ? <Button type="button" variant="ghost" size="icon-sm" className="people-budget-edit-button" title="设置人员预算与模型" onClick={() => { setSelectedIds(new Set([item.scope_id])); bulk.reset(); setBulkOpen(true) }}><Pencil size={14} /></Button> : <span />}
       </div>)}
     </ResizableGridTable></div>}
-    {people.data && <div className="people-table-footer">
-      <div><span>{`显示 ${pageStart.toLocaleString(getIntlLocale())}–${pageEnd.toLocaleString(getIntlLocale())}，共 ${total.toLocaleString(getIntlLocale())} 人`}</span>{canManage && allPageSelected && total > pageItems.length && !allMatching && <button type="button" onClick={() => { setAllMatching(true); setSelectedIds(new Set()) }}>{`选择全部 ${total.toLocaleString(getIntlLocale())} 个结果`}</button>}{canManage && allMatching && <><b>已选择全部匹配结果</b><button type="button" onClick={() => setAllMatching(false)}>清除选择</button></>}</div>
-      <div><Button type="button" variant="outline" size="icon-sm" aria-label="上一页" disabled={offset === 0 || people.isFetching} onClick={() => setOffset(Math.max(0, offset - limit))}><ChevronLeft size={14} /></Button><Button type="button" variant="outline" size="icon-sm" aria-label="下一页" disabled={offset + limit >= total || people.isFetching} onClick={() => setOffset(offset + limit)}><ChevronRight size={14} /></Button></div>
+    {people.data && !loading && !peopleError && <div className="people-table-footer">
+      <div><span>{`显示 ${pageStart.toLocaleString(getIntlLocale())}–${pageEnd.toLocaleString(getIntlLocale())}，共 ${total.toLocaleString(getIntlLocale())} 人`}</span>{canManage && allPageSelected && total > pageItems.length && <button type="button" onClick={() => setSelectedIds(new Set(filteredItems.map(row => row.scope_id)))}>{`选择全部 ${total.toLocaleString(getIntlLocale())} 个结果`}</button>}</div>
+      <div><Button type="button" variant="outline" size="icon-sm" aria-label="上一页" disabled={offset === 0 || fetching} onClick={() => setOffset(Math.max(0, offset - limit))}><ChevronLeft size={14} /></Button><Button type="button" variant="outline" size="icon-sm" aria-label="下一页" disabled={offset + limit >= total || fetching} onClick={() => setOffset(offset + limit)}><ChevronRight size={14} /></Button></div>
     </div>}
-    {canManage && bulkOpen && people.data && <BulkPeopleEditor people={people.data} models={models} selection={allMatching ? "all_matching" : "ids"} selectedIds={[...selectedIds]} query={debouncedSearch} status={status} busy={bulk.isPending} error={bulk.error ? queryError(bulk.error) : null} onClose={() => { if (!bulk.isPending) setBulkOpen(false) }} onSave={(write) => bulk.mutate(write)} />}
+    {canManage && bulkOpen && people.data && bulkPeople && <BulkPeopleEditor people={{ ...bulkPeople, total: filteredItems.length }} models={models} selection={useAllMatching ? "all_matching" : "ids"} selectedIds={[...selectedIds]} query="" status={status} busy={bulk.isPending} error={bulk.error ? queryError(bulk.error) : null} onClose={() => { if (!bulk.isPending) setBulkOpen(false) }} onSave={(write) => bulk.mutate(write)} />}
   </section>
 }
 
@@ -1085,13 +1165,46 @@ function BudgetHistory({ data, models }: { data: TokenBudgetResponse; models: Ma
 export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const queryClient = useQueryClient()
   const { user } = useAuth()
+  const { locale } = useLocale()
   const canManage = user?.role === "owner"
   const [period, setPeriod] = useState(currentPeriod)
   const [editing, setEditing] = useState<TokenBudgetItem | null>(null)
-  const [peopleDepartmentId, setPeopleDepartmentId] = useState("")
+  const [hideArchived, setHideArchived] = useState(true)
+  const [selectedScope, setSelectedScope] = useState<BudgetDirectoryScope | null>(null)
+  const [teamId, setTeamId] = useState("")
   const periodBounds = useMemo(() => periodBoundsFor(currentPeriod()), [])
   const query = useQuery(finopsQueries.budgets(period))
   const registry = useQuery(finopsQueries.registry())
+  const capabilities = useQuery({
+    queryKey: ["directory", "capabilities", user?.id, user?.directory_scope_key],
+    queryFn: directoryApi.capabilities,
+  })
+  const directory = useQuery({
+    queryKey: ["directory", "budget-navigation", user?.id, user?.directory_scope_key,
+      capabilities.data?.can_read, capabilities.data?.permission_revision],
+    enabled: Boolean(capabilities.data),
+    queryFn: async (): Promise<BudgetDirectory> => {
+      if (!capabilities.data?.can_read) {
+        const current = await dataSource.entities()
+        return {
+          organizations: current.organizations.map(row => ({
+            ...row, code: row.id, description: "", contact_email: null, status: "active", revision: 1,
+          })),
+          units: current.departments.map(row => ({
+            ...row, code: row.id, description: "", organization_id: row.parent_id ?? "",
+            kind: "department", parent_unit_id: null, status: "active", revision: 1,
+          })),
+        }
+      }
+      const organizations = await directoryApi.organizations()
+      const units: DirectoryUnit[] = []
+      for (let start = 0; start < organizations.length; start += 4) {
+        const group = await Promise.all(organizations.slice(start, start + 4).map(row => directoryApi.units(row.id)))
+        units.push(...group.flat())
+      }
+      return { organizations, units }
+    },
+  })
   const save = useMutation({
     mutationFn: ({ item, value }: { item: TokenBudgetItem; value: TokenBudgetWrite }) =>
       dataSource.saveBudget(period, item.scope_type, item.scope_id, value),
@@ -1121,6 +1234,8 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
   const refreshBudgets = () => {
     if (!query.isFetching && !busy) {
       void queryClient.refetchQueries({ queryKey: ["finops", "budgets"], type: "active" })
+      void directory.refetch()
+      void queryClient.invalidateQueries({ queryKey: ["directory", "budget-team-members"] })
     }
   }
   const changePeriod = (value: string) => {
@@ -1130,7 +1245,24 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
     save.reset()
     remove.reset()
   }
-  const departments = query.data?.items.filter((item) => item.scope_type === "department") ?? []
+  const visibleItems = useMemo(() => budgetDirectoryItems(
+    query.data?.items ?? [], directory.data ?? { organizations: [], units: [] }, hideArchived, locale,
+  ), [query.data, directory.data, hideArchived, locale])
+  const firstOrganization = visibleItems.find(row => row.scope_type === "organization")
+  const activeScope = selectedScope && visibleItems.some(row =>
+    row.scope_type === selectedScope.type && row.scope_id === selectedScope.id)
+    ? selectedScope : firstOrganization ? { type: "organization" as const, id: firstOrganization.scope_id } : null
+  const departments = activeScope ? budgetScopeDepartments(query.data?.items ?? [], activeScope) : []
+  const teams = activeScope && directory.data ? budgetScopeTeams(directory.data, activeScope, hideArchived, locale) : []
+  const activeTeamId = teams.some(row => row.id === teamId) ? teamId : ""
+  const selectedName = query.data?.items.find(row =>
+    row.scope_type === activeScope?.type && row.scope_id === activeScope?.id)?.scope_name ?? ""
+  const selectScope = (scope: BudgetDirectoryScope) => { setSelectedScope(scope); setTeamId("") }
+  useEffect(() => {
+    if (teamId && !activeTeamId) setTeamId("")
+    if (selectedScope && activeScope &&
+      (selectedScope.id !== activeScope.id || selectedScope.type !== activeScope.type)) setSelectedScope(activeScope)
+  }, [teamId, activeTeamId, selectedScope, activeScope?.id, activeScope?.type])
   const enabledModels = registry.data?.models.filter((model) => model.enabled) ?? []
   // The badge used to read "soft budget, alerts only" unconditionally. That stopped being
   // true the moment enforcement became a per-department mode: a department set to Block has
@@ -1143,9 +1275,8 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
     : blocking === enforcementRows.length
       ? "硬预算 · 超额拦截"
       : `${blocking}/${enforcementRows.length} 个部门拦截`
-  const activePeopleDepartmentId = peopleDepartmentId || departments[0]?.scope_id || ""
   const managePeople = (departmentId: string) => {
-    setPeopleDepartmentId(departmentId)
+    selectScope({ type: "department", id: departmentId })
     requestAnimationFrame(() => document.querySelector(".people-budget-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }))
   }
   return <div className="finops-workspace budget-workspace">
@@ -1163,7 +1294,14 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
         {query.error && <div className="finops-state error"><AlertTriangle size={18} /><b>预算接口不可用</b><span>{queryError(query.error)}</span></div>}
         {query.data && <>
           <BudgetKpis data={query.data} />
-          <BudgetTable
+          {(directory.error || capabilities.error) && <div className="finops-state error"><AlertTriangle size={18} /><b>预算目录加载失败</b><span>{queryError(directory.error || capabilities.error)}</span></div>}
+          {directory.isPending && !capabilities.error && <div className="finops-state"><RefreshCw className="spin" size={18} />正在加载组织目录</div>}
+          {directory.data && <BudgetTable
+            directory={directory.data}
+            hideArchived={hideArchived}
+            onHideArchivedChange={setHideArchived}
+            scope={activeScope}
+            onSelectScope={selectScope}
             items={query.data.items}
             canManage={canManage}
             onEdit={(item) => { save.reset(); remove.reset(); setEditing(item) }}
@@ -1171,8 +1309,11 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
             enforcement={query.data.enforcement}
             enforcementBusy={enforcement.isPending}
             onToggleEnforcement={(departmentId, mode) => enforcement.mutate({ departmentId, mode })}
-          />
-          {activePeopleDepartmentId && <PeopleBudgetWorkspace period={period} canManage={canManage} departments={departments} models={enabledModels} departmentId={activePeopleDepartmentId} onDepartmentChange={setPeopleDepartmentId} />}
+          />}
+          {activeScope && directory.data && <PeopleBudgetWorkspace
+            key={`${period}:${activeScope.type}:${activeScope.id}:${activeTeamId}`}
+            period={period} canManage={canManage} departments={departments} models={enabledModels}
+            scope={activeScope} scopeName={selectedName} teams={teams} teamId={activeTeamId} onTeamChange={setTeamId} />}
           <div className="budget-secondary-grid">
             <BudgetRiskPanel data={query.data} />
             <BudgetHistory data={query.data} models={registry.data?.models ?? []} />

@@ -13,6 +13,7 @@ import pytest
 
 from scripts.prepare_budget_execution import CutoverReadback, render_candidate
 from tests.backend.telemetry.test_atomic_ledger import EPOCH, NOW, completion, identity, summary
+from turnstile_core.domain.budget_delegation import BudgetDelegationTrust
 from turnstile_core.domain.ledger import LedgerAdmissionReceipt, complete_ledger, reserve_ledger
 from turnstile_core.integrations import apim_budget_execution as compiler
 from turnstile_core.integrations import apim_model_availability as availability
@@ -243,6 +244,17 @@ def compiled_expressions(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path
     assembled.append(compiler._admission())
     assembled.append(compiler._completion())
     assembled.append(compiler.budget_execution_fence(["unit-turnstile"]))
+    delegated = parse_policy(compiler.compose_budget_execution_parent(
+        (ROOT / "infra/policies/foundry-finops-policy.xml").read_text(),
+        (ROOT / "infra/policies/foundry-finops-policy.xml").read_text(), enabled=True,
+        delegation=BudgetDelegationTrust(
+            tenant_id=EPOCH, audience="api://unit", client_ids=(EPOCH,), object_ids=(EPOCH,),
+        ),
+    ))
+    for node in delegated.findall(".//set-header"):
+        value = node.findtext("value", "")
+        if "Uri.UnescapeDataString" in value:
+            expressions.add(value)
     for node in assembled.iter():
         for expression in [*node.attrib.values(), node.text or ""]:
             if expression.strip().startswith("@"):
@@ -899,6 +911,68 @@ def test_plan_uses_shared_analysis_and_keeps_complete_byte_estimate(
     )
     assert result["request_analysis"]["complete"] is not unknown
     assert result["count_assurance"] == ("estimate" if legacy else "verified_upper_bound")
+
+
+@pytest.mark.parametrize("samples", [1, 3])
+def test_whole_request_bound_reaches_usd_reservation_without_rewriting_output(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, samples: int,
+) -> None:
+    case = planned_case({
+        "model": "unit-model", "messages": [{"role": "user", "content": "hello"}],
+        "n": samples, "max_completion_tokens": 17,
+    }, operation="chat-completions")
+    fence = json.loads(case["variables"]["budgetExecutionFence"])
+    contract = fence["model_contracts"]["unit-model"]
+    contract.update(algorithm="request_total_ceiling_v1", output_field="none",
+                    request_token_ceiling=10000)
+    case["variables"]["budgetExecutionFence"] = json.dumps(fence)
+    plan = run_cases(compiled_expressions, tmp_path, [case])[0]
+    assert plan["error"] == ""
+    assert plan["request_token_ceiling"] == 10000 * samples
+    assert plan["receipts"][0]["reserved_tokens"] == 10000 * samples
+    assert plan["output_field"] == ""
+    assert "normalized_body" not in plan
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "body": "{}", "expression": expression_id(compiler.USD_RESERVATION),
+        "variables": {
+            "executionPlan": plan,
+            "executionPriceProjection": {"error": "", "etag": 'W/"unit"', "document": {
+                "rate_schedules": [{"input_rate_units": 200000000, "cached_rate_units": 0,
+                                    "cache_write_rate_units": 0, "output_rate_units": 400000000}],
+            }},
+        },
+    }])[0]
+    assert result["error"] == ""
+    assert result["reserved_usd"] == pytest.approx(0.04 * samples)
+
+
+def test_usd_reservation_refuses_unverified_legacy_estimates(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+) -> None:
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "body": "{}", "expression": expression_id(compiler.USD_RESERVATION),
+        "variables": {
+            "executionPlan": {"algorithm": "legacy_request_estimate_v1",
+                              "body_bytes_estimate": 10, "output_limit": 32, "output_samples": 1},
+            "executionPriceProjection": {"error": "", "etag": 'W/"unit"', "document": {
+                "rate_schedules": [{"input_rate_units": 200000000, "cached_rate_units": 0,
+                                    "cache_write_rate_units": 0, "output_rate_units": 400000000}],
+            }},
+        },
+    }])[0]
+    assert result["error"] == "budget_count_bound_unavailable"
+    assert "reserved_usd" not in result
+
+
+def test_delegated_unicode_metadata_decodes_exactly_once(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+) -> None:
+    expression = ('@(Uri.UnescapeDataString(context.Request.Headers.GetValueOrDefault('
+                  '"x-user-name", "")))')
+    assert run_cases(compiled_expressions, tmp_path, [{
+        "body": "{}", "expression": expression_id(expression), "variables": {},
+        "headers": {"x-user-name": "%E7%A0%94%E5%8F%91%20%2520"},
+    }]) == ["研发 %20"]
 
 
 @pytest.mark.parametrize("remote", [False, True])

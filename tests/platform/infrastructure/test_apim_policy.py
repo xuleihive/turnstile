@@ -414,8 +414,7 @@ def test_application_output_clamp_uses_monthly_budget_not_tpm() -> None:
     limits = root.findall(".//llm-token-limit")
     assert len(limits) == 2
     assert {limit.attrib["tokens-per-minute"] for limit in limits} == {
-        '@((int)(long)context.Variables["applicationTokensPerMinute"])',
-        "__EMPLOYEE_TOKENS_PER_MINUTE__",
+        '@((int)context.Variables["effectiveApplicationTpm"])', "__EMPLOYEE_TOKENS_PER_MINUTE__",
     }
     assert all(limit.attrib["estimate-prompt-tokens"] == "true" for limit in limits)
     assert all(limit.attrib["retry-after-header-name"] == "Retry-After" for limit in limits)
@@ -463,12 +462,12 @@ def test_application_tpm_uses_independent_validated_row_and_fails_closed() -> No
     )
     assert employee.attrib["tokens-per-minute"] == "__EMPLOYEE_TOKENS_PER_MINUTE__"
     assert subscription.attrib["tokens-per-minute"] == (
-        '@((int)(long)context.Variables["applicationTokensPerMinute"])'
+        '@((int)context.Variables["effectiveApplicationTpm"])'
     )
     assert subscription.attrib["estimate-prompt-tokens"] == "true"
     assert subscription.attrib["tokens-consumed-variable-name"] == "tokensConsumed"
     assert root.findall(".//rate-limit-by-key")[1].attrib["calls"] == (
-        '@((int)(long)context.Variables["applicationTokensPerMinute"])'
+        '@((int)context.Variables["effectiveApplicationTpm"])'
     )
 
 
@@ -664,14 +663,8 @@ def test_apim_token_limits_use_product_subscription_identity() -> None:
     assert "finops:subscription:" in policy
     assert 'token-quota="__MONTHLY_TOKEN_QUOTA__"' not in policy
     assert 'token-quota-period="Monthly"' not in policy
-    assert (
-        'tokens-per-minute="@((int)(long)context.Variables[&quot;applicationTokensPerMinute&quot;])"'
-        in policy
-    )
-    limiter = next(node for node in ElementTree.fromstring(policy).iter("llm-token-limit")
-                   if "finops:subscription:" in node.attrib["counter-key"])
-    assert '"applicationTokensPerMinute"' in limiter.attrib["tokens-per-minute"]
-    assert "??" not in limiter.attrib["tokens-per-minute"]
+    assert 'name="effectiveApplicationTpm"' in policy
+    assert 'var fallback = (long)__TOKENS_PER_MINUTE__;' in policy
     assert "finops:user:" not in policy
     assert "Microsoft.ApiManagement/service/products@" in module
     assert "Microsoft.ApiManagement/service/products/apis@" in module

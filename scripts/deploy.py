@@ -42,6 +42,7 @@ from scripts.apim_upgrade import (
     validate_upgrade_what_if,
 )
 from scripts.stage_deployment import REPOSITORY_ROOT, stage_deployment, validate_source_snapshot
+from turnstile_core.config import core_runtime_digest
 
 JsonObject = dict[str, Any]
 PasswordReader = Callable[[str], str]
@@ -64,6 +65,8 @@ EXPECTED_FUNCTIONS = {
     "controlPlaneFunctionName": {
         "publish_gateway_changes",
         "process_gateway_release_operations",
+        "synchronize_directory",
+        "project_directory_identities",
     },
 }
 FIXED_ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
@@ -130,15 +133,20 @@ class DeploymentInputs:
             raise DeploymentError(
                 "Keep secure parameters out of the public parameter file: " + ", ".join(leaked)
             )
+        if _string_parameter(parameters, "apimSkuName", "StandardV2") not in {
+            "Developer", "StandardV2",
+        }:
+            raise DeploymentError(
+                "Private-ledger bootstrap supports Developer or StandardV2; "
+                "BasicV2 cannot reach the private ledger"
+            )
         resource_prefix = _required_string(parameters, "resourcePrefix")
         location = _required_string(parameters, "location")
         postgres_location = _string_parameter(parameters, "postgresLocation", location)
         postgres_sku_name = _string_parameter(
             parameters, "postgresSkuName", DEFAULT_POSTGRES_SKU_NAME
         )
-        postgres_tier = _string_parameter(
-            parameters, "postgresTier", DEFAULT_POSTGRES_TIER
-        )
+        postgres_tier = _string_parameter(parameters, "postgresTier", DEFAULT_POSTGRES_TIER)
         observer_plan_sku_name = _string_parameter(
             parameters, "observerPlanSkuName", DEFAULT_OBSERVER_PLAN_SKU_NAME
         )
@@ -219,15 +227,9 @@ class ExistingCore:
         }
         if not any(configured.values()):
             return None
-        missing = [
-            parameter
-            for parameter, field in fields.items()
-            if not configured[field]
-        ]
+        missing = [parameter for parameter, field in fields.items() if not configured[field]]
         if missing:
-            raise DeploymentError(
-                "Existing APIM adoption requires: " + ", ".join(sorted(missing))
-            )
+            raise DeploymentError("Existing APIM adoption requires: " + ", ".join(sorted(missing)))
         return cls(**configured)
 
 
@@ -293,9 +295,7 @@ def _integer_parameter(
     if isinstance(value, bool) or not isinstance(value, int):
         raise DeploymentError(f"Parameter {name} must be an integer")
     if value < minimum or value > maximum:
-        raise DeploymentError(
-            f"Parameter {name} must be between {minimum} and {maximum}"
-        )
+        raise DeploymentError(f"Parameter {name} must be between {minimum} and {maximum}")
     return value
 
 
@@ -323,7 +323,7 @@ def owner_credentials_password(path: Path, expected_email: str) -> str:
     if not isinstance(email, str) or email.strip().lower() != expected_email:
         raise DeploymentError("Owner credentials email does not match bootstrapOwnerEmail")
     if not isinstance(password, str) or len(password) < 12:
-        raise DeploymentError("Initial Owner password must be at least 12 characters")
+        raise DeploymentError("Owner password must be at least 12 characters")
     return password
 
 
@@ -345,12 +345,11 @@ def load_or_create_secret_material(
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
             raise DeploymentError(f"Invalid secret state: {state_path}") from error
         if not isinstance(values, dict) or any(
-            not isinstance(values.get(name), str) or not values[name]
-            for name in STATE_SECRET_NAMES
+            not isinstance(values.get(name), str) or not values[name] for name in STATE_SECRET_NAMES
         ):
             raise DeploymentError(f"Secret state is incomplete: {state_path}")
         if require_owner_password:
-            owner_password = read_password("Initial Owner password for verification: ")
+            owner_password = read_password("Owner password for verification: ")
         return SecretMaterial(dict(values), owner_password)
 
     owner_password = _read_owner_password(read_password)
@@ -381,6 +380,13 @@ def deployment_parameters(
     resume_existing_environment: bool = False,
 ) -> JsonObject:
     values = dict(inputs.parameters)
+    initialize_directory = values.get("directoryEmptyInitializationAllowed", False)
+    if not isinstance(initialize_directory, bool):
+        raise DeploymentError("directoryEmptyInitializationAllowed must be a boolean")
+    if initialize_directory:
+        if resume_existing_environment:
+            raise DeploymentError("Existing installations require a reviewed directory upgrade")
+        values["directoryExpectedCoreDigest"] = core_runtime_digest()
     for name in OBSERVER_ORCHESTRATOR_PARAMETERS:
         values.pop(name, None)
     if existing_core is not None and not resume_existing_environment:
@@ -412,9 +418,7 @@ def deployment_parameters(
         existingApimResourceGroupName=(
             existing_core.apim_resource_group_name if existing_core else ""
         ),
-        existingApimPrincipalId=(
-            existing_core.apim_principal_id if existing_core else ""
-        ),
+        existingApimPrincipalId=(existing_core.apim_principal_id if existing_core else ""),
         existingApimGatewayUrl=existing_core.apim_gateway_url if existing_core else "",
     )
     if observer is None:
@@ -443,8 +447,7 @@ def deployment_parameters(
 def _arm_parameter_document(values: Mapping[str, Any]) -> JsonObject:
     return {
         "$schema": (
-            "https://schema.management.azure.com/schemas/"
-            "2019-04-01/deploymentParameters.json#"
+            "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
         ),
         "contentVersion": "1.0.0.0",
         "parameters": {name: {"value": value} for name, value in values.items()},
@@ -470,15 +473,11 @@ def require_prerequisites(runner: CommandRunner, subscription: str) -> None:
     missing = [name for name in ("az", "git", "uv", "npm") if shutil.which(name) is None]
     if missing:
         raise DeploymentError("Missing required tools: " + ", ".join(missing))
-    runner.run_json(
-        ["az", "account", "show", "--subscription", subscription, "--output", "json"]
-    )
+    runner.run_json(["az", "account", "show", "--subscription", subscription, "--output", "json"])
     runner.run(["az", "bicep", "version"], capture=True)
 
 
-def validate_flex_consumption_capabilities(
-    runner: CommandRunner, inputs: DeploymentInputs
-) -> None:
+def validate_flex_consumption_capabilities(runner: CommandRunner, inputs: DeploymentInputs) -> None:
     provider = runner.run(
         [
             "az",
@@ -520,9 +519,7 @@ def validate_flex_consumption_capabilities(
         )
 
 
-def validate_postgres_capabilities(
-    runner: CommandRunner, inputs: DeploymentInputs
-) -> None:
+def validate_postgres_capabilities(runner: CommandRunner, inputs: DeploymentInputs) -> None:
     if inputs.parameters.get("provisionPostgres", True) is False:
         return
     capabilities = runner.run_json(
@@ -550,8 +547,7 @@ def validate_postgres_capabilities(
         reason = capabilities.get("reason")
         detail = f": {reason}" if isinstance(reason, str) and reason else ""
         raise DeploymentError(
-            f"PostgreSQL {POSTGRES_VERSION} is unavailable in "
-            f"{inputs.postgres_location}{detail}"
+            f"PostgreSQL {POSTGRES_VERSION} is unavailable in {inputs.postgres_location}{detail}"
         )
 
     combination_supported = False
@@ -647,9 +643,7 @@ def _what_if_counts(result: Mapping[str, Any]) -> Counter[str]:
     if not isinstance(changes, list):
         raise DeploymentError("Azure what-if returned an invalid changes value")
     counts = Counter(
-        str(change.get("changeType", "Unknown"))
-        for change in changes
-        if isinstance(change, dict)
+        str(change.get("changeType", "Unknown")) for change in changes if isinstance(change, dict)
     )
     print("What-if: " + ", ".join(f"{name}={count}" for name, count in sorted(counts.items())))
     if counts["Delete"]:
@@ -666,9 +660,7 @@ def what_if(
 ) -> Counter[str]:
     with temporary_parameter_file(parameters, inputs.state_path.parent) as parameter_file:
         result = runner.run_json(
-            _deployment_command(
-                "what-if", inputs, template, parameter_file, deployment_name
-            )
+            _deployment_command("what-if", inputs, template, parameter_file, deployment_name)
         )
     return _what_if_counts(result)
 
@@ -800,11 +792,11 @@ def linux_dependency_command(staged: Path) -> list[str]:
     ]
 
 
-def pip_linux_dependency_command(staged: Path, pip: str) -> list[str]:
+def pip_linux_dependency_command(staged: Path, pip: str | Sequence[str]) -> list[str]:
     target = staged / ".python_packages" / "lib" / "site-packages"
     target.mkdir(parents=True, exist_ok=True)
     return [
-        pip,
+        *([pip] if isinstance(pip, str) else pip),
         "install",
         "--disable-pip-version-check",
         "--only-binary=:all:",
@@ -851,7 +843,8 @@ def validate_packaged_dependencies(staged: Path) -> None:
                 "packages": dict(sorted(installed.items())),
             },
             indent=2,
-        ) + "\n",
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -859,8 +852,16 @@ def validate_packaged_dependencies(staged: Path) -> None:
 def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
     runner.run(
         [
-            "uv", "export", "--locked", "--no-dev", "--no-emit-project", "--no-hashes",
-            "--format", "requirements-txt", "--output-file", str(staged / "constraints.txt"),
+            "uv",
+            "export",
+            "--locked",
+            "--no-dev",
+            "--no-emit-project",
+            "--no-hashes",
+            "--format",
+            "requirements-txt",
+            "--output-file",
+            str(staged / "constraints.txt"),
         ],
         cwd=REPOSITORY_ROOT,
         capture=True,
@@ -868,14 +869,33 @@ def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
     try:
         runner.run(linux_dependency_command(staged), cwd=REPOSITORY_ROOT)
     except subprocess.CalledProcessError:
-        pip = shutil.which("pip3")
-        if pip is None:
+        candidates = [
+            os.environ.get("TURNSTILE_BUILD_PYTHON"),
+            sys.executable,
+            shutil.which("python3"),
+        ]
+        build_python = None
+        for candidate in dict.fromkeys(value for value in candidates if value):
+            probe = subprocess.run(
+                [
+                    candidate,
+                    "-c",
+                    "import sys,pip; sys.exit(0 if sys.version_info >= (3,11) else 1)",
+                ],
+                capture_output=True,
+                check=False,
+            )
+            if probe.returncode == 0:
+                build_python = candidate
+                break
+        if build_python is None:
             raise DeploymentError(
-                "uv could not install Linux dependencies and pip3 is unavailable for fallback"
+                "uv failed; pip fallback requires Python 3.11+ with pip. "
+                "Set TURNSTILE_BUILD_PYTHON to an existing compatible interpreter."
             ) from None
         print("uv dependency installation failed; retrying with pip.")
         runner.run(
-            pip_linux_dependency_command(staged, pip),
+            pip_linux_dependency_command(staged, [build_python, "-m", "pip"]),
             cwd=REPOSITORY_ROOT,
         )
     validate_packaged_dependencies(staged)
@@ -932,8 +952,7 @@ def deploy_webapp_package(
     )
     access_token = _output_string(token_result, "accessToken")
     publish_url = (
-        f"https://{app_name}.scm.azurewebsites.net/api/publish"
-        "?type=zip&clean=true&restart=true"
+        f"https://{app_name}.scm.azurewebsites.net/api/publish?type=zip&clean=true&restart=true"
     )
     try:
         payload = package.read_bytes()
@@ -1091,9 +1110,7 @@ def observer_parameters(
         acr_resource_group_name = _output_string(existing_observer, "acrResourceGroupName")
     else:
         acr_resource_group_name = apim_resource_group_name
-    adapter_key_named_value_name = platform_outputs.get(
-        "observerAdapterKeyNamedValueName"
-    )
+    adapter_key_named_value_name = platform_outputs.get("observerAdapterKeyNamedValueName")
     if not isinstance(adapter_key_named_value_name, str) or not adapter_key_named_value_name:
         adapter_key_named_value_name = "turnstile-envoy-adapter-key"
     return _arm_parameter_document(
@@ -1109,9 +1126,7 @@ def observer_parameters(
             "acrResourceGroupName": acr_resource_group_name,
             "provisionAcr": existing_observer is None,
             "imageTag": version,
-            "eventHubNamespaceName": _output_string(
-                platform_outputs, "eventHubNamespaceName"
-            ),
+            "eventHubNamespaceName": _output_string(platform_outputs, "eventHubNamespaceName"),
             "eventHubName": "token-usage",
             "apimName": _output_string(platform_outputs, "apimName"),
             "adapterKeyNamedValueName": adapter_key_named_value_name,
@@ -1263,9 +1278,7 @@ def wait_for_observer_health(observer_url: str) -> str:
     return wait_for_health(observer_url, timeout_seconds=1800)
 
 
-def verify_owner_login(
-    api_url: str, email: str, password: str, timeout_seconds: int = 180
-) -> None:
+def verify_owner_login(api_url: str, email: str, password: str, timeout_seconds: int = 180) -> None:
     payload = json.dumps({"email": email, "password": password}).encode()
     deadline = time.monotonic() + timeout_seconds
     last_error = "no response"
@@ -1294,9 +1307,7 @@ def verify_owner_login(
 
 
 def frontend_asset(index_path: Path = REPOSITORY_ROOT / "frontend" / "dist" / "index.html") -> str:
-    match = re.search(
-        r"assets/index-[A-Za-z0-9_-]+\.js", index_path.read_text(encoding="utf-8")
-    )
+    match = re.search(r"assets/index-[A-Za-z0-9_-]+\.js", index_path.read_text(encoding="utf-8"))
     if match is None:
         raise DeploymentError("Frontend index does not identify its built JavaScript asset")
     return match.group(0)
@@ -1458,41 +1469,65 @@ def gateway_upgrade(
         "applications": list(application_ids),
         "templates": {
             str(path.relative_to(REPOSITORY_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in (template, REPOSITORY_ROOT / "infra/modules/apim-upgrade.bicep",
-                         parent_path, denial_path, REPOSITORY_ROOT / "scripts/apim_upgrade.py",
-                         REPOSITORY_ROOT / "scripts/deploy.py")
+            for path in (
+                template,
+                REPOSITORY_ROOT / "infra/modules/apim-upgrade.bicep",
+                parent_path,
+                denial_path,
+                REPOSITORY_ROOT / "scripts/apim_upgrade.py",
+                REPOSITORY_ROOT / "scripts/deploy.py",
+            )
         },
     }
     directory = inputs.state_path.with_suffix(".upgrades") / UPGRADE_VERSION
-    credentials = runner.run_json([
-        "az", "account", "get-access-token", "--subscription", inputs.subscription,
-        "--resource", "https://management.azure.com/", "--output", "json",
-    ])
+    credentials = runner.run_json(
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--subscription",
+            inputs.subscription,
+            "--resource",
+            "https://management.azure.com/",
+            "--output",
+            "json",
+        ]
+    )
     token = credentials.pop("accessToken")
-    with _upgrade_lock(directory), httpx.Client(
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        timeout=60, trust_env=False,
-    ) as client:
+    with (
+        _upgrade_lock(directory),
+        httpx.Client(
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=60,
+            trust_env=False,
+        ) as client,
+    ):
         token = ""
 
         def preview(
-            plan: ImageUpgradePlan, stage: str, revision: str, create_revision: bool,
+            plan: ImageUpgradePlan,
+            stage: str,
+            revision: str,
+            create_revision: bool,
         ) -> tuple[JsonObject, str]:
-            parameters = _arm_parameter_document(upgrade_parameters(
-                plan, stage, revision, create_revision=create_revision
-            ))
+            parameters = _arm_parameter_document(
+                upgrade_parameters(plan, stage, revision, create_revision=create_revision)
+            )
             name = f"apim-{document_digest(plan.document())[:24]}-{stage}"
             with temporary_parameter_file(parameters, directory) as parameter_file:
-                result = runner.run_json(_deployment_command(
-                    "what-if", inputs, template, parameter_file, name
-                ))
+                result = runner.run_json(
+                    _deployment_command("what-if", inputs, template, parameter_file, name)
+                )
             validate_upgrade_what_if(result, plan, stage, revision)
             _what_if_counts(result)
             _write_private_json(directory / f"what-if-{stage}.json", result)
             return parameters, name
 
         def deploy(
-            plan: ImageUpgradePlan, stage: str, revision: str, create_revision: bool,
+            plan: ImageUpgradePlan,
+            stage: str,
+            revision: str,
+            create_revision: bool,
         ) -> None:
             name = f"apim-{document_digest(plan.document())[:24]}-{stage}"
             prior = client.get(
@@ -1510,9 +1545,9 @@ def gateway_upgrade(
                 raise ApimUpgradeError("The previous ARM upgrade status could not be verified")
             parameters, name = preview(plan, stage, revision, create_revision)
             with temporary_parameter_file(parameters, directory) as parameter_file:
-                result = runner.run_json(_deployment_command(
-                    "create", inputs, template, parameter_file, name
-                ))
+                result = runner.run_json(
+                    _deployment_command("create", inputs, template, parameter_file, name)
+                )
             if result.get("properties", {}).get("provisioningState") != "Succeeded":
                 raise ApimUpgradeError("ARM upgrade has not completed successfully")
 
@@ -1538,9 +1573,10 @@ def gateway_upgrade(
                 )
             raw = document["plan"]
             plan = ImageUpgradePlan(**{**raw, "source": GatewaySnapshot(**raw["source"])})
-            if plan.document() != plan_image_upgrade(
-                resource_id, plan.source, canonical
-            ).document():
+            if (
+                plan.document()
+                != plan_image_upgrade(resource_id, plan.source, canonical).document()
+            ):
                 raise DeploymentError("The saved upgrade plan failed validation")
         else:
             if action != "plan-upgrade":
@@ -1556,7 +1592,8 @@ def gateway_upgrade(
             json.loads(journal_path.read_text(encoding="utf-8")) if journal_path.exists() else None
         )
         if (
-            action != "rollback-upgrade" and journal is not None
+            action != "rollback-upgrade"
+            and journal is not None
             and journal.get("status") == "passed"
             and current.revision != plan.revision
             and not plan_image_upgrade(resource_id, current, canonical).required
@@ -1571,12 +1608,31 @@ def gateway_upgrade(
             return
         _confirm_deployment(assume_yes)
         result = execute_image_upgrade(
-            plan, backend, denial, journal,
+            plan,
+            backend,
+            denial,
+            journal,
             lambda value: _write_private_json(journal_path, value),
             rollback=action == "rollback-upgrade",
         )
         print(f"APIM infrastructure upgrade: {result['status']}")
         print("API and Control-plane remain stopped; resume through the reviewed package rollout")
+
+
+def validate_directory_runtime_release(settings: Mapping[str, Mapping[str, Any]]) -> None:
+    if not any(values.get("DIRECTORY_SOURCE") == "database" for values in settings.values()):
+        return
+    expected = core_runtime_digest()
+    if set(settings) != {"api", "telemetry", "control-plane"} or any(
+        values.get("DIRECTORY_SOURCE") != "database"
+        or values.get("DIRECTORY_EXPECTED_CORE_DIGEST") != expected
+        for values in settings.values()
+    ):
+        raise DeploymentError(
+            "Active database directory requires a compatible three-package maintenance update. "
+            "Do not publish a changed core against the old expected digest. "
+            "Follow plan/organization-management/operations.md Compatible Runtime Updates."
+        )
 
 
 def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
@@ -1656,6 +1712,19 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
             inputs,
             _output_string(platform_outputs, "controlPlaneFunctionName"),
         )
+        if (
+            api_settings.get("DIRECTORY_SOURCE") == "database"
+            or control_plane_settings.get("DIRECTORY_SOURCE") == "database"
+        ):
+            validate_directory_runtime_release(
+                {
+                    "api": api_settings,
+                    "control-plane": control_plane_settings,
+                    "telemetry": current_app_settings(
+                        runner, inputs, _output_string(platform_outputs, "telemetryFunctionName")
+                    ),
+                }
+            )
         release_parameters = runtime_release_parameters(
             secrets_,
             platform_outputs,
@@ -1705,9 +1774,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     build_and_start_observer(runner, inputs, observer_outputs, observer_version)
     wait_for_observer_health(_output_string(observer_outputs, "webAppUrl"))
 
-    api_settings = current_app_settings(
-        runner, inputs, _output_string(platform_outputs, "apiName")
-    )
+    api_settings = current_app_settings(runner, inputs, _output_string(platform_outputs, "apiName"))
     control_plane_settings = current_app_settings(
         runner,
         inputs,
@@ -1766,7 +1833,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--owner-credentials",
         type=Path,
-        help="Optional private 0600 JSON file containing the Owner email and password.",
+        help="Optional private 0600 JSON file containing the Owner email and current password.",
     )
     parser.add_argument("--yes", action="store_true")
     parser.add_argument(
@@ -1781,7 +1848,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         execute(build_parser().parse_args(argv), CommandRunner())
     except (
-        DeploymentError, ApimUpgradeError, httpx.HTTPError, subprocess.CalledProcessError
+        DeploymentError,
+        ApimUpgradeError,
+        httpx.HTTPError,
+        subprocess.CalledProcessError,
     ) as error:
         print(f"Deployment failed: {error}", file=sys.stderr)
         return 1

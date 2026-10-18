@@ -47,6 +47,11 @@ param gatewayProfileId string = '10000000-0000-4000-8000-000000000001'
 @minValue(1)
 param tokensPerMinute int = 100000
 
+// Azure primaryEndpoints.table includes a trailing slash; the policy appends its own.
+var normalizedLedgerTableEndpoint = endsWith(trim(ledgerTableEndpoint), '/')
+  ? substring(trim(ledgerTableEndpoint), 0, length(trim(ledgerTableEndpoint)) - 1)
+  : trim(ledgerTableEndpoint)
+
 @description('Preserve fixed backend IDs only during an explicitly reviewed legacy-model adoption window.')
 param preserveLegacyProviderRouting bool = false
 
@@ -690,7 +695,7 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = 
                   string(employeeTokensPerMinute)
                 ),
                 '__LEDGER_TABLE_ENDPOINT__',
-                trim(ledgerTableEndpoint)
+                normalizedLedgerTableEndpoint
               ),
               '__LEDGER_TABLE_NAME__',
               ledgerTableName

@@ -100,6 +100,9 @@ def _schema_contract(value: object) -> object:
     types = result.get("type")
     if isinstance(types, list):
         result = {"anyOf": [{**result, "type": kind} for kind in types]}
+    choices = result.get("enum")
+    if isinstance(choices, list):
+        result["enum"] = sorted(choices, key=lambda item: json.dumps(item, sort_keys=True))
     variants = result.get("anyOf")
     if isinstance(variants, list):
         result["anyOf"] = sorted(variants, key=lambda item: json.dumps(item, sort_keys=True))
@@ -140,13 +143,419 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     assert all(set(value) == {"$ref"} for value in schemas.values())
     assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
         "application-access.yaml",
+        "client-downloads.yaml",
+        "client-user.yaml",
         "assistant.yaml",
         "authentication.yaml",
         "budgets.yaml",
         "github-copilot.yaml",
         "model-platform.yaml",
         "observability.yaml",
+        "user-settings.yaml",
+        "organization-management.yaml",
+        "permission-management.yaml",
     }
+
+
+def test_split_domains_reference_components_through_the_openapi_root() -> None:
+    def local_component_refs(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [ref for item in value for ref in local_component_refs(item)]
+        if not isinstance(value, dict):
+            return []
+        reference = value.get("$ref")
+        own = (
+            [reference]
+            if isinstance(reference, str) and reference.startswith("#/components/")
+            else []
+        )
+        return own + [ref for item in value.values() for ref in local_component_refs(item)]
+
+    for path in (CONTRACT.parent / "openapi").rglob("*.yaml"):
+        assert not local_component_refs(_yaml_document(path)), path
+
+
+def test_user_settings_contract_matches_served_self_service_routes() -> None:
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+
+    def personal(operations: set[tuple[str, str]]) -> set[tuple[str, str]]:
+        return {operation for operation in operations if "/user-settings/" in operation[0]}
+
+    assert personal(documented) == personal(served)
+    schemas = _documented_schemas()
+    avatar = cast(dict[str, dict[str, object]], schemas["AvatarUpdate"]["properties"])
+    branches = cast(list[dict[str, object]], avatar["avatar_data_url"]["anyOf"])
+    assert any(branch.get("maxLength") == 90_000 for branch in branches)
+    assert "avatar_data_url" in cast(list[str], schemas["AvatarUpdate"]["required"])
+    assert schemas["PasswordUpdate"]["additionalProperties"] is False
+    passwords = cast(dict[str, dict[str, object]], schemas["PasswordUpdate"]["properties"])
+    assert all(value["writeOnly"] for value in passwords.values())
+    actual = app.openapi()["components"]["schemas"]
+    for name in ("PersonalBudget", "AccountInformation", "PersonalUsage"):
+        fields = cast(dict[str, object], schemas[name]["properties"])
+        for field, field_schema in fields.items():
+            assert _schema_contract(field_schema) == _schema_contract(
+                actual[name]["properties"].get(field)
+            ), (name, field)
+        assert _schema_contract(schemas[name]) == _schema_contract(actual[name]), name
+
+
+def test_usage_query_contract_exposes_multiselect_and_distinct_directory_states() -> None:
+    operation = cast(
+        dict[str, object], _documented_paths()["/api/v1/enterprise/query-entities"]["get"],
+    )
+    parameters = cast(list[dict[str, object]], operation["parameters"])
+    repeated = [item for item in parameters if item.get("name") in {
+        "organization_id", "department_id", "user_id", "directory_status",
+    }]
+    assert len(repeated) == 4
+    assert all(item["explode"] is True for item in repeated)
+    assert all(cast(dict[str, object], item["schema"])["type"] == "array" for item in repeated)
+    entity = cast(
+        dict[str, dict[str, object]], _documented_schemas()["UsageQueryEntity"]["properties"],
+    )
+    assert set(cast(list[str], entity["directory_status"]["enum"])) == {
+        "active", "archived", "historical", "unattributed",
+    }
+    generated = app.openapi()["paths"]["/api/v1/observability/requests"]["get"]["parameters"]
+    assert all(any(row["name"] == field for row in generated) for field in (
+        "organization_id", "department_id", "agent_id", "user_id", "directory_status",
+    ))
+
+
+def test_directory_contract_matches_served_routes_and_generated_dtos() -> None:
+    from scripts.export_directory_contract import PREFIX, export
+
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+    assert {op for op in documented if op[0].startswith(PREFIX)} == {
+        op for op in served if op[0].startswith(PREFIX)
+    }
+    generated = export()
+    domain = CONTRACT.parent / "openapi"
+    assert _yaml_document(domain / "paths/organization-management.yaml") == {
+        "paths": generated["paths"],
+    }
+    assert _yaml_document(domain / "schemas/organization-management.yaml") == {
+        "schemas": generated["schemas"],
+    }
+    connection = generated["schemas"]["ConnectionWrite"]["properties"]
+    assert connection["credential_ref"]["writeOnly"]
+    assert (
+        generated["schemas"]["SyncApplyWrite"]["properties"]["approve_missing"]["default"] is False
+    )
+    profile = cast(dict[str, object], _documented_schemas()["AuthProfile"]["properties"])
+    assert {"directory_scope_key", "directory_permission_revision", "governance_user_id"} <= set(
+        profile
+    )
+
+
+def test_databricks_contract_describes_workspace_authentication_and_owned_adoption() -> None:
+    schemas = _documented_schemas()
+    connection = schemas["ModelConnectionCreate"]
+    properties = cast(dict[str, dict[str, object]], connection["properties"])
+    assert properties["databricks_workspace_url"]["format"] == "uri"
+    assert properties["oauth_client_id"]["format"] == "uuid"
+    assert "oauth_m2m" in cast(list[str], properties["auth_mode"]["enum"])
+    assert len(cast(list[object], connection["oneOf"])) == 4
+    for schema_name in (
+        "GatewayRuntimeTarget",
+        "GatewayPublicationRetry",
+        "GatewayCredentialRotation",
+    ):
+        fields = cast(dict[str, dict[str, object]], schemas[schema_name]["properties"])
+        assert fields["oauth_client_secret"]["writeOnly"] is True
+        assert fields["oauth_client_secret"]["maxLength"] == 4096
+    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
+    assert registry["databricks_connections_supported"]["default"] is False
+    assert registry["databricks_oauth_supported"]["default"] is False
+    path = "/api/v1/model-management/connections/{runtime_id}/adopt"
+    operation = cast(dict[str, object], _documented_paths()[path]["post"])
+    assert operation["security"] == [{"sessionCookie": []}]
+    assert (path, "post") in _operations(app.openapi()["paths"])
+    mi = cast(
+        dict[str, dict[str, object]],
+        schemas["DatabricksAuthorizationRequirement"]["properties"],
+    )
+    assert mi["kind"]["const"] == "databricks_workspace" and mi["role_name"]["const"] == "CAN_QUERY"
+
+
+def test_application_provisioning_defaults_are_nullable_positive_limits() -> None:
+    schema = _documented_schemas()["GatewayApplicationList"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    defaults = properties["provisioning_defaults"]
+    variants = cast(list[dict[str, object]], defaults["anyOf"])
+    assert {"type": "null"} in variants
+    reference = next(item for item in variants if "$ref" in item)
+    value = _documented_schemas()[cast(str, reference["$ref"]).rsplit("/", 1)[-1]]
+    assert value["additionalProperties"] is False
+    limits = cast(dict[str, dict[str, object]], value["properties"])
+    assert set(limits) == {"monthly_token_limit", "tokens_per_minute"}
+    assert all(item["type"] == "integer" and item["exclusiveMinimum"] == 0
+               for item in limits.values())
+
+
+def test_image_contract_is_single_nonstreaming_passthrough_and_session_protected() -> None:
+    schemas = _documented_schemas()
+    request_schema = schemas["ImageInvocationRequest"]
+    properties = cast(dict[str, dict[str, object]], request_schema["properties"])
+    assert request_schema["additionalProperties"] is True
+    assert properties["n"]["const"] == 1
+    assert properties["stream"]["const"] is False
+    for field in ("prompt", "size", "quality", "output_format"):
+        assert "enum" not in properties[field] and "maxLength" not in properties[field]
+    response = cast(dict[str, dict[str, object]], schemas["ImageInvocationResponse"]["properties"])
+    assert response["data"]["minItems"] == response["data"]["maxItems"] == 1
+    profile = cast(dict[str, dict[str, object]], schemas["ImageGenerationProfile"]["properties"])
+    assert profile["version"]["const"] == 4
+    operation = _documented_paths()["/api/v1/model-gateway/images/generations"]["post"]
+    assert cast(dict[str, object], operation)["security"] == [{"sessionCookie": []}]
+    assert ("/api/v1/model-gateway/images/generations", "post") in _operations(
+        app.openapi()["paths"]
+    )
+    retry = cast(dict[str, dict[str, object]], schemas["GatewayPublicationRetry"]["properties"])
+    assert retry["authorize_image_probes"]["default"] is False
+    view = cast(dict[str, dict[str, object]], schemas["GatewayPublication"]["properties"])
+    assert view["retry_can_authorize_image_probes"]["default"] is False
+    assert (
+        "retry_can_authorize_image_probes"
+        in (app.openapi()["components"]["schemas"]["GatewayPublicationView"]["properties"])
+    )
+
+
+def test_direct_publication_vendor_contract_matches_runtime_dto() -> None:
+    schema = _documented_schemas()["GatewayRuntimeTarget"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    assert set(cast(list[str], properties["model_vendor"]["enum"])) == {
+        vendor.value for vendor in ModelVendorKey
+    }
+    actual = app.openapi()["components"]["schemas"]["RuntimeTarget"]
+    assert "model_vendor" in actual["properties"]
+    for branch in cast(list[dict[str, object]], schema["oneOf"]):
+        rejected = cast(dict[str, object], branch["not"])["anyOf"]
+        if "openai_base_url" in cast(list[str], branch["required"]):
+            assert {"required": ["model_vendor"]} not in cast(list[object], rejected)
+        else:
+            assert {"required": ["model_vendor"]} in cast(list[object], rejected)
+
+
+def test_application_ledger_fields_preserve_unknown_and_zero() -> None:
+    schema = _documented_schemas()["GatewayApplicationBudget"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    numeric = (
+        "pending_reserved_tokens",
+        "pending_reservation_count",
+        "finalized_upper_bound_tokens",
+        "finalized_upper_bound_count",
+        "stale_reservation_count",
+        "available_tokens",
+    )
+    for field in numeric:
+        assert properties[field]["type"] == ["integer", "null"]
+        assert properties[field].get("default") is None
+        assert "default" not in properties[field]
+        assert properties[field]["minimum"] == 0
+    required = cast(list[str], schema["required"])
+    assert not set(numeric).intersection(required)
+    for field in ("oldest_reservation_at", "ledger_snapshot_at"):
+        assert properties[field]["type"] == ["string", "null"]
+        assert properties[field]["format"] == "date-time"
+
+
+def test_event_contract_domain_mirror_matches_the_inline_extension() -> None:
+    root = _yaml_document(CONTRACT.resolve())
+    mirror = _yaml_document((CONTRACT.parent / "openapi" / "events" / "eventhub.yaml").resolve())[
+        "eventContracts"
+    ]
+
+    def normalize(value: object) -> object:
+        if isinstance(value, str):
+            return value.removeprefix("../../openapi.yaml")
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        return value
+
+    assert normalize(mirror) == root["x-event-contracts"]
+
+
+def _assistant_operations(
+    operations: set[tuple[str, str]],
+) -> set[tuple[str, str]]:
+    return {operation for operation in operations if "/assistant/" in operation[0]}
+
+
+def test_every_assistant_route_is_in_the_contract() -> None:
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+
+    missing = sorted(_assistant_operations(served) - _assistant_operations(documented))
+    stale = sorted(_assistant_operations(documented) - _assistant_operations(served))
+
+    assert not missing, f"Routes the app serves but the contract omits: {missing}"
+    assert not stale, f"Routes the contract claims but the app does not serve: {stale}"
+
+
+def test_the_contract_never_claims_a_route_that_does_not_exist() -> None:
+    """The direction that produces a broken client rather than an undocumented one."""
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+    stale = sorted(op for op in documented - served if op[0] not in UNDOCUMENTED)
+    assert not stale, f"Contract describes routes the app does not serve: {stale}"
+
+
+def test_foundry_key_runtime_contract_is_distinct_from_managed_identity() -> None:
+    schema = _documented_schemas()["GatewayRuntimeTarget"]
+    alternatives = cast(list[dict[str, object]], schema["oneOf"])
+
+    assert [set(cast(list[str], item["required"])) for item in alternatives] == [
+        {"existing_id"},
+        {"bedrock_runtime_url", "api_key"},
+        {"foundry_project_endpoint"},
+        {"foundry_project_endpoint", "foundry_inference_endpoint", "api_key"},
+        {"openai_base_url", "api_key"},
+    ]
+    managed_identity_exclusions = cast(
+        dict[str, list[dict[str, list[str]]]], alternatives[2]["not"]
+    )["anyOf"]
+    assert {"foundry_inference_endpoint"} in {
+        frozenset(item["required"]) for item in managed_identity_exclusions
+    }
+    assert {"api_key"} in {frozenset(item["required"]) for item in managed_identity_exclusions}
+
+
+def test_openai_connection_contract_exposes_no_registration_secret() -> None:
+    schemas = _documented_schemas()
+    connection = cast(dict[str, dict[str, object]], schemas["ModelConnectionCreate"]["properties"])
+    provider = cast(dict[str, dict[str, object]], schemas["GatewayProviderTarget"]["properties"])
+    runtime = cast(dict[str, dict[str, object]], schemas["GatewayRuntimeTarget"]["properties"])
+
+    assert "api_key" not in connection
+    assert connection["openai_base_url"]["pattern"] == "^https://"
+    assert connection["model_vendor"]["enum"] == [
+        "generic",
+        "kimi",
+        "deepseek",
+        "openai",
+        "anthropic",
+    ]
+    assert "openai_compatible" in cast(list[str], provider["template"]["enum"])
+    assert runtime["api_key"]["writeOnly"] is True
+    alternatives = cast(list[dict[str, object]], schemas["GatewayRuntimeTarget"]["oneOf"])
+    for alternative in alternatives[:-1]:
+        exclusions = cast(dict[str, list[dict[str, list[str]]]], alternative["not"])["anyOf"]
+        assert {"openai_base_url"} in {frozenset(item["required"]) for item in exclusions}
+
+
+def test_gateway_release_reads_separate_recorded_and_live_integrity() -> None:
+    paths = _documented_paths()
+    schemas = _documented_schemas()
+
+    def get_operation(path: str) -> dict[str, object]:
+        return cast(dict[str, object], paths[path]["get"])
+
+    assert get_operation("/api/v1/model-management/releases")["operationId"] == (
+        "listGatewayReleases"
+    )
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}")["operationId"]
+        == "getGatewayRelease"
+    )
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}/diff")["operationId"]
+        == "getGatewayReleaseDiff"
+    )
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}/integrity")["operationId"]
+        == "getGatewayReleaseIntegrity"
+    )
+    dependencies = cast(
+        dict[str, dict[str, object]],
+        schemas["GatewayReleaseDependencies"]["properties"],
+    )
+    assert dependencies["live_status"]["enum"] == [
+        "not_checked",
+        "healthy",
+        "missing",
+        "mismatched",
+    ]
+    summary = cast(
+        dict[str, dict[str, object]],
+        schemas["GatewayReleaseSummary"]["properties"],
+    )
+    assert "rollback_eligible" in summary
+    assert "rollback_blockers" in summary
+
+
+def test_native_apim_pool_contract_is_bounded_and_model_scoped() -> None:
+    paths = _documented_paths()
+    schemas = _documented_schemas()
+
+    pool_path = paths["/api/v1/model-management/models/{item_id}/backend-pool"]
+    assert set(pool_path) == {"get", "put", "delete"}
+    write = cast(
+        dict[str, dict[str, object]],
+        schemas["GatewayBackendPoolWrite"]["properties"],
+    )
+    rate_limit = cast(
+        dict[str, dict[str, object]],
+        schemas["GatewayRateLimitResilience"]["properties"],
+    )
+    breaker = cast(
+        dict[str, dict[str, object]],
+        schemas["GatewayRateLimitCircuitBreaker"]["properties"],
+    )
+
+    assert write["members"]["minItems"] == 2
+    assert write["members"]["maxItems"] == 30
+    pool_config = cast(
+        dict[str, dict[str, object]], schemas["GatewayBackendPoolConfig"]["properties"]
+    )
+    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
+    for field in (
+        write["session_affinity"],
+        pool_config["session_affinity"],
+        registry["backend_pool_session_affinity_supported"],
+    ):
+        assert field["type"] == "boolean"
+        assert field["default"] is False
+    assert rate_limit["max_attempts_per_request"] == {
+        "type": "integer",
+        "const": 2,
+    }
+    assert breaker["failure_count"] == {"type": "integer", "const": 1}
+    assert breaker["interval_seconds"] == {"type": "integer", "const": 60}
+    assert breaker["trip_duration_seconds"] == {"type": "integer", "const": 60}
+    assert breaker["accept_retry_after"] == {"type": "boolean", "const": True}
+    assert rate_limit["backend_timeout_seconds"] == {
+        "type": "integer",
+        "const": 120,
+        "default": 120,
+    }
+    assert breaker["status_code_ranges"]["default"] == [
+        {"minimum": 429, "maximum": 429},
+        {"minimum": 408, "maximum": 408},
+        {"minimum": 500, "maximum": 599},
+    ]
+    assert breaker["error_reasons"]["default"] == [
+        "BackendConnectionFailure",
+        "Timeout",
+    ]
+    assert "existing compatible managed Runtimes" in str(
+        cast(dict[str, object], pool_path["put"])["description"]
+    )
+
+
+def test_assistant_protocol_settings_match_runtime_schemas() -> None:
+    documented = _documented_schemas()
+    actual = app.openapi()["components"]["schemas"]
+    for name in (
+        "AssistantSettingsWrite", "AssistantSettings", "AssistantModelChoice",
+        "InvocationApiFormat",
+    ):
+        assert _schema_contract(documented[name]) == _schema_contract(actual[name]), name
 
 
 def test_model_availability_contract_matches_runtime_constraints_and_owner_routes() -> None:
@@ -473,7 +882,7 @@ def test_publication_contract_describes_catalog_prices_and_discounts() -> None:
     properties = cast(dict[str, dict[str, object]], schema["properties"])
     assert properties["price_source"]["enum"] == ["manual", "azure_retail", "anthropic"]
     assert properties["price_source"]["default"] == "manual"
-    assert properties["price_reference"]["maxLength"] == 1000
+    assert properties["price_reference"]["maxLength"] == 1500
     assert properties["price_discount_percent"]["exclusiveMinimum"] == 0
     assert properties["price_discount_percent"]["maximum"] == 100
     assert properties["price_discount_percent"]["type"] == ["number", "null"]
@@ -509,290 +918,3 @@ def test_custom_context_rule_contract_matches_strict_runtime_fields() -> None:
     assert {"input_price_per_million", "cached_price_per_million",
             "cache_write_price_per_million", "output_price_per_million",
             "price_context_tier", "price_context_snapshot"} <= set(UsageRequestDetail.model_fields)
-
-
-def test_databricks_contract_describes_workspace_authentication_and_owned_adoption() -> None:
-    schemas = _documented_schemas()
-    connection = schemas["ModelConnectionCreate"]
-    properties = cast(dict[str, dict[str, object]], connection["properties"])
-    assert properties["databricks_workspace_url"]["format"] == "uri"
-    assert properties["oauth_client_id"]["format"] == "uuid"
-    assert "oauth_m2m" in cast(list[str], properties["auth_mode"]["enum"])
-    assert len(cast(list[object], connection["oneOf"])) == 4
-    for schema_name in (
-        "GatewayRuntimeTarget", "GatewayPublicationRetry", "GatewayCredentialRotation",
-    ):
-        fields = cast(dict[str, dict[str, object]], schemas[schema_name]["properties"])
-        assert fields["oauth_client_secret"]["writeOnly"] is True
-        assert fields["oauth_client_secret"]["maxLength"] == 4096
-    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
-    assert registry["databricks_connections_supported"]["default"] is False
-    assert registry["databricks_oauth_supported"]["default"] is False
-    path = "/api/v1/model-management/connections/{runtime_id}/adopt"
-    operation = cast(dict[str, object], _documented_paths()[path]["post"])
-    assert operation["security"] == [{"sessionCookie": []}]
-    assert (path, "post") in _operations(app.openapi()["paths"])
-    mi = cast(
-        dict[str, dict[str, object]], schemas["DatabricksAuthorizationRequirement"]["properties"],
-    )
-    assert mi["kind"]["const"] == "databricks_workspace" and mi["role_name"]["const"] == "CAN_QUERY"
-
-
-def test_application_provisioning_defaults_are_nullable_positive_limits() -> None:
-    schema = _documented_schemas()["GatewayApplicationList"]
-    properties = cast(dict[str, dict[str, object]], schema["properties"])
-    defaults = properties["provisioning_defaults"]
-    variants = cast(list[dict[str, object]], defaults["anyOf"])
-    assert {"type": "null"} in variants
-    reference = next(item for item in variants if "$ref" in item)
-    value = _documented_schemas()[cast(str, reference["$ref"]).rsplit("/", 1)[-1]]
-    assert value["additionalProperties"] is False
-    limits = cast(dict[str, dict[str, object]], value["properties"])
-    assert set(limits) == {"monthly_token_limit", "tokens_per_minute"}
-    assert all(item["type"] == "integer" and item["exclusiveMinimum"] == 0
-               for item in limits.values())
-
-
-def test_image_contract_is_single_nonstreaming_passthrough_and_session_protected() -> None:
-    schemas = _documented_schemas()
-    request_schema = schemas["ImageInvocationRequest"]
-    properties = cast(dict[str, dict[str, object]], request_schema["properties"])
-    assert request_schema["additionalProperties"] is True
-    assert properties["n"]["const"] == 1
-    assert properties["stream"]["const"] is False
-    for field in ("prompt", "size", "quality", "output_format"):
-        assert "enum" not in properties[field] and "maxLength" not in properties[field]
-    response = cast(dict[str, dict[str, object]], schemas["ImageInvocationResponse"]["properties"])
-    assert response["data"]["minItems"] == response["data"]["maxItems"] == 1
-    profile = cast(dict[str, dict[str, object]], schemas["ImageGenerationProfile"]["properties"])
-    assert profile["version"]["const"] == 4
-    operation = _documented_paths()["/api/v1/model-gateway/images/generations"]["post"]
-    assert cast(dict[str, object], operation)["security"] == [{"sessionCookie": []}]
-    assert ("/api/v1/model-gateway/images/generations", "post") in _operations(
-        app.openapi()["paths"]
-    )
-    retry = cast(dict[str, dict[str, object]], schemas["GatewayPublicationRetry"]["properties"])
-    assert retry["authorize_image_probes"]["default"] is False
-    view = cast(dict[str, dict[str, object]], schemas["GatewayPublication"]["properties"])
-    assert view["retry_can_authorize_image_probes"]["default"] is False
-    actual_view = app.openapi()["components"]["schemas"]["GatewayPublicationView"]
-    assert "desired_spec" not in actual_view["properties"]
-
-
-def test_direct_publication_vendor_contract_matches_runtime_dto() -> None:
-    schema = _documented_schemas()["GatewayRuntimeTarget"]
-    properties = cast(dict[str, dict[str, object]], schema["properties"])
-    assert set(cast(list[str], properties["model_vendor"]["enum"])) == {
-        vendor.value for vendor in ModelVendorKey
-    }
-    actual = app.openapi()["components"]["schemas"]["RuntimeTarget"]
-    assert "model_vendor" in actual["properties"]
-    for branch in cast(list[dict[str, object]], schema["oneOf"]):
-        rejected = cast(dict[str, object], branch["not"])["anyOf"]
-        if "openai_base_url" in cast(list[str], branch["required"]):
-            assert {"required": ["model_vendor"]} not in cast(list[object], rejected)
-        else:
-            assert {"required": ["model_vendor"]} in cast(list[object], rejected)
-
-
-def test_application_ledger_fields_preserve_unknown_and_zero() -> None:
-    schema = _documented_schemas()["GatewayApplicationBudget"]
-    properties = cast(dict[str, dict[str, object]], schema["properties"])
-    numeric = (
-        "pending_reserved_tokens",
-        "pending_reservation_count",
-        "finalized_upper_bound_tokens",
-        "finalized_upper_bound_count",
-        "stale_reservation_count",
-        "available_tokens",
-    )
-    for field in numeric:
-        assert properties[field]["type"] == ["integer", "null"]
-        assert properties[field].get("default") is None
-        assert "default" not in properties[field]
-        assert properties[field]["minimum"] == 0
-    required = cast(list[str], schema["required"])
-    assert not set(numeric).intersection(required)
-    for field in ("oldest_reservation_at", "ledger_snapshot_at"):
-        assert properties[field]["type"] == ["string", "null"]
-        assert properties[field]["format"] == "date-time"
-
-
-def test_event_contract_domain_mirror_matches_the_inline_extension() -> None:
-    root = _yaml_document(CONTRACT.resolve())
-    mirror = _yaml_document((CONTRACT.parent / "openapi" / "events" / "eventhub.yaml").resolve())[
-        "eventContracts"
-    ]
-
-    def normalize(value: object) -> object:
-        if isinstance(value, str):
-            return value.removeprefix("../../openapi.yaml")
-        if isinstance(value, list):
-            return [normalize(item) for item in value]
-        if isinstance(value, dict):
-            return {key: normalize(item) for key, item in value.items()}
-        return value
-
-    assert normalize(mirror) == root["x-event-contracts"]
-
-
-def _assistant_operations(
-    operations: set[tuple[str, str]],
-) -> set[tuple[str, str]]:
-    return {operation for operation in operations if "/assistant/" in operation[0]}
-
-
-def test_every_assistant_route_is_in_the_contract() -> None:
-    documented = _operations(_documented_paths())
-    served = _operations(app.openapi()["paths"])
-
-    missing = sorted(_assistant_operations(served) - _assistant_operations(documented))
-    stale = sorted(_assistant_operations(documented) - _assistant_operations(served))
-
-    assert not missing, f"Routes the app serves but the contract omits: {missing}"
-    assert not stale, f"Routes the contract claims but the app does not serve: {stale}"
-
-
-def test_the_contract_never_claims_a_route_that_does_not_exist() -> None:
-    """The direction that produces a broken client rather than an undocumented one."""
-    documented = _operations(_documented_paths())
-    served = _operations(app.openapi()["paths"])
-    stale = sorted(op for op in documented - served if op[0] not in UNDOCUMENTED)
-    assert not stale, f"Contract describes routes the app does not serve: {stale}"
-
-
-def test_foundry_key_runtime_contract_is_distinct_from_managed_identity() -> None:
-    schema = _documented_schemas()["GatewayRuntimeTarget"]
-    alternatives = cast(list[dict[str, object]], schema["oneOf"])
-
-    assert [set(cast(list[str], item["required"])) for item in alternatives] == [
-        {"existing_id"},
-        {"bedrock_runtime_url", "api_key"},
-        {"foundry_project_endpoint"},
-        {"foundry_project_endpoint", "foundry_inference_endpoint", "api_key"},
-        {"openai_base_url", "api_key"},
-    ]
-    managed_identity_exclusions = cast(
-        dict[str, list[dict[str, list[str]]]], alternatives[2]["not"]
-    )["anyOf"]
-    assert {"foundry_inference_endpoint"} in {
-        frozenset(item["required"]) for item in managed_identity_exclusions
-    }
-    assert {"api_key"} in {frozenset(item["required"]) for item in managed_identity_exclusions}
-
-
-def test_openai_connection_contract_exposes_no_registration_secret() -> None:
-    schemas = _documented_schemas()
-    connection = cast(dict[str, dict[str, object]], schemas["ModelConnectionCreate"]["properties"])
-    provider = cast(dict[str, dict[str, object]], schemas["GatewayProviderTarget"]["properties"])
-    runtime = cast(dict[str, dict[str, object]], schemas["GatewayRuntimeTarget"]["properties"])
-
-    assert "api_key" not in connection
-    assert connection["openai_base_url"]["pattern"] == "^https://"
-    assert connection["model_vendor"]["enum"] == [
-        "generic", "kimi", "deepseek", "openai", "anthropic",
-    ]
-    assert "openai_compatible" in cast(list[str], provider["template"]["enum"])
-    assert runtime["api_key"]["writeOnly"] is True
-    alternatives = cast(list[dict[str, object]], schemas["GatewayRuntimeTarget"]["oneOf"])
-    for alternative in alternatives[:-1]:
-        exclusions = cast(dict[str, list[dict[str, list[str]]]], alternative["not"])["anyOf"]
-        assert {"openai_base_url"} in {frozenset(item["required"]) for item in exclusions}
-
-
-def test_gateway_release_reads_separate_recorded_and_live_integrity() -> None:
-    paths = _documented_paths()
-    schemas = _documented_schemas()
-
-    def get_operation(path: str) -> dict[str, object]:
-        return cast(dict[str, object], paths[path]["get"])
-
-    assert get_operation("/api/v1/model-management/releases")["operationId"] == (
-        "listGatewayReleases"
-    )
-    assert (
-        get_operation("/api/v1/model-management/releases/{release_id}")["operationId"]
-        == "getGatewayRelease"
-    )
-    assert (
-        get_operation("/api/v1/model-management/releases/{release_id}/diff")["operationId"]
-        == "getGatewayReleaseDiff"
-    )
-    assert (
-        get_operation("/api/v1/model-management/releases/{release_id}/integrity")["operationId"]
-        == "getGatewayReleaseIntegrity"
-    )
-    dependencies = cast(
-        dict[str, dict[str, object]],
-        schemas["GatewayReleaseDependencies"]["properties"],
-    )
-    assert dependencies["live_status"]["enum"] == [
-        "not_checked",
-        "healthy",
-        "missing",
-        "mismatched",
-    ]
-    summary = cast(
-        dict[str, dict[str, object]],
-        schemas["GatewayReleaseSummary"]["properties"],
-    )
-    assert "rollback_eligible" in summary
-    assert "rollback_blockers" in summary
-
-
-def test_native_apim_pool_contract_is_bounded_and_model_scoped() -> None:
-    paths = _documented_paths()
-    schemas = _documented_schemas()
-
-    pool_path = paths["/api/v1/model-management/models/{item_id}/backend-pool"]
-    assert set(pool_path) == {"get", "put", "delete"}
-    write = cast(
-        dict[str, dict[str, object]],
-        schemas["GatewayBackendPoolWrite"]["properties"],
-    )
-    rate_limit = cast(
-        dict[str, dict[str, object]],
-        schemas["GatewayRateLimitResilience"]["properties"],
-    )
-    breaker = cast(
-        dict[str, dict[str, object]],
-        schemas["GatewayRateLimitCircuitBreaker"]["properties"],
-    )
-
-    assert write["members"]["minItems"] == 2
-    assert write["members"]["maxItems"] == 30
-    pool_config = cast(
-        dict[str, dict[str, object]], schemas["GatewayBackendPoolConfig"]["properties"]
-    )
-    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
-    for field in (
-        write["session_affinity"], pool_config["session_affinity"],
-        registry["backend_pool_session_affinity_supported"],
-    ):
-        assert field["type"] == "boolean"
-        assert field["default"] is False
-    assert rate_limit["max_attempts_per_request"] == {
-        "type": "integer",
-        "const": 2,
-    }
-    assert breaker["failure_count"] == {"type": "integer", "const": 1}
-    assert breaker["interval_seconds"] == {"type": "integer", "const": 60}
-    assert breaker["trip_duration_seconds"] == {"type": "integer", "const": 60}
-    assert breaker["accept_retry_after"] == {"type": "boolean", "const": True}
-    assert rate_limit["backend_timeout_seconds"] == {
-        "type": "integer",
-        "const": 120,
-        "default": 120,
-    }
-    assert breaker["status_code_ranges"]["default"] == [
-        {"minimum": 429, "maximum": 429},
-        {"minimum": 408, "maximum": 408},
-        {"minimum": 500, "maximum": 599},
-    ]
-    assert breaker["error_reasons"]["default"] == [
-        "BackendConnectionFailure",
-        "Timeout",
-    ]
-    assert "existing compatible managed Runtimes" in str(
-        cast(dict[str, object], pool_path["put"])["description"]
-    )

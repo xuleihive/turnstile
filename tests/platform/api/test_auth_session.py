@@ -43,7 +43,8 @@ class CapturingAuthStore:
         method: str,
         authenticated_at: datetime,
         expires_at: datetime,
-    ) -> None:
+        expected_password_hash: str | None = None,
+    ) -> bool:
         self.sessions.append(
             {
                 "user_id": user_id,
@@ -53,6 +54,7 @@ class CapturingAuthStore:
                 "expires_at": expires_at,
             }
         )
+        return True
 
     def session_owner(self, token_sha256: str) -> dict[str, Any] | None:
         session = next(

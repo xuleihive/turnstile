@@ -400,7 +400,7 @@ function ReleaseDetail({ release, loading, canManage, operationsEnabled, busy, o
           <header className="gateway-release-card-head"><div><h2>{plannedChanges ? "计划变更" : "相对基础版本的变更"}</h2>{plannedChanges && <span className="gateway-release-change-state">未确认生效</span>}</div><span data-no-localize>{changeCount(changes)}</span></header>
           <div className="gateway-release-change-grid">
             <ChangeColumn title="模型" added={changes.added_models} removed={changes.removed_models} changed={changes.changed_models} planned={plannedChanges} />
-            <ChangeColumn title="APIM 后端池" added={changes.added_backend_pools} removed={changes.removed_backend_pools} changed={changes.changed_backend_pools} planned={plannedChanges} />
+            <ChangeColumn title="负载均衡" added={changes.added_backend_pools} removed={changes.removed_backend_pools} changed={changes.changed_backend_pools} planned={plannedChanges} />
           </div>
         </section>
 

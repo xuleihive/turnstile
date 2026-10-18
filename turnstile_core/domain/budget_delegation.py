@@ -11,6 +11,13 @@ from .models import StrictModel
 from .runtime_models import ModelInvocationResponse
 
 
+class BudgetCapabilities(StrictModel):
+    token_available: bool = True
+    usd_available: bool
+    reason_code: str
+    message: str
+
+
 class BudgetDelegationTarget(StrictModel):
     audience: str = Field(min_length=1, max_length=2048)
     allowed_origins: tuple[HttpUrl, ...] = Field(min_length=1)

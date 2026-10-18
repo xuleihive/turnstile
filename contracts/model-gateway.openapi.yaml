@@ -360,6 +360,10 @@ components:
           type: boolean
           default: false
           description: Provider streaming is consumed and returned as one normalized response.
+        api_format:
+          anyOf:
+          - $ref: '#/components/schemas/InvocationApiFormat'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -502,6 +506,13 @@ components:
       - gateway
       - latency_ms
       - usage
+    InvocationApiFormat:
+      type: string
+      enum:
+      - openai_chat
+      - openai_responses
+      - anthropic_messages
+      title: InvocationApiFormat
 x-gateway-adapters:
   internal-schema: ModelInvocationRequest
   implementations:

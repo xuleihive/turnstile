@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime
@@ -14,6 +15,7 @@ from ..domain.application_access import (
     GatewayApplicationAvatar,
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudget,
+    GatewayApplicationBudgetProjection,
     GatewayApplicationBudgetUpdate,
     GatewayApplicationDetail,
     GatewayApplicationDiscovery,
@@ -34,7 +36,6 @@ from ..domain.application_access import (
     application_subscription_id_for,
     decode_application_avatar_data_url,
 )
-from ..domain.enterprise import enterprise_catalog, merge_observed_users
 from ..domain.models import TrendResponse
 from ..integrations.apim_control_plane_contract import (
     ApimSubscriptionKeyClient,
@@ -48,6 +49,7 @@ from .control_plane import (
     ControlPlaneNotFoundError,
     ControlPlaneUnavailableError,
 )
+from .directory_catalog import catalog_for
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,11 @@ class ApplicationAccessService:
         key_client_resolver: ApimSubscriptionKeyClientResolver | None = None,
         default_token_limit: int = 100_000,
         default_tokens_per_minute: int = 100_000,
+        budget_projector: Callable[[UUID], None] | None = None,
+        budget_projection_reader: Callable[
+            [UUID, GatewayApplicationBudget], GatewayApplicationBudgetProjection
+        ]
+        | None = None,
         read_execution_budget: Callable[[UUID, date], Mapping[str, Any] | None] | None = None,
         project_rate_limit: Callable[[UUID], int | None] | None = None,
         read_rate_limit: Callable[[UUID], int | None] | None = None,
@@ -115,6 +122,8 @@ class ApplicationAccessService:
         )
         self._default_token_limit = defaults.monthly_token_limit
         self._default_tokens_per_minute = defaults.tokens_per_minute
+        self._budget_projector = budget_projector
+        self._budget_projection_reader = budget_projection_reader
 
     def sync_discovery(
         self, discovery: GatewayApplicationDiscovery, actor: str
@@ -262,7 +271,27 @@ class ApplicationAccessService:
                 if self._key_management_available
                 else self._key_management_unavailable_reason
             ),
+            budget_projection=self._budget_projection(application_id, summary.budget),
         )
+
+    def _budget_projection(
+        self,
+        application_id: UUID,
+        budget: GatewayApplicationBudget | None,
+    ) -> GatewayApplicationBudgetProjection:
+        if (
+            self._budget_projection_reader is None
+            or budget is None
+            or budget.budget_mode != "tokens"
+        ):
+            return GatewayApplicationBudgetProjection(status="unavailable")
+        try:
+            return self._budget_projection_reader(application_id, budget)
+        except Exception:
+            logger.warning(
+                "Application budget projection readback unavailable for %s", application_id
+            )
+            return GatewayApplicationBudgetProjection(status="unavailable")
 
     def application_avatar(self, application_id: UUID) -> tuple[str, bytes]:
         row = self._repository.get_gateway_application_avatar(application_id)
@@ -343,6 +372,27 @@ class ApplicationAccessService:
         except (httpx.HTTPError, PolicyCompilationError) as error:
             self._raise_key_management_error(error)
 
+    def match_application_subscription_key(
+        self,
+        application_id: UUID,
+        subscription_id: UUID,
+        credential: str,
+    ) -> Literal["primary", "secondary"] | None:
+        """Identify a configured platform credential without exporting subscription secrets."""
+        subscription = self._key_subscription(application_id, subscription_id)
+        client = self._require_key_client(UUID(str(subscription["gateway_profile_id"])))
+        try:
+            primary, secondary = client.application_subscription_keys(
+                str(subscription["apim_subscription_id"])
+            )
+        except (httpx.HTTPError, PolicyCompilationError) as error:
+            self._raise_key_management_error(error)
+        if hmac.compare_digest(credential, primary):
+            return "primary"
+        if hmac.compare_digest(credential, secondary):
+            return "secondary"
+        return None
+
     def _key_subscription(
         self, application_id: UUID, application_subscription_id: UUID
     ) -> Mapping[str, object]:
@@ -399,7 +449,7 @@ class ApplicationAccessService:
     def update_application_organization(
         self, application_id: UUID, request: GatewayApplicationOrganizationUpdate, actor: str,
     ) -> GatewayApplicationOrganization:
-        catalog = merge_observed_users(enterprise_catalog(), self._repository.observed_users())
+        catalog = catalog_for(self._repository)
         organization = application_organization(
             {"organization_id": request.organization_id} if request.organization_id else {},
             request.department_id,
@@ -474,6 +524,14 @@ class ApplicationAccessService:
         )
         if row is None:
             raise ControlPlaneNotFoundError("Application not found")
+        if self._budget_projector is not None:
+            try:
+                self._budget_projector(application_id)
+            except Exception:
+                # The database committed; projection failure is not a failed save.
+                logger.warning(
+                    "Application budget saved; ledger projection pending for %s", application_id
+                )
         if self._project_rate_limit is not None:
             try:
                 self._project_rate_limit(application_id)
@@ -509,12 +567,11 @@ class ApplicationAccessService:
         period_end: date,
     ) -> list[GatewayApplicationSummary]:
         application_ids = [UUID(str(row["id"])) for row in rows]
-        departments = {item.id: item.name for item in enterprise_catalog().departments}
+        catalog = catalog_for(self._repository, include_inactive=True)
+        departments = {item.id: item.name for item in catalog.departments}
         people = {
             item.id: item.name
-            for item in merge_observed_users(
-                enterprise_catalog(), self._repository.observed_users(),
-            ).users
+            for item in catalog.users
         } if any(row.get("owner_id") for row in rows) else {}
         subscriptions: dict[UUID, list[Mapping[str, object]]] = {}
         for item in self._repository.list_gateway_application_subscriptions(
@@ -689,6 +746,7 @@ class ApplicationAccessService:
                         **dict(row),
                         **application_organization(
                             cast(dict[str, str], row.get("tags") or {}),
+                            catalog=catalog,
                         ).model_dump(
                             exclude={"projected", "department_id", "department_name",
                                      "person_id", "person_name"},

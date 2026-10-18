@@ -13,22 +13,17 @@ import { Button } from "../components/ui/button"
 import { Switch } from "../components/ui/switch"
 import { ChartCard } from "../components/charts/chart-card"
 
-/**
- * A pinned report: one nav item holding one or more charts.
- *
- * Charts are re-run on open rather than served from the stored snapshot, because a saved
- * report that quietly shows month-old numbers is worse than one that takes a second to
- * load. The stored copy is rendered first so the page is never blank, and is replaced
- * when the refresh lands, which is the behaviour PRD 8.1 asks for.
- */
+/** The existing saved report viewer, embedded in the report center. */
 export function PinnedReportPage({
   chartId,
   onToggleSidebar,
   onDeleted,
+  embedded = false,
 }: {
   chartId: string
   onToggleSidebar: () => void
   onDeleted: (id: string) => void
+  embedded?: boolean
 }) {
   const queryClient = useQueryClient()
   const { user } = useAuth()
@@ -94,7 +89,7 @@ export function PinnedReportPage({
     // the title on its own would silently erase the description.
     mutationFn: (title: string) =>
       assistantApi.renamePinned(chartId, title, pinned?.description ?? ""),
-    // Writing to the shared cache also renames the sidebar entry, which is the same
+    // Writing to the shared cache also renames the directory entry, which is the same
     // report under a different name and would otherwise disagree with the heading.
     onSuccess: replaceReport,
   })
@@ -249,18 +244,18 @@ export function PinnedReportPage({
   const needsWidth = (chart: PinnedReport["charts"][number]["chart"]) =>
     chart.kind === "table" && chart.series.length + 1 >= 5
 
-  return <div className="finops-workspace pinned-report-workspace">
+  return <div className="finops-workspace pinned-report-workspace" data-embedded={embedded || undefined}>
     <header className="finops-header">
       <div>
-        <Button
+        {!embedded && <Button
           variant="ghost"
           size="icon-sm"
           className="finops-sidebar-trigger"
           aria-label="切换导航栏"
           title="切换导航栏"
           onClick={onToggleSidebar}
-        ><PanelLeft size={16} /></Button>
-        <span className="finops-header-icon"><Pin size={17} /></span>
+        ><PanelLeft size={16} /></Button>}
+        {!embedded && <span className="finops-header-icon"><Pin size={17} /></span>}
         {/* The title is the report's identity, so it is edited where it is read rather
             than behind a dialog for one field. Only a loaded report is editable: there is
             nothing to name while the page is still fetching, or once it is gone. */}
@@ -361,6 +356,12 @@ export function PinnedReportPage({
           {refresh.isError && <div className="assistant-error">
             <AlertTriangle size={13} />
             <span>刷新失败，下面显示的是上一次成功取到的数据。</span>
+          </div>}
+          {visibility.isError && <div className="assistant-error">
+            <AlertTriangle size={13} /><span>公开设置保存失败</span>
+          </div>}
+          {unpin.isError && <div className="assistant-error">
+            <AlertTriangle size={13} /><span>删除报表失败</span>
           </div>}
           {/* A failed reorder puts the cards back, which on its own looks like the drag
               simply did not take. Saying so is the difference between a bug and a

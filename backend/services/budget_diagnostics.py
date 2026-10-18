@@ -30,7 +30,8 @@ from turnstile_core.integrations.reconciliation import ManagedIdentityTokenProvi
 from turnstile_core.services.application_access import ApplicationAccessService
 from turnstile_core.services.budget_settlement import BudgetStatusRepository
 
-from .runtime_service import ModelRuntimeService
+from .gateway_credentials import with_platform_gateway_credential
+from .runtime_service import ModelRuntimeService, budget_readiness_failure_headers
 
 logger = logging.getLogger(__name__)
 
@@ -236,16 +237,20 @@ class BudgetDiagnostics:
 
     def readiness(self, gateway_id: UUID, person_id: str) -> BudgetDelegationReadiness:
         route = self._route(gateway_id)
+        stage = "ledger_fence_read"
         try:
             with self.store_factory() as store:
                 fence = self._fence(store, gateway_id)
+            stage = "ledger_fence_validate"
             native = str(route.get("native_gateway_id") or "managed")
             revision = self._revision(fence, native)
             configuration = self.settings.budget_delegation_targets[gateway_id]
             destinations = [(native, self._endpoint(gateway_id, str(route["gateway_base_url"])))]
+            stage = "managed_identity_token"
             valid = self.tokens.token(configuration.audience)
             paused = fence["mode"] == "paused"
             if paused:
+                stage = "gateway_destinations"
                 destinations = [
                     (
                         str(item["native_gateway_id"]),
@@ -278,14 +283,20 @@ class BudgetDiagnostics:
                 ]
             checks = []
             with self.client_factory() as client:
-                decrypted = self.runtime._decrypt_route(route)
+                stage = "subscription_credential"
+                decrypted = with_platform_gateway_credential(
+                    self.runtime._decrypt_route(route), self.settings,
+                )
                 headers = OpenAICompatibleGatewayAdapter(GatewayKind.APIM, client)._auth_headers(
                     decrypted
                 )
-                if not any(key.lower() == "ocp-apim-subscription-key" for key in headers) or any(
-                    key.lower() == "authorization" for key in headers
+                if (
+                    not decrypted.get("gateway_credential")
+                    or not any(key.lower() == "ocp-apim-subscription-key" for key in headers)
+                    or any(key.lower() == "authorization" for key in headers)
                 ):
                     raise HTTPException(status_code=409, detail="An APIM subscription is required")
+                stage = "gateway_probes"
                 for gateway_native, endpoint in destinations:
                     self._revision(fence, gateway_native)
                     for case, expected, token, person, candidate in cases:
@@ -335,15 +346,13 @@ class BudgetDiagnostics:
             if ready and paused and fence.get("validation_person_id") == person_id:
                 try:
                     subscription = self._subscription(gateway_id, person_id, fence)
+                    policy = self.runtime._person_model_policy(person_id)
                     models = []
                     for model in self.repository.registry()["models"]:
                         try:
                             candidate_route = self._route(gateway_id, model["id"])
-                            request = self._request(candidate_route, person_id, str(uuid4()))
-                            self.runtime._assert_model_allowed(
-                                request, candidate_route, request.metadata.run_id
-                            )
-                            models.append(model["id"])
+                            if self.runtime._model_policy_allows(candidate_route, policy):
+                                models.append(model["id"])
                         except HTTPException:
                             continue
                     verification = BudgetExecutionVerificationOptions(
@@ -362,12 +371,19 @@ class BudgetDiagnostics:
                 protocol_mode=fence["mode"],
                 verification=verification,
             )
-        except HTTPException:
+        except HTTPException as error:
+            error.headers = {
+                **(error.headers or {}), **budget_readiness_failure_headers(stage, error),
+            }
             raise
         except Exception as error:
-            logger.warning("Budget readiness unavailable error_type=%s", type(error).__name__)
+            logger.warning(
+                "Budget readiness unavailable stage=%s error_type=%s",
+                stage, type(error).__name__,
+            )
             raise HTTPException(
-                status_code=503, detail="Budget readiness could not be verified"
+                status_code=503, detail="Budget readiness could not be verified",
+                headers=budget_readiness_failure_headers(stage, error),
             ) from None
 
     def execute(

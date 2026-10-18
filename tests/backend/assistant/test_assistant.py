@@ -22,6 +22,7 @@ from turnstile_core.domain.assistant_models import (
     PinnedReportLayout,
 )
 from turnstile_core.domain.models import TokenUsageRecord
+from turnstile_core.domain.runtime_models import InvocationApiFormat
 from turnstile_core.integrations.gateway import GatewayRouter
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
@@ -271,6 +272,212 @@ def test_the_model_is_offered_every_registered_tool() -> None:
     # not every gateway forwards, and the failure mode is a silently malformed call.
     for tool in sent[0]["tools"]:
         assert "$ref" not in json.dumps(tool["function"]["parameters"])
+
+
+def test_gpt6_assistant_queries_real_data_through_stateless_responses() -> None:
+    reasoning = {
+        "type": "reasoning",
+        "id": "rs-1",
+        "summary": [],
+        "encrypted_content": "opaque-analysis",
+    }
+    function_call = {
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": "query_usage_trend",
+        "arguments": '{"dimension":"department","time_range":"last_7_days"}',
+        "status": "completed",
+    }
+    answer = "Usage is highest in AI Platform."
+    service, repository, sent = _service([
+        {
+            "status": "completed",
+            "output": [reasoning, function_call],
+            "usage": {"input_tokens": 50, "output_tokens": 10},
+        },
+        {
+            "status": "completed",
+            "output": [{
+                "type": "message", "role": "assistant", "phase": "final_answer",
+                "content": [{"type": "output_text", "text": answer, "annotations": []}],
+            }],
+            "usage": {"input_tokens": 60, "output_tokens": 12},
+        },
+    ])
+    picked = service.settings().available_models[0]
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model["upstream_model_id"] = "gpt-6.1-sol"
+    runtime = next(item for item in repository.runtimes if item["id"] == model["runtime_id"])
+    runtime["config"]["control_plane_managed"] = True
+
+    reply = service.ask(
+        AssistantAskRequest(
+            question="How has each department's usage changed over the past 7 days?",
+            locale="en",
+        ),
+        user_id=USER,
+        user_name=USER,
+    )
+
+    assert len(sent) == 2
+    assert "messages" not in sent[0]
+    assert sent[0]["store"] is False
+    assert sent[0]["model"] == picked.model_key
+    assert all(item["type"] == "message" for item in sent[0]["input"])
+    assert all(
+        block["type"] == "input_text"
+        for item in sent[0]["input"] for block in item["content"]
+    )
+    assert {tool["name"] for tool in sent[0]["tools"]} == {tool.name for tool in REGISTRY}
+    assert sent[1]["input"][2:4] == [reasoning, function_call]
+    assert sent[1]["input"][-1]["type"] == "function_call_output"
+    assert sent[1]["input"][-1]["call_id"] == "call-1"
+    assert "AI Platform" in sent[1]["input"][-1]["output"]
+    assert sent[0]["_headers"]["x-user-id"] == USER
+    assert sent[1]["_headers"]["x-hive-run-id"] == reply.conversation_id
+    assert reply.message == answer
+    assert reply.total_tokens == 132
+    assert [step.status for step in reply.steps] == ["ok"]
+    assert len(reply.charts) == 1
+    assert "opaque-analysis" not in reply.model_dump_json()
+    stored = service.get_conversation(UUID(reply.conversation_id), USER)
+    assert "opaque-analysis" not in stored.model_dump_json()
+
+
+def test_foundry_claude_on_shared_runtime_queries_real_data_and_preserves_tool_history() -> None:
+    blocks = [
+        {"type": "thinking", "thinking": "private analysis", "signature": "private-signature"},
+        {"type": "tool_use", "id": "toolu-1", "name": "query_usage_ranking",
+         "input": {"dimension": "department"}},
+    ]
+    service, repository, sent = _service([
+        {"content": blocks, "stop_reason": "tool_use",
+         "usage": {"input_tokens": 50, "output_tokens": 10}},
+        {"content": [{"type": "text", "text": "AI Platform leads."}],
+         "usage": {"input_tokens": 60, "output_tokens": 12}},
+    ])
+    picked = service.settings().available_models[0]
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model.update(family_key="claude", upstream_model_id="claude-opus-5-5")
+    settings = service.save_settings(AssistantSettingsWrite(model_id=picked.id), USER)
+
+    assert settings.effective_api_format == "anthropic_messages"
+    assert settings.available_api_formats == ["anthropic_messages"]
+    assert settings.effective_api_path == "/v1/messages"
+    reply = service.ask(
+        AssistantAskRequest(question="Which department uses the most?", locale="en"),
+        user_id=USER, user_name=USER,
+    )
+
+    assert len(sent) == 2
+    assert sent[0]["tools"][0]["input_schema"]
+    assert sent[1]["messages"][-2] == {"role": "assistant", "content": blocks}
+    assert sent[1]["messages"][-1]["content"][0]["type"] == "tool_result"
+    assert "AI Platform" in sent[1]["messages"][-1]["content"][0]["content"]
+    assert reply.message == "AI Platform leads."
+    assert reply.charts[0].rows[0]["total_tokens"] == 120
+    assert reply.total_tokens == 132
+    assert sent[0]["_headers"]["x-agent-id"] == "agent-finops-assistant"
+    assert "private-signature" not in service.get_conversation(
+        UUID(reply.conversation_id), USER,
+    ).model_dump_json()
+
+
+def test_selected_responses_protocol_is_saved_and_used_for_answer_and_title() -> None:
+    def answer(text: str) -> dict[str, Any]:
+        return {"output": [{
+            "type": "message", "content": [{"type": "output_text", "text": text}],
+        }]}
+
+    service, repository, sent = _service([answer("Answer."), answer("Usage review")])
+    picked = service.settings().available_models[0]
+    saved = service.save_settings(
+        AssistantSettingsWrite(
+            model_id=picked.id, api_format=InvocationApiFormat.OPENAI_RESPONSES,
+        ), USER,
+    )
+    assert saved.api_format == "openai_responses"
+    assert saved.effective_api_format == "openai_responses"
+    assert saved.available_api_formats == ["openai_chat", "openai_responses"]
+    assert repository.assistant_settings()["api_format"] == "openai_responses"
+    reply = service.ask(AssistantAskRequest(question="Usage?"), user_id=USER, user_name=USER)
+    service.title_conversation(UUID(reply.conversation_id), USER, "en")
+    assert all("input" in body and "messages" not in body for body in sent)
+    assert sent[-1]["max_output_tokens"] == 256
+
+
+@pytest.mark.parametrize("api", ["openai_chat", "openai_responses"])
+def test_claude_rejects_openai_protocol_override_without_saving_it(api: str) -> None:
+    service, repository, sent = _service([])
+    picked = service.settings().available_models[0]
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model.update(family_key="claude", upstream_model_id="claude-opus-5-5")
+    with pytest.raises(HTTPException) as caught:
+        service.save_settings(
+            AssistantSettingsWrite.model_validate({"model_id": picked.id, "api_format": api}), USER,
+        )
+    assert caught.value.status_code == 409
+    assert repository.assistant_settings()["model_id"] is None
+    assert sent == []
+
+
+def test_gpt6_is_only_offered_with_responses_and_requires_a_compatible_apim_binding() -> None:
+    service, repository, _ = _service([])
+    picked = service.settings().available_models[0]
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model["upstream_model_id"] = "gpt-6.1-sol"
+    runtime = next(item for item in repository.runtimes if item["id"] == model["runtime_id"])
+    runtime["config"]["control_plane_managed"] = True
+    chosen = next(
+        choice for choice in service.settings().available_models if choice.id == picked.id
+    )
+    assert chosen.api_formats == ["openai_responses"]
+    with pytest.raises(HTTPException):
+        service.save_settings(
+            AssistantSettingsWrite(
+                model_id=picked.id, api_format=InvocationApiFormat.OPENAI_CHAT,
+            ), USER,
+        )
+    runtime["config"]["backend_path"] = "/v1/chat/completions"
+    assert picked.id not in {choice.id for choice in service.settings().available_models}
+
+
+def test_unavailable_saved_protocol_falls_back_visibly_and_never_reaches_wrong_endpoint() -> None:
+    service, repository, _ = _service([])
+    picked = service.settings().available_models[0]
+    service.save_settings(
+        AssistantSettingsWrite(
+            model_id=picked.id, api_format=InvocationApiFormat.OPENAI_RESPONSES,
+        ), USER,
+    )
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model.update(family_key="claude", upstream_model_id="claude-opus-5-5")
+    settings = service.settings()
+    assert settings.model_available is True
+    assert settings.api_available is False
+    assert settings.api_format == "openai_responses"
+    assert settings.effective_api_format == "anthropic_messages"
+
+
+def test_legacy_title_toggle_preserves_protocol_and_explicit_null_restores_automatic() -> None:
+    service, repository, _ = _service([])
+    picked = service.settings().available_models[0]
+    service.save_settings(
+        AssistantSettingsWrite(
+            model_id=picked.id, api_format=InvocationApiFormat.OPENAI_RESPONSES,
+        ), USER,
+    )
+    legacy = service.save_settings(
+        AssistantSettingsWrite(model_id=picked.id, auto_title=False), USER,
+    )
+    assert legacy.api_format == "openai_responses"
+    automatic = service.save_settings(
+        AssistantSettingsWrite(model_id=picked.id, auto_title=False, api_format=None), USER,
+    )
+    assert automatic.effective_api_format == "openai_chat"
+    assert repository.assistant_settings()["api_format"] is None
+
 
 def test_a_bad_tool_argument_is_returned_to_the_model_not_raised() -> None:
     # A hallucinated argument is recoverable — the model can read the error and retry.
@@ -811,6 +1018,29 @@ def test_the_tool_loop_is_bounded() -> None:
 
     assert len(sent) == 4
     assert len(reply.steps) == 4
+
+
+def test_tool_loop_limit_does_not_present_claude_planning_text_as_a_final_answer() -> None:
+    response = {
+        "content": [
+            {"type": "text", "text": "I am still checking."},
+            {"type": "tool_use", "id": "toolu-1", "name": "query_usage_ranking",
+             "input": {"dimension": "department"}},
+        ],
+        "stop_reason": "tool_use",
+    }
+    service, repository, sent = _service([response for _ in range(4)])
+    picked = service.settings().available_models[0]
+    model = next(item for item in repository.models if item["id"] == picked.id)
+    model.update(family_key="claude", upstream_model_id="claude-opus-5-5")
+    service.save_settings(AssistantSettingsWrite(model_id=picked.id), USER)
+
+    reply = service.ask(
+        AssistantAskRequest(question="Keep analysing."), user_id=USER, user_name=USER,
+    )
+    assert len(sent) == 4
+    assert len(reply.steps) == 4
+    assert reply.message == "Too many analysis steps. Please narrow the question."
 
 
 def test_relative_ranges_resolve_in_the_viewer_timezone() -> None:

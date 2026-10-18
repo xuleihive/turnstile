@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Activity,
+  Archive,
   AlertTriangle,
   Bot,
   ChartPie,
@@ -61,7 +62,10 @@ import { ChartSeriesLegend, useSeriesToggle } from "../../../components/finops/c
 import { CategoryAxisTick, categoryAxisWidth, categoryTickGutter, useChartWidthKey } from "../../../components/finops/category-axis"
 import { ResizableGridTable } from "../../../components/ui/resizable-table"
 import { FinOpsChartTooltip } from "../../../components/finops/chart-tooltip"
-import { FilterMenuField } from "../../../components/finops/filter-menu-field"
+import { FilterMenuField, MultiSelectFilterField } from "../../../components/finops/filter-menu-field"
+import {
+  reconcileUsageScope, usageArchiveFilter, usageArchiveSelection, usageFacetOptions, usageSelection,
+} from "../../../lib/usage-filter-scope"
 import { AnomalyRuleManagement } from "./anomaly-rule-management"
 import { AgentInvocation } from "./dashboard-invocation"
 import {
@@ -84,7 +88,10 @@ import {
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
 import { usageWindow } from "../api"
+import { useDataRefresh } from "../../../providers/data-refresh-provider"
 import { getIntlLocale, useLocale, type LocalePreference } from "../../../locales/index"
+import { useTimezone } from "../../../providers/timezone-provider"
+import { formatUsageBucket, formatUsageTimestamp } from "../../../lib/timezone"
 import { estimateRequestCost, hasModelPrices, priceRequests, requestCostCalculation } from "../../../lib/pricing"
 import { useAuth } from "../../../providers/auth-provider"
 import { finopsKeys, finopsQueries, trendDimensionForFilters } from "../queries"
@@ -101,6 +108,7 @@ import type {
   TrendDimension,
   TrendMetric,
   UsageFilters,
+  UsageDirectoryStatus,
   UsageAnomaly,
   UsageRequestDetail,
   UsageRequestSummary,
@@ -155,22 +163,40 @@ export function FinOpsDashboard({
   const tab = initialTab
   const header = pageHeaders[tab]
   const HeaderIcon = header.icon
-  const entityQuery = useQuery(finopsQueries.entities())
   const registryQuery = useQuery(finopsQueries.registry())
-  const filters = useMemo<UsageFilters>(() => ({ ...usageWindow(days), ...scope }), [days, scope])
+  const managedScope = useMemo(() => ({
+    ...scope, directory_status: usageArchiveSelection(scope.directory_status),
+  }), [scope])
+  const scopeFilters = useMemo<UsageFilters>(() => ({
+    ...usageWindow(days), ...managedScope,
+    directory_status: usageArchiveFilter(managedScope.directory_status),
+  }), [days, managedScope])
+  const activeEntities = useQuery({ ...finopsQueries.entities(), enabled: tab === "invoke" })
+  const historyEntities = useQuery({ ...finopsQueries.queryEntities(scopeFilters), enabled: tab !== "invoke" })
+  const effectiveScope = useMemo(() => historyEntities.data
+    ? reconcileUsageScope(managedScope, historyEntities.data) : managedScope, [managedScope, historyEntities.data])
+  const filters = useMemo(() => ({
+    ...scopeFilters, ...effectiveScope,
+    directory_status: usageArchiveFilter(effectiveScope.directory_status),
+  }), [scopeFilters, effectiveScope])
+  const entityQuery = tab === "invoke" ? activeEntities : historyEntities
   const entities = entityQuery.data
   const unpricedModels = registryQuery.data?.models.filter(model => model.enabled && !hasModelPrices(model)) ?? []
   const costAvailable = registryQuery.data != null && unpricedModels.length === 0
-  const agents = entities?.agents ?? []
-  const users = entities?.users.filter((item) => !scope.department_id || item.parent_id === scope.department_id) ?? []
-  const updateScope = (patch: Partial<FinOpsScope>) => onScopeChange({ ...scope, ...patch })
-  const activeFilterCount = Object.values(scope).filter(Boolean).length + (days === 30 ? 0 : 1)
+  const facets = historyEntities.data ? usageFacetOptions(historyEntities.data, filters) : null
+  const updateScope = (patch: Partial<FinOpsScope>) => onScopeChange({ ...effectiveScope, ...patch })
+  const directoryStatuses = managedScope.directory_status
+  const activeFilterCount = Object.entries(effectiveScope).filter(([key, value]) =>
+    key !== "directory_status" && (Array.isArray(value) ? value.length > 0 : Boolean(value))).length
+    + (days === 30 ? 0 : 1)
+    + (directoryStatuses.length === 1 && directoryStatuses[0] === "active" ? 0 : 1)
   const refreshCurrentPage = async () => {
     setIsRefreshing(true)
     try {
       await Promise.all([
         queryClient.refetchQueries({ queryKey: finopsKeys.all, type: "active" }),
         queryClient.refetchQueries({ queryKey: finopsKeys.entities, type: "active" }),
+        queryClient.refetchQueries({ queryKey: finopsKeys.queryEntities(filters), type: "active" }),
         queryClient.refetchQueries({ queryKey: finopsKeys.registry, type: "active" }),
       ])
     } finally {
@@ -184,16 +210,23 @@ export function FinOpsDashboard({
     </header>
     {tab !== "invoke" && <div className="finops-filterbar">
       <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== 30} allowAll={false} options={[{ value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(Number(next))} />
-      {entities && <>
-        <FilterMenuField label="组织" icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
-        <FilterMenuField label="部门" icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
+      <MultiSelectFilterField label="归档状态" icon={Archive} value={directoryStatuses}
+        translateValues active={directoryStatuses.length !== 1 || directoryStatuses[0] !== "active"}
+        options={[{ value: "active", label: "启用" }, { value: "archived", label: "已归档" }]}
+        onChange={next => updateScope({
+          directory_status: next as UsageDirectoryStatus[], organization_id: undefined,
+          department_id: undefined, agent_id: undefined, user_id: undefined,
+        })} />
+      {facets && <>
+        <MultiSelectFilterField label="组织" icon={Building2} value={usageSelection(effectiveScope.organization_id)} options={facets.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
+        <MultiSelectFilterField label="部门" icon={Users} value={usageSelection(effectiveScope.department_id)} options={facets.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
         {/* No project filter. It is the one dimension no token carries -- the APIM policy
             writes it as `unattributed` outright -- so 98.8% of production tokens have
             none, and a control that narrows to 1.2% of the spend is a trap rather than a
             tool. `project_id` stays in the API and the schema for callers that do send
             it. */}
-        <FilterMenuField label="智能体" icon={Bot} value={scope.agent_id} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
-        <FilterMenuField label="人员" icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
+        <MultiSelectFilterField label="智能体" icon={Bot} value={usageSelection(effectiveScope.agent_id)} options={facets.agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
+        <MultiSelectFilterField label="人员" icon={UserRound} value={usageSelection(effectiveScope.user_id)} options={facets.users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
       </>}
       {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange(30); onScopeChange({}) }}><X size={14} />重置</Button>}
     </div>}
@@ -206,7 +239,7 @@ export function FinOpsDashboard({
         {entities && registryQuery.data && tab === "analytics" && <ModelUsage filters={filters} costAvailable={costAvailable} />}
         {entities && tab === "trends" && <UsageTrends filters={filters} />}
         {entities && registryQuery.data && tab === "governance" && <Governance filters={filters} entities={entities} models={registryQuery.data.models} onOpenRequest={onOpenRequest} />}
-        {entities && registryQuery.data && tab === "requests" && <RequestTrace filters={filters} models={registryQuery.data.models} />}
+        {entities && registryQuery.data && tab === "requests" && <RequestTrace key={JSON.stringify(effectiveScope)} filters={filters} models={registryQuery.data.models} />}
         {entities && tab === "invoke" && <AgentInvocation entities={entities} />}
       </div>
     </div>
@@ -725,17 +758,18 @@ const trendIntervalLabels: Record<TrendInterval, string> = {
 }
 
 function UsageTrends({ filters }: { filters: UsageFilters }) {
+  const { timezone } = useTimezone()
   const [metric, setMetric] = useState<TrendMetric>("total_tokens")
   const [interval, setInterval] = useState<TrendInterval>("hour")
   const [contributionLimit, setContributionLimit] = useState<RankingLimit>(5)
   const { hiddenSeries: hiddenTrendSeries, toggleSeries: toggleTrendSeries } = useSeriesToggle()
   const dimension = trendDimensionForFilters(filters)
-  const query = useQuery(finopsQueries.trends(filters, dimension, interval))
+  const query = useQuery(finopsQueries.trends(filters, dimension, interval, timezone))
   // Success rate, tail latency and the quality chart describe the whole window, so they read
   // server aggregates. `none` collapses each bucket to one point because a percentile cannot
   // be merged across the comparison series the main chart is grouped by.
   const overview = useQuery(finopsQueries.executiveOverview(filters))
-  const qualityBuckets = useQuery(finopsQueries.trends(filters, "none", interval))
+  const qualityBuckets = useQuery(finopsQueries.trends(filters, "none", interval, timezone))
   if (query.isLoading || overview.isLoading || qualityBuckets.isLoading) return <LoadingState />
   if (query.error || overview.error || qualityBuckets.error) return <ErrorState error={query.error ?? overview.error ?? qualityBuckets.error} />
 
@@ -749,7 +783,7 @@ function UsageTrends({ filters }: { filters: UsageFilters }) {
   const visibleTrendSeries = series
     .map((key, index) => ({ key, color: trendSeriesColor(key, index) }))
     .filter((entry) => !hiddenTrendSeries.includes(entry.key))
-  const data = pivotPoints(points, metric, interval, new Set(leadingSeries))
+  const data = pivotPoints(points, metric, interval, new Set(leadingSeries), timezone)
   const buckets = summarizeTrendBuckets(points, metric)
   const peak = buckets.reduce((current, item) => item.value > current.value ? item : current, buckets[0])
   const total = contributions.reduce((sum, item) => sum + item.value, 0)
@@ -761,7 +795,7 @@ function UsageTrends({ filters }: { filters: UsageFilters }) {
     : 0
   const p95Latency = totals?.p95_latency_ms ?? 0
   const qualityData: RequestQualityPoint[] = (qualityBuckets.data?.points ?? []).map((point) => ({
-    day: formatTrendBucket(point.bucket_start, interval),
+    day: formatTrendBucket(point.bucket_start, interval, timezone),
     calls: point.totals.calls,
     p95Latency: point.totals.p95_latency_ms,
   }))
@@ -787,7 +821,7 @@ function UsageTrends({ filters }: { filters: UsageFilters }) {
     <section className="finops-kpis span-3 trends-kpis">
       <Kpi label={`总${trendMetricLabels[metric]}`} value={formatTrendMetric(metric, total)} change={null} note={`${(totals?.total_requests ?? 0).toLocaleString(getIntlLocale())} 次调用`} icon={Activity} />
       <Kpi label={averageLabel} value={formatTrendMetric(metric, average)} change={null} note={metric === "calls" ? `${buckets.length} 个活跃时段` : "当前筛选范围"} icon={Zap} />
-      <Kpi label="峰值时段" value={formatTrendBucket(peak.bucket, interval)} change={null} note={formatTrendMetric(metric, peak.value)} icon={Clock3} />
+      <Kpi label="峰值时段" value={formatTrendBucket(peak.bucket, interval, timezone)} change={null} note={formatTrendMetric(metric, peak.value)} icon={Clock3} />
       <Kpi label={`主要${trendDimensionLabels[dimension]}`} value={topContributor.name} change={null} note={`${decimal.format(topContributor.share)}% 用量占比`} icon={Workflow} />
       <Kpi label="请求成功率" value={`${decimal.format(successRate)}%`} change={null} note={`P95 ${formatLatency(p95Latency)}`} icon={ShieldAlert} />
     </section>
@@ -837,11 +871,11 @@ function summarizeTrendBuckets(points: TrendPoint[], metric: TrendMetric) {
   return [...totals.entries()].map(([bucket, value]) => ({ bucket, value })).sort((left, right) => left.bucket.localeCompare(right.bucket))
 }
 
-function pivotPoints(points: TrendPoint[], metric: TrendMetric, interval: TrendInterval, leadingSeries: Set<string>) {
+function pivotPoints(points: TrendPoint[], metric: TrendMetric, interval: TrendInterval, leadingSeries: Set<string>, timezone: string) {
   const rows = new Map<string, Record<string, string | number>>()
   for (const point of points) {
     const key = leadingSeries.has(point.label) ? point.label : "其他"
-    const row = rows.get(point.bucket_start) ?? { day: formatTrendBucket(point.bucket_start, interval) }
+    const row = rows.get(point.bucket_start) ?? { day: formatTrendBucket(point.bucket_start, interval, timezone) }
     row[key] = Number(row[key] ?? 0) + point.totals[metric]
     rows.set(point.bucket_start, row)
   }
@@ -854,18 +888,8 @@ function formatTrendMetric(metric: TrendMetric, value: number, withUnit = false)
   return withUnit ? `${Math.round(value).toLocaleString(getIntlLocale())} tokens` : compact.format(value)
 }
 
-function formatTrendBucket(timestamp: string, interval: TrendInterval) {
-  const date = new Date(timestamp)
-  const locale = getIntlLocale()
-  if (interval === "hour") return date.toLocaleString(locale, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    ...(locale === "en-US" ? { minute: "2-digit" as const } : {}),
-    hour12: false,
-    timeZone: "UTC",
-  })
-  return date.toLocaleDateString(getIntlLocale(), { month: "2-digit", day: "2-digit", timeZone: "UTC" })
+function formatTrendBucket(timestamp: string, interval: TrendInterval, timezone: string) {
+  return formatUsageBucket(timestamp, interval, timezone, getIntlLocale())
 }
 
 function trendSeriesColor(key: string, index: number) {
@@ -946,6 +970,7 @@ function GovernanceRiskTrendChart({ rows }: { rows: GovernanceRiskPoint[] }) {
 }
 
 function Governance({ filters, entities, models, onOpenRequest }: { filters: UsageFilters; entities: EnterpriseEntityCatalog; models: ManagedModel[]; onOpenRequest: (requestId: string) => void }) {
+  const { timezone } = useTimezone()
   const rules = useQuery(finopsQueries.anomalyRules())
   // Every figure below describes the whole window, so each comes from a server aggregate:
   // totals for the KPIs and the two histograms, the model distribution for per-model success
@@ -954,7 +979,7 @@ function Governance({ filters, entities, models, onOpenRequest }: { filters: Usa
   const overview = useQuery(finopsQueries.executiveOverview(filters))
   const anomalies = useQuery(finopsQueries.anomalies(filters))
   const modelUsage = useQuery(finopsQueries.distribution(filters, "model"))
-  const riskBuckets = useQuery(finopsQueries.trends(filters, "none", "day"))
+  const riskBuckets = useQuery(finopsQueries.trends(filters, "none", "day", timezone))
   const requests = useQuery(finopsQueries.requests(filters))
   const [selectedSignal, setSelectedSignal] = useState<UsageAnomaly | null>(null)
   if (rules.isLoading || overview.isLoading || anomalies.isLoading || modelUsage.isLoading || riskBuckets.isLoading || requests.isLoading) return <LoadingState />
@@ -982,7 +1007,7 @@ function Governance({ filters, entities, models, onOpenRequest }: { filters: Usa
     .filter((item) => item.value > 0)
     .sort((left, right) => right.value - left.value)
   const riskTrend: GovernanceRiskPoint[] = (riskBuckets.data?.points ?? []).map((point) => ({
-    day: new Date(point.bucket_start).toLocaleDateString(getIntlLocale(), { month: "numeric", day: "numeric" }),
+    day: formatTrendBucket(point.bucket_start, "day", timezone),
     errorRate: point.totals.calls ? point.totals.failed_calls / point.totals.calls * 100 : 0,
     p95Latency: point.totals.p95_latency_ms,
   }))
@@ -1000,8 +1025,8 @@ function Governance({ filters, entities, models, onOpenRequest }: { filters: Usa
     <MetricRankingPanel className="governance-chart-panel" title="模型成功率" meta={`${modelStats.length} 个模型`} rows={modelStats.map((item) => ({ name: item.name, value: item.successRate }))} valueLabel="成功率" valueFormatter={(value) => `${decimal.format(value)}%`} color="var(--success)" domain={[0, 100]} />
     <section className="finops-panel span-2"><PanelTitle title="风险变化" meta="错误率 · P95 时延" />{riskTrend.length ? <GovernanceRiskTrendChart rows={riskTrend} /> : <EmptyState title="暂无风险趋势" detail="当前范围暂无请求数据。" />}</section>
     <MetricRankingPanel className="governance-chart-panel" title="失败来源" meta={`${affectedModels} 个模型`} rows={failureSources} valueLabel="失败请求" valueFormatter={(value) => `${value.toLocaleString(getIntlLocale())} 次`} color="var(--destructive)" emptyTitle="暂无失败请求" emptyDetail="当前范围未发现失败调用。" />
-    <section className="finops-panel span-3 governance-signals"><PanelTitle title="触发信号明细" meta={`${signals.length} 项 · ${criticalSignals} 严重 · ${warningSignals} 警告`} /><GovernanceSignalTable signals={signals} onSelect={setSelectedSignal} /></section>
-    <GovernanceSignalDialog signal={selectedSignal} rule={(rules.data ?? []).find((rule) => rule.id === selectedSignal?.rule_id)} requests={requestRows} onClose={() => setSelectedSignal(null)} onOpenRequest={onOpenRequest} />
+    <section className="finops-panel span-3 governance-signals"><PanelTitle title="触发信号明细" meta={`${signals.length} 项 · ${criticalSignals} 严重 · ${warningSignals} 警告`} /><GovernanceSignalTable signals={signals} timezone={timezone} onSelect={setSelectedSignal} /></section>
+    <GovernanceSignalDialog signal={selectedSignal} rule={(rules.data ?? []).find((rule) => rule.id === selectedSignal?.rule_id)} requests={requestRows} timezone={timezone} onClose={() => setSelectedSignal(null)} onOpenRequest={onOpenRequest} />
   </div>
 }
 
@@ -1014,8 +1039,9 @@ const SIGNALS_PER_PAGE = 10
  *  cost a round trip. This is the opposite of the request list, where the cap is the
  *  problem rather than the page size.
  */
-function GovernanceSignalTable({ signals, onSelect }: {
+function GovernanceSignalTable({ signals, timezone, onSelect }: {
   signals: UsageAnomaly[]
+  timezone: string
   onSelect: (signal: UsageAnomaly) => void
 }) {
   const [page, setPage] = useState(0)
@@ -1032,8 +1058,8 @@ function GovernanceSignalTable({ signals, onSelect }: {
   const rows = signals.slice(start, start + SIGNALS_PER_PAGE)
   return <>
     <ResizableGridTable className="governance-table" role="table" aria-label="治理信号" headerSelector=".governance-head" minWidths={[220, 120, 90, 90, 140, 24]} columnGap={14} horizontalPadding={36}>
-      <div className="governance-head" role="row"><span>信号</span><span>维度</span><span>实际值</span><span>阈值</span><span>时间</span><span /></div>
-      {rows.map((item) => <button type="button" className="governance-signal-row" key={item.id} title={`查看信号详情：${item.title}`} aria-label={`查看信号详情：${item.title}，${item.dimension_name}`} onClick={() => onSelect(item)}><span><i className={item.severity} /><b>{item.title}</b><small>{item.description}</small></span><span>{item.dimension_name}</span><span>{item.actual_value.toFixed(2)}</span><span>{item.threshold_value.toFixed(2)}</span><span>{new Date(item.detected_at).toLocaleString(getIntlLocale())}</span><ChevronRight aria-hidden="true" size={16} /></button>)}
+      <div className="governance-head" role="row"><span><span>信号</span></span><span><span>维度</span></span><span><span>实际值</span></span><span><span>阈值</span></span><span><span>时间</span></span><span /></div>
+      {rows.map((item) => <button type="button" className="governance-signal-row" key={item.id} title={`查看信号详情：${item.title}`} aria-label={`查看信号详情：${item.title}，${item.dimension_name}`} onClick={() => onSelect(item)}><span><i className={item.severity} /><b>{item.title}</b><small>{item.description}</small></span><span>{item.dimension_name}</span><span>{item.actual_value.toFixed(2)}</span><span>{item.threshold_value.toFixed(2)}</span><span>{formatUsageTimestamp(item.detected_at, timezone, getIntlLocale())}</span><ChevronRight aria-hidden="true" size={16} /></button>)}
     </ResizableGridTable>
     {pageCount > 1 && <div className="people-table-footer">
       {/* Controls on the left, count on the right: the assistant FAB is anchored to the
@@ -1067,10 +1093,11 @@ const signalMetricLabels: Record<AnomalyRule["metric"], string> = {
   agent_request_count: "智能体调用量",
 }
 
-function GovernanceSignalDialog({ signal, rule, requests, onClose, onOpenRequest }: {
+function GovernanceSignalDialog({ signal, rule, requests, timezone, onClose, onOpenRequest }: {
   signal: UsageAnomaly | null
   rule: AnomalyRule | undefined
   requests: UsageRequestSummary[]
+  timezone: string
   onClose: () => void
   onOpenRequest: (requestId: string) => void
 }) {
@@ -1094,7 +1121,7 @@ function GovernanceSignalDialog({ signal, rule, requests, onClose, onOpenRequest
             <div><dt>触发规则</dt><dd>{rule?.name ?? signal.title}</dd></div>
             <div><dt>信号类型</dt><dd>{rule ? signalMetricLabels[rule.metric] : signal.dimension}</dd></div>
             <div><dt>维度</dt><dd>{signal.dimension_name}</dd></div>
-            <div><dt>触发时间</dt><dd>{new Date(signal.detected_at).toLocaleString(getIntlLocale())}</dd></div>
+            <div><dt>触发时间</dt><dd>{formatUsageTimestamp(signal.detected_at, timezone, getIntlLocale())}</dd></div>
             <div><dt>样本数</dt><dd>{scopedRequests.length.toLocaleString(getIntlLocale())}</dd></div>
             <div><dt>最小样本</dt><dd>{rule?.minimum_sample_size.toLocaleString(getIntlLocale()) ?? "--"}</dd></div>
           </dl>
@@ -1142,6 +1169,8 @@ function RequestTrace({
   filters: UsageFilters;
   models: ManagedModel[];
 }) {
+  const { timezone } = useTimezone()
+  const refresh = useDataRefresh()
   const initialRequestId = new URLSearchParams(window.location.search).get("request")
   const [selected, setSelected] = useState<string | null>(initialRequestId);
   const [searchText, setSearchText] = useState(initialRequestId ?? "");
@@ -1152,7 +1181,7 @@ function RequestTrace({
   // The header describes the whole window, so it reads the server aggregate. The list below
   // is a page of recent requests and legitimately uses the rows.
   const overview = useQuery(finopsQueries.executiveOverview(filters))
-  const volumeTrend = useQuery(finopsQueries.trends(filters, "none", "day"))
+  const volumeTrend = useQuery(finopsQueries.usageActivity(filters, "day", timezone))
   const detail = useQuery(finopsQueries.requestDetail(selected ?? ""))
   const firstRequestId = requestRows[0] ? requestTraceId(requestRows[0]) : null
   useEffect(() => {
@@ -1200,6 +1229,7 @@ function RequestTrace({
       item.selected_model_name,
       item.user_name,
       item.project_name,
+      item.request_source,
     ].some((value) => value?.toLocaleLowerCase().includes(normalizedSearch));
     return matchesStatus && matchesSearch;
   });
@@ -1214,7 +1244,9 @@ function RequestTrace({
   const slowRequests = totals?.latency_over_5s ?? 0;
   const slowRequestPercent = windowRequests ? (slowRequests / windowRequests) * 100 : 0;
   const volumeRows = (volumeTrend.data?.points ?? []).map((point) => ({
-    day: formatTrendBucket(point.bucket_start, "day"),
+    day: new Date(point.bucket_start).toLocaleDateString(getIntlLocale(), {
+      month: "2-digit", day: "2-digit", timeZone: timezone,
+    }),
     calls: point.totals.calls,
   }));
   const pricedDetail = detail.data
@@ -1229,7 +1261,7 @@ function RequestTrace({
         <Kpi label="≥5 秒请求" value={slowRequests.toLocaleString(getIntlLocale())} change={null} note={`${decimal.format(slowRequestPercent)}%`} icon={AlertTriangle} />
       </section>
       <section className="finops-panel trace-insight-panel span-2">
-        <PanelTitle title="调用趋势" meta="每日" />
+        <PanelTitle title="调用趋势" meta={`每日 · ${timezone}`} />
         <RequestVolumeTrendChart rows={volumeRows} />
       </section>
       <section className="finops-panel trace-insight-panel">
@@ -1242,7 +1274,7 @@ function RequestTrace({
           const list = event.currentTarget
           if (list.scrollHeight - list.scrollTop - list.clientHeight <= 160) loadNextPage()
         }}>
-          <PanelTitle title="请求记录" meta={`${visibleRows.length} / ${statusTotal} 条`} />
+          <PanelTitle title="请求记录" meta={`${visibleRows.length} / ${statusTotal} 条 · ${refresh.label}`} />
           <div className="trace-list-tools">
             <label>
               <Search size={14} />
@@ -1250,7 +1282,7 @@ function RequestTrace({
                 type="search"
                 value={searchText}
                 onChange={(event) => setSearchText(event.target.value)}
-                placeholder="搜索 ID、智能体、模型或人员"
+                placeholder="搜索 ID、应用、智能体、模型或人员"
                 aria-label="搜索请求"
               />
             </label>
@@ -1377,6 +1409,7 @@ function RequestTraceDetail({
   request: UsageRequestDetail;
   costAvailable: boolean;
 }) {
+  const { timezone } = useTimezone()
   const { user: sessionUser } = useAuth();
   const selectedModelId = request.selected_model_id ?? request.model_id;
   const backendPool = useQuery({
@@ -1463,7 +1496,7 @@ function RequestTraceDetail({
     <div className="trace-detail-hero">
       <span className={request.status_code == null ? "" : requestTraceFailed(request) ? "failed" : "success"}>{request.status_code ?? "未知"}</span>
 
-      <div><b>{request.model_name}</b><small>{new Date(request.timestamp).toLocaleString(getIntlLocale())}</small></div>
+      <div><b>{request.model_name}</b><small>{new Date(request.timestamp).toLocaleString(getIntlLocale(), { timeZone: timezone })}</small></div>
       <strong>{formatLatency(request.latency_ms)}</strong>
     </div>
     {errorMessage && <div className="trace-error"><CircleAlert size={15} /><div><b>{request.ingest_source === "policy" ? "策略拒绝" : "请求失败"}</b><span>{errorMessage}</span></div></div>}

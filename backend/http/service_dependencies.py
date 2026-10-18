@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from functools import lru_cache
 from typing import Annotated, Any, cast
 from uuid import UUID
@@ -9,6 +9,10 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException
 
 from turnstile_core.config import get_settings
+from turnstile_core.domain.application_access import (
+    GatewayApplicationBudget,
+    GatewayApplicationBudgetProjection,
+)
 from turnstile_core.domain.control_plane import GatewayReleaseRetentionPolicy
 from turnstile_core.domain.ledger import BudgetPriceProjection, LedgerScope
 from turnstile_core.integrations.apim_target_client_factory import (
@@ -20,7 +24,11 @@ from turnstile_core.integrations.atomic_ledger import AtomicTableLedger
 from turnstile_core.integrations.gateway_connection_probe import (
     GatewayConnectionProbe,
 )
-from turnstile_core.integrations.ledger import LedgerSyncService, TableStorageLedger
+from turnstile_core.integrations.ledger import (
+    LedgerSyncService,
+    TableStorageLedger,
+    application_partition_key,
+)
 from turnstile_core.pricing.catalog import CompositeCatalog, build_default_catalog
 from turnstile_core.security import CredentialCipher
 from turnstile_core.services.apim_onboarding import (
@@ -52,6 +60,7 @@ from ..services.assistant import AssistantService
 from ..services.budget_service import TokenBudgetService
 from ..services.runtime_service import ModelRuntimeService
 from .dependencies import Repository
+from .session import CurrentSession
 
 
 @lru_cache(maxsize=1)
@@ -116,6 +125,7 @@ def control_plane_service(repository: Repository) -> GatewayControlPlaneService:
         application_default_token_limit=settings.gateway_application_default_monthly_token_limit,
         application_default_tokens_per_minute=settings.gateway_application_default_tokens_per_minute,
         image_generation_defaults=settings.image_generation_defaults,
+        image_generation_enabled=settings.image_generation_enabled,
         databricks_oauth_enabled=settings.databricks_oauth_enabled,
         target_inventory_sync_enabled=(
             settings.apim_target_registry_enabled
@@ -210,8 +220,55 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
         )
     ) or settings.apim_target_registry_enabled
     key_management_available = (
-        settings.gateway_application_key_management_enabled
-        and key_settings_available
+        settings.gateway_application_key_management_enabled and key_settings_available
+    )
+
+    def project_budget(application_id: UUID) -> None:
+        assert settings.ledger_table_endpoint
+        with TableStorageLedger(
+            settings.ledger_table_endpoint, settings.ledger_table_name
+        ) as store:
+            LedgerSyncService(repository, store).project_application_budget(application_id)
+
+    def read_budget(
+        application_id: UUID,
+        budget: GatewayApplicationBudget,
+    ) -> GatewayApplicationBudgetProjection:
+        assert settings.ledger_table_endpoint
+        with TableStorageLedger(
+            settings.ledger_table_endpoint, settings.ledger_table_name
+        ) as store:
+            row = store.read_entity(
+                application_partition_key(
+                    application_id,
+                    budget.period_start.strftime("%Y-%m"),
+                ),
+                "Q",
+            )
+        if row is None:
+            return GatewayApplicationBudgetProjection(status="pending")
+        projected = all(
+            row.get(field) == value
+            for field, value in (
+                ("Limit", budget.token_limit),
+                ("TokensPerMinute", budget.tokens_per_minute),
+                ("Enforce", budget.enforce),
+            )
+        ) and row.get("ConfigurationUpdatedAt", "") == budget.updated_at.astimezone(UTC).isoformat(
+            timespec="microseconds",
+        )
+        return GatewayApplicationBudgetProjection(
+            status="projected" if projected else "pending",
+            tokens_per_minute=int(row["TokensPerMinute"]) if row.get("TokensPerMinute") else None,
+            configuration_updated_at=(
+                datetime.fromisoformat(row["ConfigurationUpdatedAt"])
+                if row.get("ConfigurationUpdatedAt")
+                else None
+            ),
+        )
+
+    budget_projection_available = settings.ledger_sync_enabled and bool(
+        settings.ledger_table_endpoint
     )
     provisioning_unavailable_reason = (
         "Gateway Release Worker is not enabled."
@@ -256,6 +313,8 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
         read_rate_limit=read_rate_limit if projection_available else None,
         project_organization=project_organization if projection_available else None,
         project_model_access=project_model_access if projection_available else None,
+        budget_projector=project_budget if budget_projection_available else None,
+        budget_projection_reader=read_budget if budget_projection_available else None,
     )
 
 
@@ -288,9 +347,7 @@ def token_budget_service(repository: Repository) -> TokenBudgetService:
     return TokenBudgetService(repository, project, require_atomic_budget=require_atomic_budget)
 
 
-TokenBudgetServiceDependency = Annotated[
-    TokenBudgetService, Depends(token_budget_service)
-]
+TokenBudgetServiceDependency = Annotated[TokenBudgetService, Depends(token_budget_service)]
 
 
 def budget_reservation_service(repository: Repository) -> Iterator[BudgetReservationService]:
@@ -315,26 +372,18 @@ def anomaly_rule_service(repository: Repository) -> AnomalyRuleService:
     return AnomalyRuleService(repository)
 
 
-AnomalyRuleServiceDependency = Annotated[
-    AnomalyRuleService, Depends(anomaly_rule_service)
-]
+AnomalyRuleServiceDependency = Annotated[AnomalyRuleService, Depends(anomaly_rule_service)]
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-def assistant_service(repository: Repository) -> AssistantService:
+def assistant_service(repository: Repository, identity: CurrentSession) -> AssistantService:
     settings = get_settings()
-    return AssistantService(repository, ModelRuntimeService(repository, settings), settings)
+    return AssistantService(
+        repository,
+        ModelRuntimeService(repository, settings),
+        settings,
+        department_ids=identity.directory_department_ids,
+        data_scope=identity.data_scope,
+    )
 
 
 AssistantServiceDependency = Annotated[AssistantService, Depends(assistant_service)]

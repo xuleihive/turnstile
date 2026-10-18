@@ -163,7 +163,9 @@ test("entry hot updates reuse one React root and query client", async () => {
   const load = hot => runInNewContext(code, {
     require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }),
     __testHot: hot,
-    window: { location: { hostname: "localhost" } },
+    URLSearchParams,
+    sessionStorage: { getItem: () => null },
+    window: { location: { hostname: "localhost", search: "" } },
     document: { getElementById: id => { assert.equal(id, "root"); return container } },
   })
   const hot = { data: {} }

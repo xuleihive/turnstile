@@ -42,7 +42,6 @@ from uuid import UUID, uuid4
 import httpx
 
 from ..domain.application_access import GatewayApplicationLedgerState, application_organization
-from ..domain.enterprise import enterprise_catalog
 from ..domain.ledger import (
     BudgetReservationAdmission,
     BudgetReservationFinalization,
@@ -176,6 +175,20 @@ class LedgerApplication:
     usd_limit: Decimal | None = None
     confirmed_usd: Decimal | None = None
     usd_cost_available: bool = True
+    quota_updated_at: datetime | None = None
+
+
+def application_quota_entity(application: LedgerApplication) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "Limit": application.token_limit,
+        "TokensPerMinute": application.tokens_per_minute,
+        "Enforce": application.enforce,
+    }
+    if application.quota_updated_at is not None:
+        value["ConfigurationUpdatedAt"] = application.quota_updated_at.astimezone(UTC).isoformat(
+            timespec="microseconds"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -280,14 +293,46 @@ class TableStorageLedger:
         return response
 
     def upsert(self, partition: str, row_key: str, entity: dict[str, Any]) -> None:
-        response = self._request(
-            "PUT", self._entity_url(partition, row_key), json=entity
-        )
+        if partition.startswith(APPLICATION_PARTITION_PREFIX) and row_key == "Q":
+            self._upsert_application_quota(partition, entity)
+            return
+        response = self._request("PUT", self._entity_url(partition, row_key), json=entity)
         response.raise_for_status()
+
+    def _upsert_application_quota(self, partition: str, entity: dict[str, Any]) -> None:
+        """Reject stale snapshots; an ETag also closes the read/replace race."""
+        url = self._entity_url(partition, "Q")
+        for _ in range(8):
+            current = self._request("GET", url)
+            if current.status_code == 404:
+                result = self._request(
+                    "POST",
+                    f"{self._endpoint}/{self._table}",
+                    json={**entity, "PartitionKey": partition, "RowKey": "Q"},
+                )
+                if result.status_code == 409:
+                    continue
+            else:
+                current.raise_for_status()
+                stored = current.json()
+                incoming_version = entity.get("ConfigurationUpdatedAt", "")
+                stored_version = stored.get("ConfigurationUpdatedAt", "")
+                if stored_version and incoming_version <= stored_version:
+                    return
+                etag = current.headers.get("ETag")
+                if not etag:
+                    raise RuntimeError("Application quota readback has no concurrency token")
+                result = self._request("PUT", url, {"If-Match": etag}, json=entity)
+                if result.status_code == 412:
+                    continue
+            result.raise_for_status()
+            return
+        raise RuntimeError("Application quota changed repeatedly; retry the projection")
 
     def insert_if_missing(self, partition: str, row_key: str, entity: dict[str, Any]) -> None:
         response = self._request(
-            "POST", f"{self._endpoint}/{self._table}",
+            "POST",
+            f"{self._endpoint}/{self._table}",
             json={**entity, "PartitionKey": partition, "RowKey": row_key},
         )
         if response.status_code != 409:
@@ -891,6 +936,7 @@ class LedgerSyncService:
                 tokens_per_minute=int(row["tokens_per_minute"]),
                 confirmed_tokens=int(row["confirmed_tokens"]),
                 enforce=bool(row["enforce"]),
+                quota_updated_at=row.get("quota_updated_at"),
                 budget_mode=str(row.get("budget_mode", "tokens")),
                 usd_limit=(
                     Decimal(str(row["usd_limit"])) if row.get("usd_limit") is not None else None
@@ -904,6 +950,35 @@ class LedgerSyncService:
             for row in rows
             if str(row["status"]) != "retired"
         ]
+
+    def project_application_budget(self, application_id: UUID, now: datetime | None = None) -> None:
+        moment = now or datetime.now(UTC)
+        start, _, period = self._period_bounds(moment)
+        row = next(
+            (
+                item
+                for item in self._repository.gateway_application_ledger_applications(start)
+                if str(item["application_id"]) == str(application_id)
+            ),
+            None,
+        )
+        if row is None or row["status"] == "retired":
+            raise ValueError("Application budget is unavailable")
+        if row.get("budget_mode", "tokens") != "tokens":
+            return
+        application = LedgerApplication(
+            application_id=str(application_id),
+            token_limit=int(row["token_limit"]),
+            tokens_per_minute=int(row["tokens_per_minute"]),
+            confirmed_tokens=0,
+            enforce=bool(row["enforce"]),
+            quota_updated_at=row.get("quota_updated_at"),
+        )
+        self._store.upsert(
+            application_partition_key(application_id, period),
+            "Q",
+            application_quota_entity(application),
+        )
 
     def application_model_access(self) -> list[LedgerApplicationModelAccess]:
         return [
@@ -972,12 +1047,17 @@ class LedgerSyncService:
         return written
 
     def project_application_mappings(self, application_id: UUID | None = None) -> int:
+        from ..persistence.directory_catalog import catalog_for
+
         written = 0
-        departments = {item.id: item.name for item in enterprise_catalog().departments}
+        catalog = catalog_for(self._repository, include_inactive=True)
+        departments = {item.id: item.name for item in catalog.departments}
         for mapping in self._repository.gateway_application_ledger_mappings():
             if application_id is not None and str(mapping["application_id"]) != str(application_id):
                 continue
-            organization = application_organization(dict(mapping.get("tags") or {}))
+            organization = application_organization(
+                dict(mapping.get("tags") or {}), catalog=catalog,
+            )
             self._store.upsert(
                 application_map_partition_key(mapping["gateway_profile_id"]),
                 str(mapping["apim_subscription_id"]),
@@ -1180,11 +1260,7 @@ class LedgerSyncService:
                     self._store.upsert(
                         partition,
                         "Q",
-                        {
-                            "Limit": application.token_limit,
-                            "TokensPerMinute": application.tokens_per_minute,
-                            "Enforce": application.enforce,
-                        },
+                        application_quota_entity(application),
                     )
                     self._store.upsert(
                         partition,

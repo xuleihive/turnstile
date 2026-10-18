@@ -1,0 +1,15 @@
+{
+  "data_uri": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiPgogIDxyZWN0IHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgcng9IjciIGZpbGw9IiMyZjZmZGQiIC8+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNCA0KSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgICA8cGF0aCBkPSJNMjEgNC41djE1IiAvPgogICAgPGNpcmNsZSBjeD0iMTAuMyIgY3k9IjE0IiByPSIyLjMiIC8+CiAgICA8cGF0aCBkPSJNMTAuMyAxMS43VjUuOSIgLz4KICAgIDxwYXRoIGQ9Ik04LjMgMTUuMTUgMy40IDE4IiAvPgogICAgPHBhdGggZD0iTTEyLjMgMTUuMTUgMTcuMiAxOCIgLz4KICA8L2c+Cjwvc3ZnPg==",
+  "generator": "turnstile-plugin-icons-v1",
+  "main": "icon.svg",
+  "revision": "71a907ed6dbc61361ac61729466a84f119fab4a131bf705c1e876fa4442591dd",
+  "schema_version": 1,
+  "sha256": {
+    "icon-dark.svg": "4ace0eaed2744dfe20c139bc377ad5d122757a0dd77e226b8569ab034d02741c",
+    "icon-light.svg": "4ace0eaed2744dfe20c139bc377ad5d122757a0dd77e226b8569ab034d02741c",
+    "icon.svg": "4ace0eaed2744dfe20c139bc377ad5d122757a0dd77e226b8569ab034d02741c"
+  },
+  "size": 128,
+  "source_sha256": "d77fc1b395cff5f58690d5716f110ae2f1fc9d744cdffda3801340e5e01404ca",
+  "theme_policy": "single-slot-neutral-badge"
+}

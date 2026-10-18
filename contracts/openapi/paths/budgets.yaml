@@ -412,3 +412,18 @@ paths:
         access only.
       tags:
       - Budgets
+  /api/v1/budgets/capabilities:
+    get:
+      summary: Get Budget Capabilities
+      operationId: get_budget_capabilities_api_v1_budgets_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/BudgetCapabilities
+      security:
+      - sessionCookie: []
+      tags:
+      - Budgets

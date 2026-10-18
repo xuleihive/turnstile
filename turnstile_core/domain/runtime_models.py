@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, HttpUrl, JsonValue, SecretStr, model_validator
+from pydantic import Field, HttpUrl, JsonValue, PrivateAttr, SecretStr, model_validator
 
 from .gateway_targets import ApimTargetTopologyList
 from .image_profiles import ImageGenerationLimits, ImageGenerationProfile
@@ -22,6 +22,70 @@ FOUNDRY_INFERENCE_RESOURCE = "https://ai.azure.com"
 FOUNDRY_INFERENCE_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
 DATABRICKS_INFERENCE_RESOURCE = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
 DATABRICKS_ANTHROPIC_PATH = "/serving-endpoints/anthropic/v1/messages"
+
+
+class DecisionInvocationResponse(StrictModel):
+    request_id: str
+    correlation_id: str | None = None
+    upstream_request_id: str | None = None
+    answers: dict[str, JsonValue]
+    provider: str
+    runtime: str
+    model: str
+    gateway: str
+    gateway_profile_id: UUID | None = None
+    gateway_deployment_id: UUID | None = None
+    native_gateway_id: str | None = None
+    latency_ms: int = Field(ge=0)
+    usage: InvocationUsage | None
+    estimated_cost: float | None = Field(default=None, ge=0)
+
+class PlatformInvocationAttempt(StrictModel):
+    schema_version: Literal[1] = 1
+    request_id: str = Field(min_length=1, max_length=512)
+    started_at: datetime
+    metadata: InvocationMetadata
+    model_id: UUID
+    model_key: str
+    model_name: str
+    runtime_id: UUID
+    runtime_name: str
+    provider_name: str
+    apim_target_id: UUID | None = None
+    gateway_deployment_id: UUID | None = None
+    native_gateway_id: str | None = None
+    apim_service_id: str | None = None
+    application_id: UUID | None = None
+
+class PlatformInvocationCompletion(StrictModel):
+    request_id: str = Field(min_length=1, max_length=512)
+    completed_at: datetime
+    outcome: Literal["succeeded", "failed"]
+    status_code: int = Field(ge=100, le=599)
+    latency_ms: int = Field(ge=0)
+    gateway_correlation_id: str | None = Field(default=None, min_length=1, max_length=512)
+    upstream_request_id: str | None = Field(default=None, min_length=1, max_length=512)
+    failure_kind: (
+        Literal[
+            "gateway_error",
+            "http_error",
+            "timeout",
+            "transport_error",
+            "invalid_response",
+            "internal_error",
+        ]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def consistent_outcome(self) -> PlatformInvocationCompletion:
+        if self.outcome == "failed" and self.failure_kind is None:
+            raise ValueError("A failed invocation requires a failure kind")
+        if self.outcome == "succeeded" and (
+            self.failure_kind is not None or not 200 <= self.status_code < 300
+        ):
+            raise ValueError("A successful invocation requires a successful response")
+        return self
 
 
 class ModelVendorKey(StrEnum):
@@ -218,6 +282,12 @@ class GatewayKind(StrEnum):
     DIRECT = "direct"
 
 
+class InvocationApiFormat(StrEnum):
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
 class RuntimeKind(StrEnum):
     COPILOT_CLI = "copilot_cli"
     FOUNDRY = "foundry"
@@ -253,6 +323,7 @@ class PriceSource(StrEnum):
     """
 
     MANUAL = "manual"
+    MODELS_DEV = "models_dev"
     AZURE_RETAIL = "azure_retail"
     ANTHROPIC = "anthropic"
 
@@ -266,6 +337,9 @@ class PriceSyncStatus(StrEnum):
     # was discarded. Distinct from `stale`: the source was read fine, the answer just no longer
     # applies to the row it was computed for.
     SUPERSEDED = "superseded"
+    AMBIGUOUS = "ambiguous"
+    UNSUPPORTED = "unsupported"
+    DEFERRED = "deferred"
 
 
 class PriceCatalogInputRange(StrictModel):
@@ -352,6 +426,8 @@ class PriceCatalogOption(StrictModel):
     output_per_million: float | None = None
     cached_per_million: float | None = None
     cache_write_per_million: float | None = None
+
+    context_window: int | None = None
 
 
 class PriceCatalogOptionsResponse(StrictModel):
@@ -635,9 +711,9 @@ class ManagedModelWrite(StrictModel):
                 raise ValueError("A Decision model cannot be the default chat model")
         return self
 
-    price_source: PriceSource = PriceSource.MANUAL
+    price_source: PriceSource = PriceSource.MODELS_DEV
 
-    price_reference: str | None = Field(default=None, min_length=1, max_length=255)
+    price_reference: str | None = Field(default=None, min_length=1, max_length=1500)
 
     context_price_references: list[str] = Field(
         default_factory=list, max_length=32, exclude_if=lambda value: not value,
@@ -666,9 +742,15 @@ class ManagedModelWrite(StrictModel):
             if any(not reference.startswith(f"{self.price_source.value}:")
                    for reference in self.context_price_references):
                 raise ValueError("Context references must use the selected price source")
-        elif self.price_source is not PriceSource.MANUAL and not self.price_reference:
+        elif self.price_source in {PriceSource.AZURE_RETAIL, PriceSource.ANTHROPIC} \
+                and not self.price_reference:
             raise ValueError("Following a list price requires the catalog entry to follow")
         return self
+
+    price_entry_digest: str | None = Field(default=None, max_length=64)
+
+    allow_unpriced: bool = False
+
 
 
 class ManagedModel(ManagedModelWrite):
@@ -713,18 +795,74 @@ class ManagedModel(ManagedModelWrite):
             values["context_price_rule"] = custom_context_rule(tiers)
         return values
 
+    price_source_configured: bool = True
+
+    price_config_updated_at: datetime | None = None
+
+    match_metadata: dict[str, Any] | None = None
+
+    source_snapshot: dict[str, Any] | None = None
+
 
 class PriceSyncRequest(StrictModel):
     """Which models to sync. Omitting the list syncs everything that follows a list price."""
 
     model_ids: list[UUID] | None = None
+    refresh: bool = True
+    dry_run: bool = False
+
+
+class PricePreviewRequest(StrictModel):
+    model_id: UUID | None = None
+    runtime_id: UUID | None = None
+    price_source: PriceSource = PriceSource.MODELS_DEV
+    deployment_name: str | None = Field(default=None, max_length=500)
+    upstream_model_id: str | None = Field(default=None, max_length=500)
+    display_name: str | None = Field(default=None, max_length=255)
+    model_key: str | None = Field(default=None, max_length=255)
+    operation: Literal["chat", "image_generation", "decision"] = "chat"
+    price_reference: str | None = Field(default=None, max_length=1500)
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
+    refresh: bool = False
+    rematch: bool = False
+
+
+class PriceMatch(StrictModel):
+    reference: str
+    provider_id: str
+    model_id: str
+    name: str
+    canonical_model_id: str | None = None
+    method: Literal["exact", "ai", "manual", "stored"] = "exact"
+    price_basis: Literal["deployment", "origin_reference"] = "deployment"
+    reason: str | None = None
+    default_model_id: UUID | None = None
+
+
+class PricePreviewResponse(StrictModel):
+    status: Literal["matched", "unmapped", "ambiguous", "stale", "unsupported", "deferred"]
+    match: PriceMatch | None = None
+    context_window: int | None = None
+    list_prices: PendingListPrice | None = None
+    effective_prices: PendingListPrice | None = None
+    effective_discount_percent: float | None = None
+    entry_digest: str | None = None
+    catalog_snapshot_id: str | None = None
+    fetched_at: datetime | None = None
+    source_updated_at: str | None = None
+    fresh: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    candidates: list[PriceMatch] = Field(default_factory=list)
 
 
 class PriceSyncDetail(StrictModel):
     model_id: UUID
     model_key: str
-    status: PriceSyncStatus
+    status: PriceSyncStatus | None = None
     message: str | None = None
+    outcome: str | None = None
+    price_source: PriceSource | None = None
+    price_reference: str | None = None
 
 
 class RegistryResponse(StrictModel):
@@ -771,6 +909,14 @@ class PriceSyncResponse(StrictModel):
     # Planned a write, then found the model's pricing had been edited in the meantime and left
     # it alone. Counted separately from `stale`: the source was fine, the plan was not.
     superseded: int = 0
+    total: int = 0
+    unchanged: int = 0
+    skipped_manual: int = 0
+    ambiguous: int = 0
+    unsupported: int = 0
+    deferred: int = 0
+    partial_fields: int = 0
+    dry_run: bool = False
     details: list[PriceSyncDetail]
     registry: RegistryResponse
 
@@ -906,6 +1052,9 @@ class ChatMessage(StrictModel):
     content: str | None = Field(default=None, max_length=200_000)
     tool_calls: list[ToolCall] | None = Field(default=None, max_length=20)
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=255)
+    # Opaque reasoning and output items live only within the current tool loop.
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def check_shape_matches_role(self) -> ChatMessage:
@@ -988,6 +1137,7 @@ class ModelInvocationRequest(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     response_format: Literal["json_object"] | None = None
     stream: bool = False
+    api_format: InvocationApiFormat | None = None
 
     @model_validator(mode="after")
     def validate_gateway_selection(self) -> ModelInvocationRequest:
@@ -1032,72 +1182,18 @@ class ModelInvocationResponse(StrictModel):
     estimated_cost: float | None = Field(default=None, ge=0)
     selected_model_id: UUID | None = None
     selected_model_name: str | None = None
+    _responses_output: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _anthropic_content: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
-
-class DecisionInvocationResponse(StrictModel):
-    request_id: str
-    correlation_id: str | None = None
-    upstream_request_id: str | None = None
-    answers: dict[str, JsonValue]
-    provider: str
-    runtime: str
-    model: str
-    gateway: str
-    gateway_profile_id: UUID | None = None
-    gateway_deployment_id: UUID | None = None
-    native_gateway_id: str | None = None
-    latency_ms: int = Field(ge=0)
-    usage: InvocationUsage | None
-    estimated_cost: float | None = Field(default=None, ge=0)
-
-
-class PlatformInvocationAttempt(StrictModel):
-    schema_version: Literal[1] = 1
-    request_id: str = Field(min_length=1, max_length=512)
-    started_at: datetime
-    metadata: InvocationMetadata
-    model_id: UUID
-    model_key: str
-    model_name: str
-    runtime_id: UUID
-    runtime_name: str
-    provider_name: str
-    apim_target_id: UUID | None = None
-    gateway_deployment_id: UUID | None = None
-    native_gateway_id: str | None = None
-    apim_service_id: str | None = None
-    application_id: UUID | None = None
-
-
-class PlatformInvocationCompletion(StrictModel):
-    request_id: str = Field(min_length=1, max_length=512)
-    completed_at: datetime
-    outcome: Literal["succeeded", "failed"]
-    status_code: int = Field(ge=100, le=599)
-    latency_ms: int = Field(ge=0)
-    gateway_correlation_id: str | None = Field(default=None, min_length=1, max_length=512)
-    upstream_request_id: str | None = Field(default=None, min_length=1, max_length=512)
-    failure_kind: (
-        Literal[
-            "gateway_error",
-            "http_error",
-            "timeout",
-            "transport_error",
-            "invalid_response",
-            "internal_error",
-        ]
-        | None
-    ) = None
-
-    @model_validator(mode="after")
-    def consistent_outcome(self) -> PlatformInvocationCompletion:
-        if self.outcome == "failed" and self.failure_kind is None:
-            raise ValueError("A failed invocation requires a failure kind")
-        if self.outcome == "succeeded" and (
-            self.failure_kind is not None or not 200 <= self.status_code < 300
-        ):
-            raise ValueError("A successful invocation requires a successful response")
-        return self
+    def assistant_message(self) -> ChatMessage:
+        message = ChatMessage(
+            role="assistant",
+            content=self.content or None,
+            tool_calls=self.tool_calls,
+        )
+        message._responses_output = self._responses_output
+        message._anthropic_content = self._anthropic_content
+        return message
 
 
 class TrafficGenerationRequest(StrictModel):

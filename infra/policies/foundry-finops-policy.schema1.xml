@@ -1,0 +1,1573 @@
+<policies>
+  <inbound>
+    <base />
+    <set-variable name="requestStarted" value="@(DateTime.UtcNow)" />
+    <set-variable name="callerRequestId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-request-id&quot;, context.RequestId.ToString()))" />
+    <set-variable name="isAnthropicOperation" value="@(context.Operation.Id == &quot;anthropic-messages&quot; || context.Operation.Id == &quot;anthropic-count-tokens&quot;)" />
+    <set-variable name="isResponsesCreateOperation" value="@(context.Operation.Id == &quot;responses&quot;)" />
+    <set-variable name="isResponsesCompactOperation" value="@(context.Operation.Id == &quot;responses-compact&quot;)" />
+    <set-variable name="isResponsesOperation" value="@((bool)context.Variables[&quot;isResponsesCreateOperation&quot;] || (bool)context.Variables[&quot;isResponsesCompactOperation&quot;])" />
+    <set-variable name="isImagesOperation" value="@(context.Operation.Id == &quot;images-generations&quot;)" />
+    <set-variable name="isInferenceOperation" value="@((bool)context.Variables[&quot;isImagesOperation&quot;] || context.Operation.Id == &quot;anthropic-messages&quot; || context.Operation.Id == &quot;chat-completions&quot; || (bool)context.Variables[&quot;isResponsesOperation&quot;])" />
+    <set-variable name="providerName" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedProviderName&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hasEmployeeToken" value="@(__EMPLOYEE_TOKEN_ENABLED__ &amp;&amp; !string.IsNullOrWhiteSpace(context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;)))" />
+    <set-variable name="apimSubscriptionId" value="@{
+      var id = context.Subscription?.Id ?? &quot;&quot;;
+      var separator = id.LastIndexOf('/');
+      return separator &gt;= 0 ? id.Substring(separator + 1) : id;
+    }" />
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;hasEmployeeToken&quot;])">
+        <validate-azure-ad-token
+          tenant-id="__EMPLOYEE_TENANT_ID__"
+          header-name="Authorization"
+          output-token-variable-name="employeeToken"
+          failed-validation-httpcode="401"
+          failed-validation-error-message="A valid employee token is required.">
+          <client-application-ids>
+            <application-id>__EMPLOYEE_CLIENT_ID__</application-id>
+          </client-application-ids>
+          <audiences>
+            <audience>__EMPLOYEE_AUDIENCE__</audience>
+          </audiences>
+          <required-claims>
+            <claim name="scp" match="any" separator=" ">
+              <value>Model.Invoke</value>
+            </claim>
+          </required-claims>
+        </validate-azure-ad-token>
+        <set-variable name="employeeTenant" value="@{
+          var token = (Jwt)context.Variables[&quot;employeeToken&quot;];
+          return token.Claims.GetValueOrDefault(&quot;tid&quot;, &quot;unattributed&quot;);
+        }" />
+        <set-variable name="employeeObjectId" value="@{
+          var token = (Jwt)context.Variables[&quot;employeeToken&quot;];
+          return token.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;unattributed&quot;);
+        }" />
+        <set-variable name="employeeName" value="@{
+          var token = (Jwt)context.Variables[&quot;employeeToken&quot;];
+          return token.Claims.GetValueOrDefault(&quot;preferred_username&quot;,
+            token.Claims.GetValueOrDefault(&quot;upn&quot;,
+              token.Claims.GetValueOrDefault(&quot;email&quot;, &quot;unattributed&quot;)));
+        }" />
+        <set-variable name="employeeDepartmentId" value="@{
+          var token = (Jwt)context.Variables[&quot;employeeToken&quot;];
+          string[] roles;
+          if (!token.Claims.TryGetValue(&quot;roles&quot;, out roles) || roles == null)
+          {
+            return &quot;unattributed&quot;;
+          }
+          var department = roles.FirstOrDefault(role =&gt; role.StartsWith(&quot;department-&quot;));
+          return string.IsNullOrWhiteSpace(department) ? &quot;unattributed&quot; : department;
+        }" />
+        <set-variable name="employeeDepartmentName" value="@{
+          var id = (string)context.Variables[&quot;employeeDepartmentId&quot;];
+          var map = JObject.Parse(&quot;__EMPLOYEE_DEPARTMENT_MAP__&quot;);
+          var name = (string)map[id];
+          return string.IsNullOrWhiteSpace(name) ? &quot;unattributed&quot; : name;
+        }" />
+        <set-variable name="clientAppId" value="@{
+          var token = (Jwt)context.Variables[&quot;employeeToken&quot;];
+          return token.Claims.GetValueOrDefault(&quot;azp&quot;,
+            token.Claims.GetValueOrDefault(&quot;appid&quot;, &quot;unattributed&quot;));
+        }" />
+        <set-variable name="clientAgentName" value="@{
+          var id = (string)context.Variables[&quot;clientAppId&quot;];
+          var map = JObject.Parse(&quot;__EMPLOYEE_CLIENT_MAP__&quot;);
+          var name = (string)map[id];
+          if (string.IsNullOrWhiteSpace(name))
+          {
+            return &quot;unattributed&quot;;
+          }
+          var agent = context.Request.Headers.GetValueOrDefault(&quot;User-Agent&quot;, &quot;&quot;);
+          foreach (var surface in JArray.Parse(&quot;__EMPLOYEE_SURFACE_MAP__&quot;))
+          {
+            var matched = true;
+            foreach (var token in (JArray)surface[&quot;tokens&quot;])
+            {
+              if (agent.IndexOf((string)token, StringComparison.OrdinalIgnoreCase) &lt; 0)
+              {
+                matched = false;
+                break;
+              }
+            }
+            if (matched)
+            {
+              return (string)surface[&quot;name&quot;];
+            }
+          }
+          return name;
+        }" />
+        <set-variable name="clientAgentId" value="@{
+          var name = (string)context.Variables[&quot;clientAgentName&quot;];
+          if (name == &quot;unattributed&quot;)
+          {
+            return &quot;unattributed&quot;;
+          }
+          return &quot;agent-&quot; + name.ToLowerInvariant().Replace(&quot; &quot;, &quot;-&quot;);
+        }" />
+        <set-variable name="requestedModel" value="@{
+          try
+          {
+            var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+            var model = (string)body[&quot;model&quot;];
+            return string.IsNullOrWhiteSpace(model) ? &quot;unattributed&quot; : model;
+          }
+          catch
+          {
+            return &quot;unattributed&quot;;
+          }
+        }" />
+        <set-header name="x-user-id" exists-action="override">
+          <value>@((string)context.Variables[&quot;employeeName&quot;])</value>
+        </set-header>
+        <set-header name="x-user-name" exists-action="override">
+          <value>@((string)context.Variables[&quot;employeeName&quot;])</value>
+        </set-header>
+        <set-header name="x-org-id" exists-action="override">
+          <value>__EMPLOYEE_ORG_ID__</value>
+        </set-header>
+        <set-header name="x-org-name" exists-action="override">
+          <value>__EMPLOYEE_ORG_NAME__</value>
+        </set-header>
+        <set-header name="x-department-id" exists-action="override">
+          <value>@((string)context.Variables[&quot;employeeDepartmentId&quot;])</value>
+        </set-header>
+        <set-header name="x-department-name" exists-action="override">
+          <value>@((string)context.Variables[&quot;employeeDepartmentName&quot;])</value>
+        </set-header>
+        <set-header name="x-project-id" exists-action="override">
+          <value>unattributed</value>
+        </set-header>
+        <set-header name="x-project-name" exists-action="override">
+          <value>unattributed</value>
+        </set-header>
+        <set-header name="x-agent-id" exists-action="override">
+          <value>@((string)context.Variables[&quot;clientAgentId&quot;])</value>
+        </set-header>
+        <set-header name="x-agent-name" exists-action="override">
+          <value>@((string)context.Variables[&quot;clientAgentName&quot;])</value>
+        </set-header>
+        <set-header name="x-hive-model" exists-action="override">
+          <value>@((string)context.Variables[&quot;requestedModel&quot;])</value>
+        </set-header>
+        <set-header name="x-model-id" exists-action="override">
+          <value>@((string)context.Variables[&quot;requestedModel&quot;])</value>
+        </set-header>
+        <set-header name="x-hive-runtime" exists-action="override">
+          <value>@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedRuntimeName&quot;, &quot;unattributed&quot;))</value>
+        </set-header>
+        <set-header name="x-request-source" exists-action="override">
+          <value>employee-desktop</value>
+        </set-header>
+        <choose>
+          <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;] &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;selectedModelKnown&quot;, !(bool)context.Variables[&quot;isResponsesOperation&quot;]))">
+            <return-response>
+              <set-status code="400" reason="Bad Request" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>{"type":"error","error":{"type":"invalid_request_error","message":"The requested model is not published by this gateway revision"}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <choose>
+          <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;])">
+            <!-- Burst protection only. The monthly allowance moved to the ledger below,
+                 because this counter cannot see cached tokens: measured 27,076 provider
+                 tokens against 64 deducted on real Anthropic traffic. `tokensConsumed`
+                 is still the only immediate token figure a streamed request has, so the
+                 variable must stay. -->
+            <choose>
+              <when condition="@(!(bool)context.Variables[&quot;isImagesOperation&quot;])">
+            <llm-token-limit
+              counter-key="@($&quot;finops:employee:{(string)context.Variables[&quot;employeeTenant&quot;]}:{(string)context.Variables[&quot;employeeObjectId&quot;]}&quot;)"
+              tokens-per-minute="__EMPLOYEE_TOKENS_PER_MINUTE__"
+              estimate-prompt-tokens="true"
+              retry-after-header-name="Retry-After"
+              tokens-consumed-header-name="x-tokens-consumed"
+              tokens-consumed-variable-name="tokensConsumed" />
+              </when>
+              <otherwise>
+                <rate-limit-by-key
+                  calls="__EMPLOYEE_TOKENS_PER_MINUTE__"
+                  renewal-period="60"
+                  counter-key="@($&quot;finops:images:employee:{(string)context.Variables[&quot;employeeTenant&quot;]}:{(string)context.Variables[&quot;employeeObjectId&quot;]}&quot;)"
+                  increment-count="32768"
+                  retry-after-header-name="Retry-After" />
+              </otherwise>
+            </choose>
+
+            <!-- Budget admission. Reads the ledger that the Function projects from
+                 PostgreSQL; the ledger is a platform service, never this application.
+                 See 0_ref/token-budget-enforcement-design.md. -->
+            <!-- Built in a statement block rather than an interpolated string: the
+                 URL contains literal parentheses and a `$filter` token, which the
+                 `@(...)` parser mis-counts and rejects at deploy time. -->
+            <set-variable name="ledgerPartition" value="@((string)context.Variables[&quot;employeeName&quot;] + &quot;|&quot; + DateTime.UtcNow.ToString(&quot;yyyy-MM&quot;))" />
+            <set-variable name="ledgerUrl" value="@{
+              var partition = (string)context.Variables[&quot;ledgerPartition&quot;];
+              var filter = Uri.EscapeDataString(&quot;PartitionKey eq '&quot; + partition + &quot;'&quot;);
+              return &quot;__LEDGER_TABLE_ENDPOINT__/__LEDGER_TABLE_NAME__()?$filter=&quot; + filter;
+            }" />
+            <!-- One retry, then fail open. A short timeout matters more than a complete
+                 read: the ledger protects a budget, not a security boundary, and the
+                 measured p90 for a single call is about 226 ms. -->
+            <retry
+              condition="@(!context.Variables.ContainsKey(&quot;ledgerRead&quot;) || ((IResponse)context.Variables[&quot;ledgerRead&quot;]).StatusCode != 200)"
+              count="1"
+              interval="0">
+              <send-request mode="new" response-variable-name="ledgerRead" timeout="2" ignore-error="true">
+                <set-url>@((string)context.Variables[&quot;ledgerUrl&quot;])</set-url>
+                <set-method>GET</set-method>
+                <set-header name="x-ms-version" exists-action="override">
+                  <value>2020-12-06</value>
+                </set-header>
+                <set-header name="Accept" exists-action="override">
+                  <value>application/json;odata=nometadata</value>
+                </set-header>
+                <authentication-managed-identity resource="https://storage.azure.com/" />
+              </send-request>
+            </retry>
+
+              <!-- Every R row still present is an unsettled request. The Function removes
+                each one only after its exact APIM correlation ID is final in PostgreSQL;
+                admission therefore sums all R rows and never shares a time frontier across
+                unrelated requests. -->
+            <set-variable name="ledgerState" value="@{
+              var state = new JObject();
+              state[&quot;enforce&quot;] = false;
+              state[&quot;remaining&quot;] = long.MaxValue;
+              state[&quot;available&quot;] = false;
+              state[&quot;status&quot;] = &quot;ledger_unavailable&quot;;
+              // Model access rides the same partition read, so it costs no extra round trip.
+              state[&quot;modelStatus&quot;] = &quot;ledger_unavailable&quot;;
+              state[&quot;modelsAllowed&quot;] = &quot;&quot;;
+              try
+              {
+                var response = (IResponse)context.Variables[&quot;ledgerRead&quot;];
+                if (response.StatusCode == 200)
+                {
+                  // Table queries stop at 1,000 entities. Enforcing from a truncated
+                  // reservation set would silently under-count, so a continuation token
+                  // degrades to the existing visible fail-open state instead.
+                  var nextPartition = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextPartitionKey&quot;, &quot;&quot;);
+                  var nextRow = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextRowKey&quot;, &quot;&quot;);
+                  if (!string.IsNullOrEmpty(nextPartition) || !string.IsNullOrEmpty(nextRow))
+                  {
+                    return state;
+                  }
+                  var rows = (JArray)response.Body.As&lt;JObject&gt;(preserveContent: true)[&quot;value&quot;];
+                  long limit = 0;
+                  long confirmed = 0;
+                  long reserved = 0;
+                  bool enforce = false;
+                  bool configured = false;
+                  bool modelConfigured = false;
+                  string modelsAllowed = &quot;&quot;;
+                  foreach (JObject row in rows)
+                  {
+                    var rowKey = (string)row[&quot;RowKey&quot;];
+                    if (rowKey == &quot;Q&quot;)
+                    {
+                      limit = (long?)row[&quot;Limit&quot;] ?? 0;
+                      enforce = (bool?)row[&quot;Enforce&quot;] ?? false;
+                      configured = true;
+                    }
+                    else if (rowKey == &quot;C&quot;)
+                    {
+                      confirmed = (long?)row[&quot;ConfirmedUsed&quot;] ?? 0;
+                    }
+                    else if (rowKey == &quot;M&quot;)
+                    {
+                      modelConfigured = (bool?)row[&quot;Configured&quot;] ?? false;
+                      modelsAllowed = (string)row[&quot;Models&quot;] ?? &quot;&quot;;
+                    }
+                  }
+                  foreach (JObject row in rows)
+                  {
+                    var rowKey = (string)row[&quot;RowKey&quot;];
+                    if (rowKey == null || !rowKey.StartsWith(&quot;R|&quot;)) { continue; }
+                    reserved += (long?)row[&quot;Reserved&quot;] ?? 0;
+                  }
+                  // A person with no budget row is not a failure. It is the existing
+                  // semantics: unallocated people are not blocked.
+                  state[&quot;status&quot;] = configured &amp;&amp; limit &gt; 0 ? &quot;ok&quot; : &quot;budget_unconfigured&quot;;
+                  // Same rule one level over: no policy row means the person was never
+                  // restricted, so they keep every model. Only an explicit policy binds.
+                  state[&quot;modelStatus&quot;] = modelConfigured ? &quot;ok&quot; : &quot;policy_unconfigured&quot;;
+                  state[&quot;modelsAllowed&quot;] = modelsAllowed;
+                  if (configured &amp;&amp; limit &gt; 0)
+                  {
+                    state[&quot;enforce&quot;] = enforce;
+                    state[&quot;remaining&quot;] = limit - confirmed - reserved;
+                    state[&quot;available&quot;] = true;
+                  }
+                }
+              }
+              catch (Exception) { }
+              return state;
+            }" />
+
+            <!-- Upper bound of this request. Every token in the prompt is a byte in the
+                 body, so the byte length can never understate it, and that holds however
+                 much of the prompt turns out to be cached. -->
+            <set-variable name="inputBound" value="@((long)context.Request.Body.As&lt;byte[]&gt;(preserveContent: true).Length)" />
+            <!-- max_tokens is the API's contractual ceiling on output. OpenAI lets the
+                 caller omit it, which would leave the output unbounded, so a configured
+                 default is reserved instead of assuming zero. -->
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;isImagesOperation&quot;])">
+                <set-variable name="maxOutputBound" value="@((long)context.Variables[&quot;imageOutputBound&quot;])" />
+              </when>
+              <otherwise>
+            <set-variable name="maxOutputBound" value="@{
+              long fallback = __DEFAULT_MAX_OUTPUT_TOKENS__;
+              try
+              {
+                if ((bool)context.Variables[&quot;isResponsesCompactOperation&quot;])
+                {
+                  long contextWindow = context.Variables.GetValueOrDefault&lt;long&gt;(&quot;selectedContextWindow&quot;, 0L);
+                  long input = (long)context.Variables[&quot;inputBound&quot;];
+                  return contextWindow &gt; 0
+                    ? (contextWindow &gt; input ? contextWindow - input : 0L)
+                    : fallback;
+                }
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                var value = (bool)context.Variables[&quot;isResponsesCreateOperation&quot;]
+                  ? (long?)body[&quot;max_output_tokens&quot;]
+                  : (long?)body[&quot;max_tokens&quot;] ?? (long?)body[&quot;max_completion_tokens&quot;];
+                return value.HasValue &amp;&amp; value.Value &gt; 0 ? value.Value : fallback;
+              }
+              catch (Exception) { return fallback; }
+            }" />
+              </otherwise>
+            </choose>
+            <set-variable name="compactOutputBoundKnown" value="@(!(bool)context.Variables[&quot;isResponsesCompactOperation&quot;] || context.Variables.GetValueOrDefault&lt;long&gt;(&quot;selectedContextWindow&quot;, 0L) &gt; 0)" />
+            <set-variable name="ledgerStatus" value="@((string)((JObject)context.Variables[&quot;ledgerState&quot;])[&quot;status&quot;])" />
+            <set-variable name="ledgerConfigured" value="@((bool)((JObject)context.Variables[&quot;ledgerState&quot;])[&quot;available&quot;])" />
+            <set-variable name="ledgerRemaining" value="@((long)((JObject)context.Variables[&quot;ledgerState&quot;])[&quot;remaining&quot;])" />
+            <set-variable name="ledgerEnforced" value="@((bool)((JObject)context.Variables[&quot;ledgerState&quot;])[&quot;available&quot;] &amp;&amp; (bool)((JObject)context.Variables[&quot;ledgerState&quot;])[&quot;enforce&quot;])" />
+
+            <!-- The model the caller actually asked for. x-model-id is the canonical one
+                 that reaches telemetry; x-hive-model only covers the case where the first
+                 is missing. Both were overwritten from the validated token above, so a
+                 desktop client cannot name a model it was not assigned. -->
+            <set-variable name="requestedModel" value="@{
+              var requested = context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;&quot;);
+              if (string.IsNullOrWhiteSpace(requested) || requested == &quot;unattributed&quot;)
+              {
+                requested = context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, &quot;&quot;);
+              }
+              return (requested ?? &quot;&quot;).Trim().ToLowerInvariant();
+            }" />
+            <!-- The ledger stores both identifier spaces for every allowed model — the
+                 registry UUID and the model key — because the policy cannot resolve one to
+                 the other. Membership is therefore a single delimited Contains, and both
+                 ends are delimited so one id cannot match a prefix of a longer one. -->
+            <set-variable name="modelAdmission" value="@{
+              var state = (JObject)context.Variables[&quot;ledgerState&quot;];
+              var status = (string)state[&quot;modelStatus&quot;];
+              var assignmentRequired = context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;selectedRequiresAssignment&quot;, false);
+              if (status != &quot;ok&quot;)
+              {
+                return status == &quot;policy_unconfigured&quot; &amp;&amp; assignmentRequired ? &quot;denied&quot; : status;
+              }
+              var requested = (string)context.Variables[&quot;requestedModel&quot;];
+              if (string.IsNullOrEmpty(requested) || requested == &quot;unattributed&quot;)
+              {
+                return &quot;model_unattributed&quot;;
+              }
+              var allowed = (string)state[&quot;modelsAllowed&quot;] ?? &quot;&quot;;
+              return allowed.Contains(&quot;|&quot; + requested + &quot;|&quot;) ? &quot;ok&quot; : &quot;denied&quot;;
+            }" />
+
+            <choose>
+              <when condition="@((string)context.Variables[&quot;modelAdmission&quot;] == &quot;denied&quot;)">
+                <!-- Emitted before return-response for the same reason as the budget denial:
+                     the pipeline aborts, so the outbound emitter never runs and a blocked
+                     person would otherwise leave no trace at all. -->
+                <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@((string)context.Variables[&quot;callerRequestId&quot;])">@{
+                  return new JObject(
+                    new JProperty(&quot;id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;request_id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;correlation_id&quot;, context.RequestId.ToString()),
+                    new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+                    new JProperty(&quot;team&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;workflow&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;run_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, (string)context.Variables[&quot;callerRequestId&quot;])),
+                    new JProperty(&quot;turn_index&quot;, 1),
+                    new JProperty(&quot;provider&quot;, (string)context.Variables[&quot;providerName&quot;]),
+                    new JProperty(&quot;model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;))),
+                    new JProperty(&quot;model_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;runtime&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;request_source&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;gateway_profile_id&quot;, &quot;__GATEWAY_PROFILE_ID__&quot;),
+                    new JProperty(&quot;apim_subscription_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;apimSubscriptionId&quot;])),
+                    new JProperty(&quot;application_actor_type&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue(&quot;person&quot;)),
+                    new JProperty(&quot;application_actor_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;employeeName&quot;])),
+                    new JProperty(&quot;application_admission&quot;, JValue.CreateNull()),
+                    new JProperty(&quot;input_tokens&quot;, 0),
+                    new JProperty(&quot;cached_tokens&quot;, 0),
+                    new JProperty(&quot;cache_write_tokens&quot;, 0),
+                    new JProperty(&quot;output_tokens&quot;, 0),
+                    new JProperty(&quot;latency_ms&quot;, (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds),
+                    new JProperty(&quot;status&quot;, &quot;403&quot;),
+                    new JProperty(&quot;status_code&quot;, 403),
+                    new JProperty(&quot;estimated_cost&quot;, 0),
+                    new JProperty(&quot;error_message&quot;, &quot;model_not_assigned&quot;),
+                    new JProperty(&quot;estimated&quot;, false),
+                    new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+                    new JProperty(&quot;budget_admission&quot;, (string)context.Variables[&quot;ledgerStatus&quot;]),
+                    new JProperty(&quot;model_admission&quot;, &quot;denied&quot;)
+                  ).ToString(Newtonsoft.Json.Formatting.None);
+                }</log-to-eventhub>
+                <return-response>
+                  <set-status code="403" reason="Forbidden" />
+                  <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                  </set-header>
+                  <set-body>{"error":"model_not_assigned"}</set-body>
+                </return-response>
+              </when>
+            </choose>
+
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;isImagesOperation&quot;])">
+                <set-variable name="budgetRequestCannotFit" value="@{
+                  if (!(bool)context.Variables[&quot;ledgerEnforced&quot;]) { return false; }
+                  long input = (long)context.Variables[&quot;inputBound&quot;];
+                  long remaining = (long)context.Variables[&quot;ledgerRemaining&quot;];
+                  return input &gt;= remaining
+                    || (long)context.Variables[&quot;imageOutputBound&quot;] &gt; remaining - input;
+                }" />
+              </when>
+              <otherwise>
+            <set-variable name="budgetRequestCannotFit" value="@{
+              if (!(bool)context.Variables[&quot;ledgerEnforced&quot;]) { return false; }
+              if (!(bool)context.Variables[&quot;compactOutputBoundKnown&quot;]) { return true; }
+              long input = (long)context.Variables[&quot;inputBound&quot;];
+              long remaining = (long)context.Variables[&quot;ledgerRemaining&quot;];
+              if (input &gt;= remaining) { return true; }
+              return (bool)context.Variables[&quot;isResponsesCompactOperation&quot;]
+                &amp;&amp; (long)context.Variables[&quot;maxOutputBound&quot;] &gt; remaining - input;
+            }" />
+              </otherwise>
+            </choose>
+            <set-variable name="budgetDenialReason" value="@(!(bool)context.Variables[&quot;compactOutputBoundKnown&quot;] ? &quot;compact_budget_bound_unavailable&quot; : &quot;monthly_token_budget_exhausted&quot;)" />
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;budgetRequestCannotFit&quot;])">
+                <!-- Emitted here, not in outbound: return-response aborts the pipeline, so the
+                     outbound log-to-eventhub never runs. Without this a blocked employee is
+                     invisible to the administrator, which is a worse failure than a silent
+                     fail-open — enforcement would look like it never fired. The zeros are
+                     exact rather than estimated: nothing reached the provider. -->
+                <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@((string)context.Variables[&quot;callerRequestId&quot;])">@{
+                  return new JObject(
+                    new JProperty(&quot;id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;request_id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;correlation_id&quot;, context.RequestId.ToString()),
+                    new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+                    new JProperty(&quot;team&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;workflow&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;run_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, (string)context.Variables[&quot;callerRequestId&quot;])),
+                    new JProperty(&quot;turn_index&quot;, 1),
+                    new JProperty(&quot;provider&quot;, (string)context.Variables[&quot;providerName&quot;]),
+                    new JProperty(&quot;model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;))),
+                    new JProperty(&quot;model_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;runtime&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;request_source&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;gateway_profile_id&quot;, &quot;__GATEWAY_PROFILE_ID__&quot;),
+                    new JProperty(&quot;apim_subscription_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;apimSubscriptionId&quot;])),
+                    new JProperty(&quot;application_actor_type&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue(&quot;person&quot;)),
+                    new JProperty(&quot;application_actor_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;apimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;employeeName&quot;])),
+                    new JProperty(&quot;application_admission&quot;, JValue.CreateNull()),
+                    new JProperty(&quot;input_tokens&quot;, 0),
+                    new JProperty(&quot;cached_tokens&quot;, 0),
+                    new JProperty(&quot;cache_write_tokens&quot;, 0),
+                    new JProperty(&quot;output_tokens&quot;, 0),
+                    new JProperty(&quot;latency_ms&quot;, (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds),
+                    new JProperty(&quot;status&quot;, &quot;403&quot;),
+                    new JProperty(&quot;status_code&quot;, 403),
+                    new JProperty(&quot;estimated_cost&quot;, 0),
+                    new JProperty(&quot;error_message&quot;, (string)context.Variables[&quot;budgetDenialReason&quot;]),
+                    new JProperty(&quot;estimated&quot;, false),
+                    new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+                    new JProperty(&quot;budget_admission&quot;, &quot;denied&quot;),
+                    new JProperty(&quot;model_admission&quot;, (string)context.Variables[&quot;modelAdmission&quot;])
+                  ).ToString(Newtonsoft.Json.Formatting.None);
+                }</log-to-eventhub>
+                <return-response>
+                  <set-status code="403" reason="Forbidden" />
+                  <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                  </set-header>
+                  <set-header name="x-budget-remaining-tokens" exists-action="override">
+                    <value>@(((long)context.Variables[&quot;ledgerRemaining&quot;]).ToString())</value>
+                  </set-header>
+                  <set-body>@(new JObject(new JProperty(&quot;error&quot;, (string)context.Variables[&quot;budgetDenialReason&quot;])).ToString(Newtonsoft.Json.Formatting.None))</set-body>
+                </return-response>
+              </when>
+            </choose>
+
+            <!-- Clamp rather than reject whenever the input alone still fits: rewriting
+                 the ceiling makes overspend physically impossible while letting the
+                 request through. -1 means "leave the body alone". -->
+            <set-variable name="clampedMaxTokens" value="@{
+              if ((bool)context.Variables[&quot;isResponsesCompactOperation&quot;]) { return -1L; }
+              if (!(bool)context.Variables[&quot;ledgerEnforced&quot;]) { return -1L; }
+              long headroom = (long)context.Variables[&quot;ledgerRemaining&quot;] - (long)context.Variables[&quot;inputBound&quot;];
+              if (headroom &lt;= 0) { return -1L; }
+              return (long)context.Variables[&quot;maxOutputBound&quot;] &gt; headroom ? headroom : -1L;
+            }" />
+            <set-variable name="reservedTokens" value="@{
+              long clamped = (long)context.Variables[&quot;clampedMaxTokens&quot;];
+              long output = clamped &gt;= 0 ? clamped : (long)context.Variables[&quot;maxOutputBound&quot;];
+              return (long)context.Variables[&quot;inputBound&quot;] + output;
+            }" />
+
+            <!-- The reservation is what makes admission real time. Without it the check
+                 degenerates into the post-hoc counting model this design rejects, because
+                 ConfirmedUsed trails the request by minutes. Written in audit mode too,
+                 so "who would have been blocked" is measured rather than guessed. -->
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;ledgerConfigured&quot;])">
+                <!-- Insert Entity, not Insert-Or-Replace. The keys travel in the body, so
+                     the URL is a bare constant: the entity-key form `Table(PartitionKey='..')`
+                     cannot be expressed here at all, because the policy parser counts
+                     parentheses without respecting string literals and rejects it at deploy
+                     time. Insert is also the correct semantic — a reservation carries a fresh
+                     timestamp and correlation id, so it must never overwrite anything. -->
+                <send-request mode="new" response-variable-name="ledgerWrite" timeout="2" ignore-error="true">
+                  <set-url>__LEDGER_TABLE_ENDPOINT__/__LEDGER_TABLE_NAME__</set-url>
+                  <set-method>POST</set-method>
+                  <set-header name="x-ms-version" exists-action="override">
+                    <value>2020-12-06</value>
+                  </set-header>
+                  <set-header name="Accept" exists-action="override">
+                    <value>application/json;odata=nometadata</value>
+                  </set-header>
+                  <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                  </set-header>
+                  <set-header name="Prefer" exists-action="override">
+                    <value>return-no-content</value>
+                  </set-header>
+                  <set-body>@{
+                    var stamp = DateTime.UtcNow.ToString(&quot;yyyy-MM-dd'T'HH:mm:ss.fff&quot;) + &quot;Z&quot;;
+                    var entity = new JObject();
+                    entity[&quot;PartitionKey&quot;] = (string)context.Variables[&quot;ledgerPartition&quot;];
+                    entity[&quot;RowKey&quot;] = &quot;R|&quot; + stamp + &quot;|&quot; + context.RequestId.ToString();
+                    entity[&quot;Reserved&quot;] = (long)context.Variables[&quot;reservedTokens&quot;];
+                    return entity.ToString(Newtonsoft.Json.Formatting.None);
+                  }</set-body>
+                  <authentication-managed-identity resource="https://storage.azure.com/" />
+                </send-request>
+                <!-- Admission already passed, so a failed write must not block the call.
+                     It only means the next few requests under-count until the timer
+                     resynchronises, and the marker below keeps that visible. -->
+                <set-variable name="ledgerStatus" value="@{
+                  try
+                  {
+                    var response = (IResponse)context.Variables[&quot;ledgerWrite&quot;];
+                    return response.StatusCode == 204 || response.StatusCode == 201
+                      ? (string)context.Variables[&quot;ledgerStatus&quot;]
+                      : &quot;ledger_write_failed&quot;;
+                  }
+                  catch (Exception) { return &quot;ledger_write_failed&quot;; }
+                }" />
+              </when>
+            </choose>
+          </when>
+        </choose>
+      </when>      <otherwise>
+        <choose>
+          <when condition="@(context.Subscription == null)">
+            <return-response>
+              <set-status code="401" reason="Unauthorized" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>{"error":"An employee token or a subscription key is required."}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <choose>
+          <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;] &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;selectedModelKnown&quot;, !(bool)context.Variables[&quot;isResponsesOperation&quot;]))">
+            <return-response>
+              <set-status code="400" reason="Bad Request" />
+              <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+              </set-header>
+              <set-body>{"type":"error","error":{"type":"invalid_request_error","message":"The requested model is not published by this gateway revision"}}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <!-- A subscription caller that omits the attribution headers still names its model in the
+             request body. Deriving it here keeps that traffic out of the `unattributed` bucket
+             while `skip` preserves the richer registry IDs the dashboard BFF already sends. -->
+        <choose>
+          <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;])">
+            <set-variable name="subscriptionAgent" value="@{
+              var id = context.Subscription.Id ?? &quot;&quot;;
+              var separator = id.LastIndexOf('/');
+              var key = separator &gt;= 0 ? id.Substring(separator + 1) : id;
+              return JObject.Parse(&quot;__SUBSCRIPTION_AGENT_MAP__&quot;)[key] as JObject
+                ?? new JObject();
+            }" />
+            <choose>
+              <when condition="@(((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;id&quot;] != null &amp;&amp; ((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;name&quot;] != null)">
+                <set-header name="x-agent-id" exists-action="override">
+                  <value>@((string)((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;id&quot;])</value>
+                </set-header>
+                <set-header name="x-agent-name" exists-action="override">
+                  <value>@((string)((JObject)context.Variables[&quot;subscriptionAgent&quot;])[&quot;name&quot;])</value>
+                </set-header>
+              </when>
+            </choose>
+            <set-variable name="subscriptionModel" value="@{
+              try
+              {
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                var model = (string)body[&quot;model&quot;];
+                return string.IsNullOrWhiteSpace(model) ? &quot;unattributed&quot; : model;
+              }
+              catch
+              {
+                return &quot;unattributed&quot;;
+              }
+            }" />
+            <set-header name="x-hive-model" exists-action="skip">
+              <value>@((string)context.Variables[&quot;subscriptionModel&quot;])</value>
+            </set-header>
+            <set-header name="x-model-id" exists-action="skip">
+              <value>@((string)context.Variables[&quot;subscriptionModel&quot;])</value>
+            </set-header>
+            <set-header name="x-request-source" exists-action="skip">
+              <value>@(context.Subscription.Name ?? &quot;apim-subscription&quot;)</value>
+            </set-header>
+          </when>
+        </choose>
+      </otherwise>
+    </choose>
+    <choose>
+      <when condition="@(context.Subscription != null &amp;&amp; (bool)context.Variables[&quot;isInferenceOperation&quot;])">
+        <!-- Resolve the APIM Subscription to the stable Application UUID through the
+             Function-projected Table index. Application sync remains read-only toward APIM,
+             and the inference path still never calls the Turnstile application. -->
+        <set-variable name="applicationMapPartition" value="@(&quot;app-map|__GATEWAY_PROFILE_ID__&quot;)" />
+        <set-variable name="applicationMapUrl" value="@{
+          var partition = ((string)context.Variables[&quot;applicationMapPartition&quot;]).Replace(&quot;\u0027&quot;, &quot;\u0027\u0027&quot;);
+          var row = ((string)context.Variables[&quot;apimSubscriptionId&quot;]).Replace(&quot;\u0027&quot;, &quot;\u0027\u0027&quot;);
+          var filter = Uri.EscapeDataString(&quot;PartitionKey eq '&quot; + partition + &quot;' and RowKey eq '&quot; + row + &quot;'&quot;);
+          return &quot;__LEDGER_TABLE_ENDPOINT__/__LEDGER_TABLE_NAME__()?$filter=&quot; + filter;
+        }" />
+        <retry
+          condition="@(!context.Variables.ContainsKey(&quot;applicationMapRead&quot;) || ((IResponse)context.Variables[&quot;applicationMapRead&quot;]).StatusCode != 200)"
+          count="1"
+          interval="0">
+          <send-request mode="new" response-variable-name="applicationMapRead" timeout="2" ignore-error="true">
+            <set-url>@((string)context.Variables[&quot;applicationMapUrl&quot;])</set-url>
+            <set-method>GET</set-method>
+            <set-header name="x-ms-version" exists-action="override">
+              <value>2020-12-06</value>
+            </set-header>
+            <set-header name="Accept" exists-action="override">
+              <value>application/json;odata=nometadata</value>
+            </set-header>
+            <authentication-managed-identity resource="https://storage.azure.com/" />
+          </send-request>
+        </retry>
+        <set-variable name="applicationMapState" value="@{
+          var state = new JObject();
+          state[&quot;status&quot;] = &quot;application_map_unavailable&quot;;
+          state[&quot;applicationId&quot;] = &quot;&quot;;
+          state[&quot;applicationSlug&quot;] = &quot;&quot;;
+          state[&quot;applicationName&quot;] = &quot;&quot;;
+          state[&quot;applicationType&quot;] = &quot;&quot;;
+          try
+          {
+            var response = (IResponse)context.Variables[&quot;applicationMapRead&quot;];
+            if (response.StatusCode == 200)
+            {
+              var nextPartition = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextPartitionKey&quot;, &quot;&quot;);
+              var nextRow = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextRowKey&quot;, &quot;&quot;);
+              if (!string.IsNullOrEmpty(nextPartition) || !string.IsNullOrEmpty(nextRow))
+              {
+                return state;
+              }
+              var rows = (JArray)response.Body.As&lt;JObject&gt;(preserveContent: true)[&quot;value&quot;];
+              if (rows.Count == 0)
+              {
+                state[&quot;status&quot;] = &quot;application_unconfigured&quot;;
+                return state;
+              }
+              var row = (JObject)rows[0];
+              var active = string.Equals((string)row[&quot;ApplicationStatus&quot;], &quot;active&quot;, StringComparison.Ordinal)
+                &amp;&amp; string.Equals((string)row[&quot;SubscriptionState&quot;], &quot;active&quot;, StringComparison.Ordinal)
+                &amp;&amp; ((bool?)row[&quot;ScopeExists&quot;] ?? false);
+              state[&quot;status&quot;] = active ? &quot;ok&quot; : &quot;application_inactive&quot;;
+              state[&quot;applicationId&quot;] = (string)row[&quot;ApplicationId&quot;] ?? &quot;&quot;;
+              state[&quot;applicationSlug&quot;] = (string)row[&quot;ApplicationSlug&quot;] ?? &quot;&quot;;
+              state[&quot;applicationName&quot;] = (string)row[&quot;ApplicationName&quot;] ?? &quot;&quot;;
+              state[&quot;applicationType&quot;] = (string)row[&quot;ApplicationType&quot;] ?? &quot;&quot;;
+            }
+          }
+          catch (Exception) { }
+          return state;
+        }" />
+        <set-variable name="applicationAdmission" value="@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;status&quot;])" />
+        <choose>
+          <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot; &amp;&amp; (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationType&quot;] == &quot;agent&quot;)">
+            <set-header name="x-agent-id" exists-action="override">
+              <value>@(&quot;agent-&quot; + (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationSlug&quot;])</value>
+            </set-header>
+            <set-header name="x-agent-name" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationName&quot;])</value>
+            </set-header>
+          </when>
+        </choose>
+        <choose>
+          <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot;)">
+            <set-variable name="applicationLedgerPartition" value="@(&quot;app|&quot; + (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationId&quot;] + &quot;|&quot; + DateTime.UtcNow.ToString(&quot;yyyy-MM&quot;))" />
+            <set-variable name="applicationLedgerUrl" value="@{
+              var partition = (string)context.Variables[&quot;applicationLedgerPartition&quot;];
+              var filter = Uri.EscapeDataString(&quot;PartitionKey eq '&quot; + partition + &quot;'&quot;);
+              return &quot;__LEDGER_TABLE_ENDPOINT__/__LEDGER_TABLE_NAME__()?$filter=&quot; + filter;
+            }" />
+            <retry
+              condition="@(!context.Variables.ContainsKey(&quot;applicationLedgerRead&quot;) || ((IResponse)context.Variables[&quot;applicationLedgerRead&quot;]).StatusCode != 200)"
+              count="1"
+              interval="0">
+              <send-request mode="new" response-variable-name="applicationLedgerRead" timeout="2" ignore-error="true">
+                <set-url>@((string)context.Variables[&quot;applicationLedgerUrl&quot;])</set-url>
+                <set-method>GET</set-method>
+                <set-header name="x-ms-version" exists-action="override">
+                  <value>2020-12-06</value>
+                </set-header>
+                <set-header name="Accept" exists-action="override">
+                  <value>application/json;odata=nometadata</value>
+                </set-header>
+                <authentication-managed-identity resource="https://storage.azure.com/" />
+              </send-request>
+            </retry>
+            <set-variable name="applicationLedgerState" value="@{
+              var state = new JObject();
+              state[&quot;enforce&quot;] = false;
+              state[&quot;remaining&quot;] = long.MaxValue;
+              state[&quot;available&quot;] = false;
+              state[&quot;tokensPerMinute&quot;] = (long)__TOKENS_PER_MINUTE__;
+              state[&quot;budgetStatus&quot;] = &quot;application_ledger_unavailable&quot;;
+              state[&quot;modelStatus&quot;] = &quot;application_ledger_unavailable&quot;;
+              state[&quot;modelsAllowed&quot;] = &quot;&quot;;
+              try
+              {
+                var response = (IResponse)context.Variables[&quot;applicationLedgerRead&quot;];
+                if (response.StatusCode == 200)
+                {
+                  var nextPartition = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextPartitionKey&quot;, &quot;&quot;);
+                  var nextRow = response.Headers.GetValueOrDefault(&quot;x-ms-continuation-NextRowKey&quot;, &quot;&quot;);
+                  if (!string.IsNullOrEmpty(nextPartition) || !string.IsNullOrEmpty(nextRow))
+                  {
+                    return state;
+                  }
+                  var rows = (JArray)response.Body.As&lt;JObject&gt;(preserveContent: true)[&quot;value&quot;];
+                  long limit = 0;
+                  long confirmed = 0;
+                  long reserved = 0;
+                  long tokensPerMinute = (long)__TOKENS_PER_MINUTE__;
+                  bool enforce = false;
+                  bool configured = false;
+                  bool modelConfigured = false;
+                  string modelsAllowed = &quot;&quot;;
+                  foreach (JObject row in rows)
+                  {
+                    var rowKey = (string)row[&quot;RowKey&quot;];
+                    if (rowKey == &quot;Q&quot;)
+                    {
+                      limit = (long?)row[&quot;Limit&quot;] ?? 0;
+                      tokensPerMinute = (long?)row[&quot;TokensPerMinute&quot;] ?? tokensPerMinute;
+                      enforce = (bool?)row[&quot;Enforce&quot;] ?? false;
+                      configured = true;
+                    }
+                    else if (rowKey == &quot;C&quot;)
+                    {
+                      confirmed = (long?)row[&quot;ConfirmedUsed&quot;] ?? 0;
+                    }
+                    else if (rowKey == &quot;M&quot;)
+                    {
+                      modelConfigured = (bool?)row[&quot;Configured&quot;] ?? false;
+                      modelsAllowed = (string)row[&quot;Models&quot;] ?? &quot;&quot;;
+                    }
+                  }
+                  foreach (JObject row in rows)
+                  {
+                    var rowKey = (string)row[&quot;RowKey&quot;];
+                    if (rowKey == null || !rowKey.StartsWith(&quot;R|&quot;)) { continue; }
+                    reserved += (long?)row[&quot;Reserved&quot;] ?? 0;
+                  }
+                  state[&quot;budgetStatus&quot;] = configured &amp;&amp; limit &gt; 0
+                    ? &quot;ok&quot;
+                    : &quot;application_budget_unconfigured&quot;;
+                  state[&quot;modelStatus&quot;] = modelConfigured
+                    ? &quot;ok&quot;
+                    : &quot;application_policy_unconfigured&quot;;
+                  state[&quot;modelsAllowed&quot;] = modelsAllowed;
+                  state[&quot;tokensPerMinute&quot;] = tokensPerMinute;
+                  if (configured &amp;&amp; limit &gt; 0)
+                  {
+                    state[&quot;enforce&quot;] = enforce;
+                    state[&quot;remaining&quot;] = limit - confirmed - reserved;
+                    state[&quot;available&quot;] = true;
+                  }
+                }
+              }
+              catch (Exception) { }
+              return state;
+            }" />
+            <set-variable name="applicationInputBound" value="@((long)context.Request.Body.As&lt;byte[]&gt;(preserveContent: true).Length)" />
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;isImagesOperation&quot;])">
+                <set-variable name="applicationMaxOutputBound" value="@((long)context.Variables[&quot;imageOutputBound&quot;])" />
+              </when>
+              <otherwise>
+            <set-variable name="applicationMaxOutputBound" value="@{
+              long fallback = __DEFAULT_MAX_OUTPUT_TOKENS__;
+              try
+              {
+                if ((bool)context.Variables[&quot;isResponsesCompactOperation&quot;])
+                {
+                  long contextWindow = context.Variables.GetValueOrDefault&lt;long&gt;(&quot;selectedContextWindow&quot;, 0L);
+                  long input = (long)context.Variables[&quot;applicationInputBound&quot;];
+                  return contextWindow &gt; 0
+                    ? (contextWindow &gt; input ? contextWindow - input : 0L)
+                    : fallback;
+                }
+                var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+                var value = (bool)context.Variables[&quot;isResponsesCreateOperation&quot;]
+                  ? (long?)body[&quot;max_output_tokens&quot;]
+                  : (long?)body[&quot;max_tokens&quot;] ?? (long?)body[&quot;max_completion_tokens&quot;];
+                return value.HasValue &amp;&amp; value.Value &gt; 0 ? value.Value : fallback;
+              }
+              catch (Exception) { return fallback; }
+            }" />
+              </otherwise>
+            </choose>
+            <set-variable name="applicationCompactOutputBoundKnown" value="@(!(bool)context.Variables[&quot;isResponsesCompactOperation&quot;] || context.Variables.GetValueOrDefault&lt;long&gt;(&quot;selectedContextWindow&quot;, 0L) &gt; 0)" />
+            <set-variable name="applicationLedgerConfigured" value="@((bool)((JObject)context.Variables[&quot;applicationLedgerState&quot;])[&quot;available&quot;])" />
+            <set-variable name="applicationLedgerRemaining" value="@((long)((JObject)context.Variables[&quot;applicationLedgerState&quot;])[&quot;remaining&quot;])" />
+            <set-variable name="applicationLedgerEnforced" value="@((bool)((JObject)context.Variables[&quot;applicationLedgerState&quot;])[&quot;available&quot;] &amp;&amp; (bool)((JObject)context.Variables[&quot;applicationLedgerState&quot;])[&quot;enforce&quot;])" />
+            <set-variable name="applicationRequestedModel" value="@{
+              var requested = context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;&quot;);
+              if (string.IsNullOrWhiteSpace(requested) || requested == &quot;unattributed&quot;)
+              {
+                requested = context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, &quot;&quot;);
+              }
+              return (requested ?? &quot;&quot;).Trim().ToLowerInvariant();
+            }" />
+            <set-variable name="applicationModelAdmission" value="@{
+              var state = (JObject)context.Variables[&quot;applicationLedgerState&quot;];
+              var status = (string)state[&quot;modelStatus&quot;];
+              if (status != &quot;ok&quot;) { return status; }
+              var requested = (string)context.Variables[&quot;applicationRequestedModel&quot;];
+              if (string.IsNullOrEmpty(requested) || requested == &quot;unattributed&quot;)
+              {
+                return &quot;application_model_unattributed&quot;;
+              }
+              var allowed = (string)state[&quot;modelsAllowed&quot;] ?? &quot;&quot;;
+              return allowed.Contains(&quot;|&quot; + requested + &quot;|&quot;)
+                ? &quot;ok&quot;
+                : &quot;application_model_denied&quot;;
+            }" />
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;isImagesOperation&quot;])">
+                <set-variable name="applicationBudgetCannotFit" value="@{
+                  if (!(bool)context.Variables[&quot;applicationLedgerEnforced&quot;]) { return false; }
+                  long input = (long)context.Variables[&quot;applicationInputBound&quot;];
+                  long remaining = (long)context.Variables[&quot;applicationLedgerRemaining&quot;];
+                  return input &gt;= remaining
+                    || (long)context.Variables[&quot;imageOutputBound&quot;] &gt; remaining - input;
+                }" />
+              </when>
+              <otherwise>
+            <set-variable name="applicationBudgetCannotFit" value="@{
+              if (!(bool)context.Variables[&quot;applicationLedgerEnforced&quot;]) { return false; }
+              if (!(bool)context.Variables[&quot;applicationCompactOutputBoundKnown&quot;]) { return true; }
+              long input = (long)context.Variables[&quot;applicationInputBound&quot;];
+              long remaining = (long)context.Variables[&quot;applicationLedgerRemaining&quot;];
+              if (input &gt;= remaining) { return true; }
+              return (bool)context.Variables[&quot;isResponsesCompactOperation&quot;]
+                &amp;&amp; (long)context.Variables[&quot;applicationMaxOutputBound&quot;] &gt; remaining - input;
+            }" />
+              </otherwise>
+            </choose>
+            <set-variable name="applicationDenialReason" value="@{
+              if ((string)context.Variables[&quot;applicationModelAdmission&quot;] == &quot;application_model_denied&quot;)
+              {
+                return &quot;application_model_not_assigned&quot;;
+              }
+              if ((bool)context.Variables[&quot;applicationBudgetCannotFit&quot;])
+              {
+                return !(bool)context.Variables[&quot;applicationCompactOutputBoundKnown&quot;]
+                  ? &quot;application_compact_budget_bound_unavailable&quot;
+                  : &quot;application_monthly_token_budget_exhausted&quot;;
+              }
+              return &quot;&quot;;
+            }" />
+            <set-variable name="applicationAdmission" value="@{
+              var denial = (string)context.Variables[&quot;applicationDenialReason&quot;];
+              if (!string.IsNullOrEmpty(denial)) { return denial; }
+              var budget = (string)((JObject)context.Variables[&quot;applicationLedgerState&quot;])[&quot;budgetStatus&quot;];
+              if (budget != &quot;ok&quot;) { return budget; }
+              return (string)context.Variables[&quot;applicationModelAdmission&quot;];
+            }" />
+            <choose>
+              <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;applicationDenialReason&quot;]))">
+                <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@((string)context.Variables[&quot;callerRequestId&quot;])">@{
+                  return new JObject(
+                    new JProperty(&quot;id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;request_id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+                    new JProperty(&quot;correlation_id&quot;, context.RequestId.ToString()),
+                    new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+                    new JProperty(&quot;team&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;organization_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;department_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;project_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;agent_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-name&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;user_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;workflow&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;run_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, (string)context.Variables[&quot;callerRequestId&quot;])),
+                    new JProperty(&quot;turn_index&quot;, 1),
+                    new JProperty(&quot;provider&quot;, (string)context.Variables[&quot;providerName&quot;]),
+                    new JProperty(&quot;model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;))),
+                    new JProperty(&quot;model_id&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;runtime&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;request_source&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;)),
+                    new JProperty(&quot;gateway_profile_id&quot;, &quot;__GATEWAY_PROFILE_ID__&quot;),
+                    new JProperty(&quot;apim_subscription_id&quot;, (string)context.Variables[&quot;apimSubscriptionId&quot;]),
+                    new JProperty(&quot;application_actor_type&quot;, (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? &quot;person&quot; : &quot;service&quot;),
+                    new JProperty(&quot;application_actor_id&quot;, (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;) : &quot;service:&quot; + (string)context.Variables[&quot;apimSubscriptionId&quot;]),
+                    new JProperty(&quot;application_admission&quot;, (string)context.Variables[&quot;applicationAdmission&quot;]),
+                    new JProperty(&quot;input_tokens&quot;, 0),
+                    new JProperty(&quot;cached_tokens&quot;, 0),
+                    new JProperty(&quot;cache_write_tokens&quot;, 0),
+                    new JProperty(&quot;output_tokens&quot;, 0),
+                    new JProperty(&quot;latency_ms&quot;, (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds),
+                    new JProperty(&quot;status&quot;, &quot;403&quot;),
+                    new JProperty(&quot;status_code&quot;, 403),
+                    new JProperty(&quot;estimated_cost&quot;, 0),
+                    new JProperty(&quot;error_message&quot;, (string)context.Variables[&quot;applicationDenialReason&quot;]),
+                    new JProperty(&quot;estimated&quot;, false),
+                    new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+                    new JProperty(&quot;budget_admission&quot;, context.Variables.ContainsKey(&quot;ledgerStatus&quot;) ? (JToken)new JValue((string)context.Variables[&quot;ledgerStatus&quot;]) : JValue.CreateNull()),
+                    new JProperty(&quot;model_admission&quot;, context.Variables.ContainsKey(&quot;modelAdmission&quot;) ? (JToken)new JValue((string)context.Variables[&quot;modelAdmission&quot;]) : JValue.CreateNull())
+                  ).ToString(Newtonsoft.Json.Formatting.None);
+                }</log-to-eventhub>
+                <return-response>
+                  <set-status code="403" reason="Forbidden" />
+                  <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                  </set-header>
+                  <set-header name="x-application-budget-remaining-tokens" exists-action="override">
+                    <value>@(((long)context.Variables[&quot;applicationLedgerRemaining&quot;]).ToString())</value>
+                  </set-header>
+                  <set-body>@(new JObject(new JProperty(&quot;error&quot;, (string)context.Variables[&quot;applicationDenialReason&quot;])).ToString(Newtonsoft.Json.Formatting.None))</set-body>
+                </return-response>
+              </when>
+            </choose>
+            <set-variable name="applicationClampedMaxTokens" value="@{
+              if ((bool)context.Variables[&quot;isResponsesCompactOperation&quot;]) { return -1L; }
+              if (!(bool)context.Variables[&quot;applicationLedgerEnforced&quot;]) { return -1L; }
+              long headroom = (long)context.Variables[&quot;applicationLedgerRemaining&quot;] - (long)context.Variables[&quot;applicationInputBound&quot;];
+              if (headroom &lt;= 0) { return -1L; }
+              return (long)context.Variables[&quot;applicationMaxOutputBound&quot;] &gt; headroom ? headroom : -1L;
+            }" />
+            <set-variable name="applicationReservedTokens" value="@{
+              long clamped = (long)context.Variables[&quot;applicationClampedMaxTokens&quot;];
+              long output = clamped &gt;= 0 ? clamped : (long)context.Variables[&quot;applicationMaxOutputBound&quot;];
+              return (long)context.Variables[&quot;applicationInputBound&quot;] + output;
+            }" />
+            <choose>
+              <when condition="@((bool)context.Variables[&quot;applicationLedgerConfigured&quot;])">
+                <send-request mode="new" response-variable-name="applicationLedgerWrite" timeout="2" ignore-error="true">
+                  <set-url>__LEDGER_TABLE_ENDPOINT__/__LEDGER_TABLE_NAME__</set-url>
+                  <set-method>POST</set-method>
+                  <set-header name="x-ms-version" exists-action="override">
+                    <value>2020-12-06</value>
+                  </set-header>
+                  <set-header name="Accept" exists-action="override">
+                    <value>application/json;odata=nometadata</value>
+                  </set-header>
+                  <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                  </set-header>
+                  <set-header name="Prefer" exists-action="override">
+                    <value>return-no-content</value>
+                  </set-header>
+                  <set-body>@{
+                    var stamp = DateTime.UtcNow.ToString(&quot;yyyy-MM-dd'T'HH:mm:ss.fff&quot;) + &quot;Z&quot;;
+                    var entity = new JObject();
+                    entity[&quot;PartitionKey&quot;] = (string)context.Variables[&quot;applicationLedgerPartition&quot;];
+                    entity[&quot;RowKey&quot;] = &quot;R|&quot; + stamp + &quot;|&quot; + context.RequestId.ToString();
+                    entity[&quot;Reserved&quot;] = (long)context.Variables[&quot;applicationReservedTokens&quot;];
+                    return entity.ToString(Newtonsoft.Json.Formatting.None);
+                  }</set-body>
+                  <authentication-managed-identity resource="https://storage.azure.com/" />
+                </send-request>
+                <set-variable name="applicationAdmission" value="@{
+                  try
+                  {
+                    var response = (IResponse)context.Variables[&quot;applicationLedgerWrite&quot;];
+                    return response.StatusCode == 204 || response.StatusCode == 201
+                      ? (string)context.Variables[&quot;applicationAdmission&quot;]
+                      : &quot;application_ledger_write_failed&quot;;
+                  }
+                  catch (Exception) { return &quot;application_ledger_write_failed&quot;; }
+                }" />
+              </when>
+            </choose>
+          </when>
+        </choose>
+      </when>
+    </choose>
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="anthropic-beta" exists-action="delete" />
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;isResponsesOperation&quot;])">
+        <set-header name="originator" exists-action="delete" />
+        <set-header name="session-id" exists-action="delete" />
+        <set-header name="thread-id" exists-action="delete" />
+        <set-header name="x-client-request-id" exists-action="delete" />
+        <set-header name="x-codex-installation-id" exists-action="delete" />
+        <set-header name="x-codex-routing-hint" exists-action="delete" />
+        <set-header name="x-codex-turn-state" exists-action="delete" />
+        <set-header name="x-codex-turn-metadata" exists-action="delete" />
+        <set-header name="x-codex-parent-thread-id" exists-action="delete" />
+        <set-header name="x-codex-window-id" exists-action="delete" />
+        <set-header name="x-codex-beta-features" exists-action="delete" />
+        <set-header name="x-openai-subagent" exists-action="delete" />
+        <set-header name="x-openai-memgen-request" exists-action="delete" />
+        <set-header name="x-responsesapi-include-timing-metrics" exists-action="delete" />
+        <set-header name="x-openai-internal-codex-responses-lite" exists-action="delete" />
+        <set-header name="x-oai-attestation" exists-action="delete" />
+        <set-header name="OpenAI-Beta" exists-action="delete" />
+      </when>
+    </choose>
+    <!-- One and only one request-body rewrite. Stripping unsupported fields and clamping
+         the output ceiling are folded together deliberately: two independent set-body
+         statements would each re-read and re-serialise the body, and the second would
+         silently win. -->
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;isAnthropicOperation&quot;] || (bool)context.Variables[&quot;isResponsesOperation&quot;] || (context.Variables.ContainsKey(&quot;clampedMaxTokens&quot;) &amp;&amp; (long)context.Variables[&quot;clampedMaxTokens&quot;] &gt;= 0))">
+        <choose>
+          <when condition="@(!(bool)context.Variables[&quot;isImagesOperation&quot;])">
+        <set-body>@{
+          var raw = context.Request.Body.As&lt;string&gt;(preserveContent: true);
+          try
+          {
+            var body = JObject.Parse(raw);
+            var changed = false;
+            if ((bool)context.Variables[&quot;isAnthropicOperation&quot;])
+            {
+              foreach (var field in new[] { &quot;context_management&quot; })
+              {
+                if (body.Remove(field))
+                {
+                  changed = true;
+                }
+              }
+            }
+            if ((bool)context.Variables[&quot;isResponsesOperation&quot;] &amp;&amp; body.Remove(&quot;client_metadata&quot;))
+            {
+              changed = true;
+            }
+            if ((bool)context.Variables[&quot;isResponsesOperation&quot;])
+            {
+              // Codex persists output_text history without the provider's required empty
+              // annotations array. Restore only the missing metadata before replay.
+              var input = body[&quot;input&quot;] as JArray;
+              if (input != null)
+              {
+                foreach (var messageToken in input)
+                {
+                  var message = messageToken as JObject;
+                  var content = message?[&quot;content&quot;] as JArray;
+                  if (content == null) { continue; }
+                  foreach (var contentToken in content)
+                  {
+                    var contentItem = contentToken as JObject;
+                    if (contentItem != null
+                      &amp;&amp; string.Equals((string)contentItem[&quot;type&quot;], &quot;output_text&quot;, StringComparison.Ordinal)
+                      &amp;&amp; contentItem[&quot;annotations&quot;] == null)
+                    {
+                      contentItem[&quot;annotations&quot;] = new JArray();
+                      changed = true;
+                    }
+                  }
+                }
+              }
+            }
+            if ((bool)context.Variables[&quot;isResponsesCompactOperation&quot;])
+            {
+              var compactBody = new JObject();
+              foreach (var field in new[] { &quot;model&quot;, &quot;input&quot;, &quot;instructions&quot;, &quot;previous_response_id&quot; })
+              {
+                if (body[field] != null)
+                {
+                  compactBody[field] = body[field];
+                }
+              }
+              body = compactBody;
+              changed = true;
+            }
+            long personClamp = context.Variables.ContainsKey(&quot;clampedMaxTokens&quot;)
+              ? (long)context.Variables[&quot;clampedMaxTokens&quot;]
+              : -1L;
+            long applicationClamp = context.Variables.ContainsKey(&quot;applicationClampedMaxTokens&quot;)
+              ? (long)context.Variables[&quot;applicationClampedMaxTokens&quot;]
+              : -1L;
+            long clamp = personClamp &gt;= 0 &amp;&amp; applicationClamp &gt;= 0
+              ? Math.Min(personClamp, applicationClamp)
+              : personClamp &gt;= 0 ? personClamp : applicationClamp;
+            if (clamp &gt;= 0)
+            {
+              // Clamp the operation's contractual output ceiling. Responses uses
+              // max_output_tokens; Chat and Anthropic retain their existing fields.
+              if ((bool)context.Variables[&quot;isResponsesCreateOperation&quot;]) { body[&quot;max_output_tokens&quot;] = clamp; }
+              else if (body[&quot;max_completion_tokens&quot;] != null) { body[&quot;max_completion_tokens&quot;] = clamp; }
+              else if (body[&quot;max_tokens&quot;] != null) { body[&quot;max_tokens&quot;] = clamp; }
+              else if ((bool)context.Variables[&quot;isAnthropicOperation&quot;]) { body[&quot;max_tokens&quot;] = clamp; }
+              else { body[&quot;max_completion_tokens&quot;] = clamp; }
+              changed = true;
+            }
+            return changed ? body.ToString(Newtonsoft.Json.Formatting.None) : raw;
+          }
+          catch
+          {
+            return raw;
+          }
+        }</set-body>
+          </when>
+        </choose>
+      </when>
+    </choose>
+    <choose>
+      <when condition="@(context.Subscription != null &amp;&amp; (bool)context.Variables[&quot;isInferenceOperation&quot;])">
+        <set-variable name="consumerId" value="@(context.Subscription.Id)" />
+        <set-variable name="effectiveApplicationTpm" value="@{
+          var fallback = (long)__TOKENS_PER_MINUTE__;
+          var state = context.Variables.GetValueOrDefault&lt;JObject&gt;(&quot;applicationLedgerState&quot;, null);
+          var mapping = context.Variables.GetValueOrDefault&lt;JObject&gt;(&quot;applicationMapState&quot;, null);
+          var mapped = mapping != null &amp;&amp; (string)mapping[&quot;status&quot;] == &quot;ok&quot;;
+          var configured = state != null &amp;&amp; ((bool?)state[&quot;available&quot;] ?? false);
+          var requested = configured ? ((long?)state[&quot;tokensPerMinute&quot;] ?? fallback) : fallback;
+          return (int)(mapped &amp;&amp; configured &amp;&amp; requested &gt; 0 &amp;&amp; requested &lt;= int.MaxValue
+            ? requested : fallback);
+        }" />
+        <choose>
+          <when condition="@(!(bool)context.Variables[&quot;isImagesOperation&quot;])">
+        <llm-token-limit
+          counter-key="@($&quot;finops:subscription:{(string)context.Variables[&quot;consumerId&quot;]}&quot;)"
+          tokens-per-minute="@((int)context.Variables[&quot;effectiveApplicationTpm&quot;])"
+          estimate-prompt-tokens="true"
+          retry-after-header-name="Retry-After"
+          remaining-tokens-header-name="x-ratelimit-remaining-tokens"
+          tokens-consumed-header-name="x-tokens-consumed"
+          tokens-consumed-variable-name="tokensConsumed" />
+          </when>
+          <otherwise>
+            <rate-limit-by-key
+              calls="@((int)context.Variables[&quot;effectiveApplicationTpm&quot;])"
+              renewal-period="60"
+              counter-key="@($&quot;finops:images:subscription:{(string)context.Variables[&quot;consumerId&quot;]}&quot;)"
+              increment-count="32768"
+              retry-after-header-name="Retry-After" />
+          </otherwise>
+        </choose>
+      </when>
+    </choose>
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;])">
+        <choose>
+          <when condition="@(!(bool)context.Variables[&quot;isImagesOperation&quot;])">
+        <llm-emit-token-metric namespace="FinOps">
+          <!-- Custom metrics remain strictly bounded. Request and business attribution
+               belongs in correlated telemetry, never metric dimensions. -->
+          <dimension name="API ID" />
+        </llm-emit-token-metric>
+          </when>
+        </choose>
+      </when>
+    </choose>
+__LEGACY_PROVIDER_ROUTING__
+        <!-- Turnstile attribution is gateway-internal metadata. Snapshot every value needed
+          after the backend call, then remove all Turnstile headers before dispatch. Admission,
+          budget, model access, and token metrics have already run above, so this changes no
+          policy decision or attribution and gives every provider the same clean boundary. -->
+        <set-variable name="telemetryOrganization" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryOrganizationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryDepartment" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryDepartmentId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryProject" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-project-name&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryProjectId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-project-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryAgent" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-agent-name&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryAgentId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-agent-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryUser" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-user-name&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryUserId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryModelId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryRequestSource" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;))" />
+        <set-variable name="telemetryGatewayProfileId" value="__GATEWAY_PROFILE_ID__" />
+        <set-variable name="telemetryApimSubscriptionId" value="@((string)context.Variables[&quot;apimSubscriptionId&quot;])" />
+        <set-variable name="telemetryApplicationActorType" value="@{
+          var subscriptionId = (string)context.Variables[&quot;apimSubscriptionId&quot;];
+          if (string.IsNullOrEmpty(subscriptionId)) { return &quot;&quot;; }
+          return (bool)context.Variables[&quot;hasEmployeeToken&quot;] ? &quot;person&quot; : &quot;service&quot;;
+        }" />
+        <set-variable name="telemetryApplicationActorId" value="@{
+          var subscriptionId = (string)context.Variables[&quot;apimSubscriptionId&quot;];
+          if (string.IsNullOrEmpty(subscriptionId)) { return &quot;&quot;; }
+          return (bool)context.Variables[&quot;hasEmployeeToken&quot;]
+            ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;)
+            : &quot;service:&quot; + subscriptionId;
+        }" />
+    <set-variable name="telemetryWorkflow" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="telemetryRunId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]))" />
+    <set-variable name="telemetryTurnIndex" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-turn-index&quot;, &quot;1&quot;))" />
+    <set-variable name="telemetryModel" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;)))" />
+    <set-variable name="telemetryRuntime" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedRuntimeName&quot;, &quot;unattributed&quot;)))" />
+    <set-header name="x-request-id" exists-action="delete" />
+    <set-header name="x-org-id" exists-action="delete" />
+    <set-header name="x-org-name" exists-action="delete" />
+    <set-header name="x-department-id" exists-action="delete" />
+    <set-header name="x-department-name" exists-action="delete" />
+    <set-header name="x-project-id" exists-action="delete" />
+    <set-header name="x-project-name" exists-action="delete" />
+    <set-header name="x-agent-id" exists-action="delete" />
+    <set-header name="x-agent-name" exists-action="delete" />
+    <set-header name="x-model-id" exists-action="delete" />
+    <set-header name="x-runtime-id" exists-action="delete" />
+    <set-header name="x-user-id" exists-action="delete" />
+    <set-header name="x-user-name" exists-action="delete" />
+    <set-header name="x-request-source" exists-action="delete" />
+    <set-header name="x-hive-organization" exists-action="delete" />
+    <set-header name="x-hive-department" exists-action="delete" />
+    <set-header name="x-hive-project" exists-action="delete" />
+    <set-header name="x-hive-agent" exists-action="delete" />
+    <set-header name="x-hive-user" exists-action="delete" />
+    <set-header name="x-hive-workflow" exists-action="delete" />
+    <set-header name="x-hive-run-id" exists-action="delete" />
+    <set-header name="x-hive-turn-index" exists-action="delete" />
+    <set-header name="x-hive-model" exists-action="delete" />
+    <set-header name="x-hive-runtime" exists-action="delete" />
+    <set-header name="x-turnstile-pool-member" exists-action="delete" />
+    <set-header name="x-turnstile-pool-runtime" exists-action="delete" />
+__USAGE_OBSERVER_HEADERS__
+    <set-variable name="imageGenerationPolicyVersion" value="@(2)" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <set-variable name="isStreamedResponse" value="@(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).IndexOf(&quot;text/event-stream&quot;, StringComparison.OrdinalIgnoreCase) &gt;= 0)" />
+    <choose>
+      <when condition="@(context.Response.StatusCode &gt;= 400)">
+        <set-variable name="usagePayload" value="@{
+          return new JObject(
+            new JProperty(&quot;input_tokens&quot;, null),
+            new JProperty(&quot;cached_tokens&quot;, null),
+            new JProperty(&quot;output_tokens&quot;, null),
+            new JProperty(&quot;estimated&quot;, true),
+            new JProperty(&quot;ingest_error&quot;, &quot;failed_request_has_no_usage&quot;)
+          );
+        }" />
+      </when>
+      <when condition="@((bool)context.Variables[&quot;isStreamedResponse&quot;])">
+        <set-variable name="usagePayload" value="@{
+          long consumed = 0;
+          if (context.Variables.ContainsKey(&quot;tokensConsumed&quot;))
+          {
+            consumed = Convert.ToInt64(context.Variables[&quot;tokensConsumed&quot;]);
+          }
+          return new JObject(
+            new JProperty(&quot;input_tokens&quot;, null),
+            new JProperty(&quot;cached_tokens&quot;, null),
+            new JProperty(&quot;output_tokens&quot;, null),
+            new JProperty(&quot;tokens_consumed&quot;, consumed &gt; 0 ? (JToken)new JValue(consumed) : JValue.CreateNull()),
+            new JProperty(&quot;estimated&quot;, true),
+            new JProperty(&quot;ingest_error&quot;, &quot;stream_usage_breakdown_unavailable&quot;)
+          );
+        }" />
+      </when>
+      <otherwise>
+        <choose>
+          <when condition="@((bool)context.Variables[&quot;isImagesOperation&quot;])">
+            <set-variable name="usagePayload" value="@{
+              try {
+                var body = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+                var usage = body[&quot;usage&quot;] as JObject;
+                var incoming = usage?[&quot;input_tokens_details&quot;] as JObject;
+                var outgoing = usage?[&quot;output_tokens_details&quot;] as JObject;
+                var counters = new[] { usage?[&quot;input_tokens&quot;], usage?[&quot;output_tokens&quot;],
+                  usage?[&quot;total_tokens&quot;], incoming?[&quot;text_tokens&quot;], incoming?[&quot;image_tokens&quot;],
+                  outgoing?[&quot;text_tokens&quot;], outgoing?[&quot;image_tokens&quot;] };
+                if (counters.Any(token =&gt; token == null || token.Type != JTokenType.Integer
+                  || (long)token &lt; 0)) { throw new Exception(); }
+                long input = (long)usage[&quot;input_tokens&quot;];
+                long output = (long)usage[&quot;output_tokens&quot;];
+                var cachedValue = incoming?[&quot;cached_tokens&quot;];
+                if (cachedValue != null &amp;&amp; (cachedValue.Type != JTokenType.Integer
+                  || (long)cachedValue &lt; 0 || (long)cachedValue &gt; input)) { throw new Exception(); }
+                long cached = cachedValue == null ? 0L : (long)cachedValue;
+                if ((long)incoming[&quot;image_tokens&quot;] != 0 || (long)outgoing[&quot;text_tokens&quot;] != 0
+                  || (long)incoming[&quot;text_tokens&quot;] != input || (long)outgoing[&quot;image_tokens&quot;] != output
+                  || (long)usage[&quot;total_tokens&quot;] != input + output) { throw new Exception(); }
+                return new JObject(new JProperty(&quot;input_tokens&quot;, input - cached),
+                  new JProperty(&quot;cached_tokens&quot;, cached), new JProperty(&quot;cache_write_tokens&quot;, 0),
+                  new JProperty(&quot;output_tokens&quot;, output), new JProperty(&quot;estimated&quot;, false),
+                  new JProperty(&quot;ingest_error&quot;, null));
+              } catch {
+                return new JObject(new JProperty(&quot;input_tokens&quot;, null),
+                  new JProperty(&quot;cached_tokens&quot;, null), new JProperty(&quot;cache_write_tokens&quot;, null),
+                  new JProperty(&quot;output_tokens&quot;, null), new JProperty(&quot;estimated&quot;, true),
+                  new JProperty(&quot;ingest_error&quot;, &quot;usage_parse_failed&quot;));
+              }
+            }" />
+          </when>
+          <otherwise>
+        <set-variable name="usagePayload" value="@{
+      try
+      {
+        var body = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+        var usage = body[&quot;usage&quot;] as JObject;
+        var output = usage?[&quot;completion_tokens&quot;] ?? usage?[&quot;output_tokens&quot;];
+        // Cache writes bill well above cache reads (1.25x versus 0.1x of base input for
+        // Anthropic), so the two are reported separately. cached_tokens stays the full bucket
+        // and cache_write_tokens is its write-only subset.
+        var cacheRead = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cached_tokens&quot;]
+          ?? (long?)usage?[&quot;input_tokens_details&quot;]?[&quot;cached_tokens&quot;]
+          ?? (long?)usage?[&quot;cache_read_input_tokens&quot;]
+          ?? (long?)usage?[&quot;cached_tokens&quot;] ?? 0;
+        var cacheWrite = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cache_write_tokens&quot;]
+          ?? (long?)usage?[&quot;cache_creation_input_tokens&quot;] ?? 0;
+        // OpenAI reports prompt_tokens INCLUDING its cached subset, while Anthropic's
+        // input_tokens EXCLUDES it. Both are normalized to the exclusive form so that
+        // input + cached + output never counts the cached portion twice, and so that the
+        // cached share is never billed at the full input rate as well as the cached rate.
+        var promptTokens = (long?)usage?[&quot;prompt_tokens&quot;];
+        var inclusiveInput = promptTokens ?? ((bool)context.Variables[&quot;isResponsesOperation&quot;]
+          ? (long?)usage?[&quot;input_tokens&quot;]
+          : null);
+        var input = inclusiveInput.HasValue
+          ? (JToken)new JValue(Math.Max(inclusiveInput.Value - cacheRead - cacheWrite, 0))
+          : usage?[&quot;input_tokens&quot;];
+        return new JObject(
+          new JProperty(&quot;input_tokens&quot;, input),
+          new JProperty(&quot;cached_tokens&quot;, new JValue(cacheRead + cacheWrite)),
+          new JProperty(&quot;cache_write_tokens&quot;, new JValue(cacheWrite)),
+          new JProperty(&quot;output_tokens&quot;, output),
+          new JProperty(&quot;estimated&quot;, input == null || output == null),
+          new JProperty(&quot;ingest_error&quot;, input == null || output == null ? &quot;usage_missing&quot; : null)
+        );
+      }
+      catch
+      {
+        return new JObject(
+          new JProperty(&quot;input_tokens&quot;, null),
+          new JProperty(&quot;cached_tokens&quot;, null),
+          new JProperty(&quot;cache_write_tokens&quot;, null),
+          new JProperty(&quot;output_tokens&quot;, null),
+          new JProperty(&quot;estimated&quot;, true),
+          new JProperty(&quot;ingest_error&quot;, &quot;usage_parse_failed&quot;)
+        );
+      }
+        }" />
+          </otherwise>
+        </choose>
+      </otherwise>
+    </choose>
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;isInferenceOperation&quot;])">
+    <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@((string)context.Variables[&quot;callerRequestId&quot;])">@{
+      var usage = (JObject)context.Variables[&quot;usagePayload&quot;];
+      return new JObject(
+        new JProperty(&quot;id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+        new JProperty(&quot;request_id&quot;, (string)context.Variables[&quot;callerRequestId&quot;]),
+        new JProperty(&quot;correlation_id&quot;, context.RequestId.ToString()),
+        new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+        new JProperty(&quot;team&quot;, (string)context.Variables[&quot;telemetryDepartment&quot;]),
+        new JProperty(&quot;organization&quot;, (string)context.Variables[&quot;telemetryOrganization&quot;]),
+        new JProperty(&quot;organization_id&quot;, (string)context.Variables[&quot;telemetryOrganizationId&quot;]),
+        new JProperty(&quot;department&quot;, (string)context.Variables[&quot;telemetryDepartment&quot;]),
+        new JProperty(&quot;department_id&quot;, (string)context.Variables[&quot;telemetryDepartmentId&quot;]),
+        new JProperty(&quot;project&quot;, (string)context.Variables[&quot;telemetryProject&quot;]),
+        new JProperty(&quot;project_id&quot;, (string)context.Variables[&quot;telemetryProjectId&quot;]),
+        new JProperty(&quot;agent&quot;, (string)context.Variables[&quot;telemetryAgent&quot;]),
+        new JProperty(&quot;agent_id&quot;, (string)context.Variables[&quot;telemetryAgentId&quot;]),
+        new JProperty(&quot;user&quot;, (string)context.Variables[&quot;telemetryUser&quot;]),
+        new JProperty(&quot;user_id&quot;, (string)context.Variables[&quot;telemetryUserId&quot;]),
+        new JProperty(&quot;workflow&quot;, (string)context.Variables[&quot;telemetryWorkflow&quot;]),
+        new JProperty(&quot;run_id&quot;, (string)context.Variables[&quot;telemetryRunId&quot;]),
+        new JProperty(&quot;turn_index&quot;, int.Parse((string)context.Variables[&quot;telemetryTurnIndex&quot;])),
+        new JProperty(&quot;provider&quot;, (string)context.Variables[&quot;providerName&quot;]),
+        new JProperty(&quot;model&quot;, (string)context.Variables[&quot;telemetryModel&quot;]),
+        new JProperty(&quot;model_id&quot;, (string)context.Variables[&quot;telemetryModelId&quot;]),
+        new JProperty(&quot;runtime&quot;, (string)context.Variables[&quot;telemetryRuntime&quot;]),
+        new JProperty(&quot;request_source&quot;, (string)context.Variables[&quot;telemetryRequestSource&quot;]),
+        new JProperty(&quot;gateway_profile_id&quot;, (string)context.Variables[&quot;telemetryGatewayProfileId&quot;]),
+        new JProperty(&quot;apim_subscription_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;telemetryApimSubscriptionId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;telemetryApimSubscriptionId&quot;])),
+        new JProperty(&quot;application_actor_type&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;telemetryApplicationActorType&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;telemetryApplicationActorType&quot;])),
+        new JProperty(&quot;application_actor_id&quot;, string.IsNullOrEmpty((string)context.Variables[&quot;telemetryApplicationActorId&quot;]) ? JValue.CreateNull() : new JValue((string)context.Variables[&quot;telemetryApplicationActorId&quot;])),
+        new JProperty(&quot;application_admission&quot;, context.Variables.ContainsKey(&quot;applicationAdmission&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;applicationAdmission&quot;])
+          : JValue.CreateNull()),
+        new JProperty(&quot;input_tokens&quot;, usage[&quot;input_tokens&quot;]),
+        new JProperty(&quot;cached_tokens&quot;, usage[&quot;cached_tokens&quot;]),
+        new JProperty(&quot;cache_write_tokens&quot;, usage[&quot;cache_write_tokens&quot;]),
+        new JProperty(&quot;output_tokens&quot;, usage[&quot;output_tokens&quot;]),
+        new JProperty(&quot;tokens_consumed&quot;, usage[&quot;tokens_consumed&quot;]),
+        new JProperty(&quot;latency_ms&quot;, (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds),
+        new JProperty(&quot;status&quot;, context.Response.StatusCode.ToString()),
+        new JProperty(&quot;status_code&quot;, context.Response.StatusCode),
+        new JProperty(&quot;estimated_cost&quot;, null),
+        new JProperty(&quot;error_message&quot;, context.Response.StatusCode &gt;= 400 ? context.Response.StatusReason : null),
+        new JProperty(&quot;estimated&quot;, usage[&quot;estimated&quot;]),
+        new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+        new JProperty(&quot;ingest_error&quot;, usage[&quot;ingest_error&quot;]),
+        new JProperty(&quot;budget_admission&quot;, context.Variables.ContainsKey(&quot;ledgerStatus&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;ledgerStatus&quot;])
+          : JValue.CreateNull()),
+        new JProperty(&quot;model_admission&quot;, context.Variables.ContainsKey(&quot;modelAdmission&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;modelAdmission&quot;])
+          : JValue.CreateNull())
+      ).ToString(Newtonsoft.Json.Formatting.None);
+    }</log-to-eventhub>
+      </when>
+    </choose>
+  </outbound>
+  <on-error>
+    <!-- Guarded the same way the outbound emitter is, and for the same reason: only a
+         real inference attempt belongs in usage telemetry. Without this, any request that
+         matched no operation at all still produced a row - every attribution field fell
+         back to "unattributed" and `runtime` fell back to its hardcoded default, so an
+         internet scanner sending HEAD /turnstile/llm/api/hello was recorded as a model call
+         on Microsoft Foundry. Measured over 90 days: 400 such rows, 24.9% of all requests
+         and 72.6% of all failures, dragging the reported success rate from 87.5% to
+         65.6%.
+
+         GetValueOrDefault rather than a cast, because on-error runs even when inbound did
+         not and the variable is then absent. That is not defensive padding: those 400 rows
+         all carry latency_ms = 0, which this handler only produces when `requestStarted`
+         is missing, and `requestStarted` is the first statement of inbound. A cast would
+         throw inside the error handler itself. -->
+    <choose>
+      <when condition="@(context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;isInferenceOperation&quot;, false))">
+    <log-to-eventhub logger-id="__LOGGER_ID__" partition-key="@(context.RequestId.ToString())">@{
+      var statusCode = context.Response?.StatusCode ?? 500;
+      var latency = context.Variables.ContainsKey(&quot;requestStarted&quot;)
+        ? (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds
+        : 0;
+      var apimSubscriptionId = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;apimSubscriptionId&quot;, &quot;&quot;);
+      var applicationActorType = string.IsNullOrEmpty(apimSubscriptionId)
+        ? &quot;&quot;
+        : context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;hasEmployeeToken&quot;, false) ? &quot;person&quot; : &quot;service&quot;;
+      var applicationActorId = string.IsNullOrEmpty(apimSubscriptionId)
+        ? &quot;&quot;
+        : context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;hasEmployeeToken&quot;, false)
+          ? context.Variables.GetValueOrDefault&lt;string&gt;(&quot;employeeName&quot;, &quot;unattributed&quot;)
+          : &quot;service:&quot; + apimSubscriptionId;
+      return new JObject(
+        new JProperty(&quot;id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;callerRequestId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-id&quot;, context.RequestId.ToString()))),
+        new JProperty(&quot;request_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;callerRequestId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-id&quot;, context.RequestId.ToString()))),
+        new JProperty(&quot;correlation_id&quot;, context.RequestId.ToString()),
+        new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+        new JProperty(&quot;organization&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryOrganization&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;organization_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryOrganizationId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;department&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryDepartment&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;department_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryDepartmentId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;project&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryProject&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;project_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryProjectId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-project-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;agent&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryAgent&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;agent_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryAgentId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-agent-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;user&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryUser&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;user_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryUserId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;team&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryDepartment&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;workflow&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryWorkflow&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;run_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryRunId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, context.RequestId.ToString()))),
+        new JProperty(&quot;turn_index&quot;, int.Parse(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryTurnIndex&quot;, &quot;1&quot;))),
+        new JProperty(&quot;provider&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;providerName&quot;, &quot;unattributed&quot;)),
+        new JProperty(&quot;model&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryModel&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;model_id&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryModelId&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-model-id&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;runtime&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryRuntime&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;request_source&quot;, context.Variables.GetValueOrDefault&lt;string&gt;(&quot;telemetryRequestSource&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-request-source&quot;, &quot;unattributed&quot;))),
+        new JProperty(&quot;gateway_profile_id&quot;, &quot;__GATEWAY_PROFILE_ID__&quot;),
+        new JProperty(&quot;apim_subscription_id&quot;, string.IsNullOrEmpty(apimSubscriptionId) ? JValue.CreateNull() : new JValue(apimSubscriptionId)),
+        new JProperty(&quot;application_actor_type&quot;, string.IsNullOrEmpty(applicationActorType) ? JValue.CreateNull() : new JValue(applicationActorType)),
+        new JProperty(&quot;application_actor_id&quot;, string.IsNullOrEmpty(applicationActorId) ? JValue.CreateNull() : new JValue(applicationActorId)),
+        new JProperty(&quot;application_admission&quot;, context.Variables.ContainsKey(&quot;applicationAdmission&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;applicationAdmission&quot;])
+          : JValue.CreateNull()),
+        new JProperty(&quot;input_tokens&quot;, null),
+        new JProperty(&quot;cached_tokens&quot;, null),
+        new JProperty(&quot;output_tokens&quot;, null),
+        new JProperty(&quot;latency_ms&quot;, latency),
+        new JProperty(&quot;status&quot;, statusCode.ToString()),
+        new JProperty(&quot;status_code&quot;, statusCode),
+        new JProperty(&quot;estimated_cost&quot;, null),
+        new JProperty(&quot;error_message&quot;, context.Response?.StatusReason ?? context.LastError?.Reason ?? &quot;APIM policy error&quot;),
+        new JProperty(&quot;estimated&quot;, true),
+        new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+        new JProperty(&quot;ingest_error&quot;, statusCode == 429
+          ? &quot;token_rate_limited&quot;
+          : statusCode == 403
+            ? &quot;token_quota_exceeded&quot;
+            : &quot;apim_policy_error&quot;),
+        // The on-error message is a separate field list from the outbound one, so these
+        // have to be repeated here. Dropping them made a request that WAS admitted and
+        // then failed mid-transport land as null, and null specifically means "never
+        // reached admission" — the trace would have been stating the opposite of the
+        // truth. When the error happens before admission the variables are absent and
+        // null is then the correct answer.
+        new JProperty(&quot;budget_admission&quot;, context.Variables.ContainsKey(&quot;ledgerStatus&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;ledgerStatus&quot;])
+          : JValue.CreateNull()),
+        new JProperty(&quot;model_admission&quot;, context.Variables.ContainsKey(&quot;modelAdmission&quot;)
+          ? (JToken)new JValue((string)context.Variables[&quot;modelAdmission&quot;])
+          : JValue.CreateNull())
+      ).ToString(Newtonsoft.Json.Formatting.None);
+    }</log-to-eventhub>
+      </when>
+    </choose>
+    <base />
+  </on-error>
+</policies>

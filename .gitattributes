@@ -1,0 +1,2 @@
+# Prepared icons are checksum-verified; preserve their exact bytes on checkout.
+backend/services/client_assets/icons/** -text

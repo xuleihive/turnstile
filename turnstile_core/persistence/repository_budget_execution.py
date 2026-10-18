@@ -55,7 +55,7 @@ class PostgreSqlBudgetExecutionMixin:
     def budget_execution_status(self, scope: LedgerScope) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                """SELECT epoch, state, policy_revision, policy_applied_revision
+                """SELECT epoch, state, policy_revision, policy_applied_revision, budget_mode
                    FROM budget_execution_scope WHERE scope_type = %s AND scope_id = %s
                    AND period_start = %s""",
                 (scope.scope_type, scope.scope_id, scope.period_start),
@@ -84,6 +84,12 @@ class PostgreSqlBudgetExecutionMixin:
             connection.execute(
                 """SELECT prepare_budget_execution_scope(kind, identity, %s::date) FROM (
                    SELECT 'person' AS kind, unnest(%s::text[]) AS identity
+                     WHERE NOT EXISTS (SELECT 1 FROM directory_control_state
+                       WHERE singleton AND source = 'database')
+                   UNION SELECT 'person', governance_user_id FROM directory_person
+                     WHERE status = 'active' AND NOT manual_disabled
+                       AND EXISTS (SELECT 1 FROM directory_control_state
+                         WHERE singleton AND source = 'database')
                    UNION SELECT 'person', scope_id FROM token_budget
                      WHERE scope_type = 'user' AND period_start = %s
                    UNION SELECT 'person', user_id FROM user_model_policy

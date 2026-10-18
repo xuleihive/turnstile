@@ -239,6 +239,18 @@ class ModelCountContract(ProtocolCountContract):
         return self
 
 
+def verified_budget_operations(contract: ModelCountContract) -> set[BudgetOperation]:
+    operations: set[BudgetOperation] = (
+        set(contract.operations) if contract.algorithm != "legacy_request_estimate_v1" else set()
+    )
+    for operation, override in contract.protocols.items():
+        if override.algorithm == "legacy_request_estimate_v1":
+            operations.discard(operation)
+        else:
+            operations.add(operation)
+    return operations
+
+
 class ApprovedModelCountContract(StrictModel):
     binding_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     contract: ModelCountContract

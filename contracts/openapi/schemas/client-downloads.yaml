@@ -1,0 +1,139 @@
+schemas:
+  ClientDownloadOptions:
+    properties:
+      items:
+        items:
+          $ref: '../../openapi.yaml#/components/schemas/ClientSubscription'
+        type: array
+        title: Items
+      key_management_available:
+        type: boolean
+        title: Key Management Available
+      unavailable_reason:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Unavailable Reason
+      plugin_version:
+        type: string
+        title: Plugin Version
+        default: 0.1.1
+    additionalProperties: false
+    type: object
+    required:
+    - items
+    - key_management_available
+    title: ClientDownloadOptions
+  ClientDownloadRequest:
+    properties:
+      application_id:
+        type: string
+        format: uuid
+        title: Application Id
+      subscription_id:
+        type: string
+        format: uuid
+        title: Subscription Id
+      gateway_id:
+        type: string
+        format: uuid
+        title: Gateway Id
+      key_kind:
+        type: string
+        pattern: ^(primary|secondary)$
+        title: Key Kind
+        default: primary
+    additionalProperties: false
+    type: object
+    required:
+    - application_id
+    - subscription_id
+    - gateway_id
+    title: ClientDownloadRequest
+  ClientSubscription:
+    properties:
+      application_id:
+        type: string
+        format: uuid
+        title: Application Id
+      application_name:
+        type: string
+        title: Application Name
+      subscription_id:
+        type: string
+        format: uuid
+        title: Subscription Id
+      subscription_name:
+        type: string
+        title: Subscription Name
+      gateway_id:
+        type: string
+        format: uuid
+        title: Gateway Id
+      gateway_name:
+        type: string
+        title: Gateway Name
+      base_url:
+        type: string
+        title: Base Url
+      models:
+        items:
+          $ref: '../../openapi.yaml#/components/schemas/ClientModel'
+        type: array
+        title: Models
+    additionalProperties: false
+    type: object
+    required:
+    - application_id
+    - application_name
+    - subscription_id
+    - subscription_name
+    - gateway_id
+    - gateway_name
+    - base_url
+    - models
+    title: ClientSubscription
+  ClientModel:
+    properties:
+      cost:
+        anyOf:
+        - additionalProperties:
+            type: number
+          type: object
+        - type: 'null'
+        title: Cost
+        default: null
+      upstream_model_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Upstream Model Id
+        default: null
+      id:
+        type: string
+        title: Id
+      name:
+        type: string
+        title: Name
+      protocol:
+        type: string
+        title: Protocol
+      context_window:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Context Window
+      capabilities:
+        items:
+          type: string
+        type: array
+        title: Capabilities
+    additionalProperties: false
+    type: object
+    required:
+    - id
+    - name
+    - protocol
+    - context_window
+    - capabilities
+    title: ClientModel

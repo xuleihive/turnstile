@@ -31,6 +31,8 @@
 
 Turnstile is a self-hosted control plane for governed AI model access. It combines an Azure API Management gateway, token and cost telemetry, budgets, application access, model onboarding, release controls, and an operational web console.
 
+For employee setup and administrator workflows, see the [enterprise plugin guides](docs/enterprise-plugin/README.md) (Simplified Chinese, with redacted screenshots).
+
 > [!NOTE]
 > **Turnstile v1.2** is the current public release. The project is evolving rapidly, so APIs, configuration, and deployment workflows may change as it matures. Review changes carefully before upgrading production deployments.
 
@@ -55,7 +57,7 @@ Turnstile is a self-hosted control plane for governed AI model access. It combin
 - Versioned gateway releases, integrity checks, rollback, and protected releases
 - Owner-only application subscription provisioning and key management
 - Password-based and Microsoft Entra authentication
-- FinOps Assistant and report collections grounded in stored telemetry
+- AI FinOps with a FinOps Assistant and a directory-based Report Center grounded in stored telemetry ([design](plan/ai-finops/design.md))
 - GitHub Copilot usage and governance integration (in active development)
 
 > [!WARNING]
@@ -182,7 +184,7 @@ npx --yes @redocly/cli@2.38.0 lint contracts/openapi.yaml
 git diff --check
 ```
 
-In-memory repositories are used only for isolated unit tests. Integration and end-to-end claims must use a real Turnstile deployment and its configured Azure services. See [Testing](docs/testing.md) and [E2E Validation](docs/e2e-validation.md).
+In-memory repositories are used only for isolated unit tests. Integration and end-to-end claims must use a real Turnstile deployment and its configured Azure services. See [Testing](plan/upstream-main-merge-2026-10-16.md#required-checks) and [E2E Validation](docs/e2e-validation.md).
 
 ## Deployment
 
@@ -190,8 +192,8 @@ The Bicep templates create Turnstile platform resources such as PostgreSQL, Even
 
 For **Turnstile v1.2**, choose the matching deployment path:
 
-- **Upgrading an existing installation:** follow the [upgrade guide](docs/deployment.md#prepare-for-v12). Keep the original state, database, ledger, APIM, identities and history; apply the required infrastructure changes as well as the application packages.
-- **Installing from zero:** follow the [fresh-install guide](docs/deployment.md#deploy-v11-from-zero). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
+- **Upgrading an existing installation:** follow the [upgrade guide](plan/upstream-main-merge-2026-10-16.md#prepare-for-v12). Keep the original state, database, ledger, APIM, identities and history; apply the required infrastructure changes as well as the application packages.
+- **Installing from zero:** follow the [fresh-install guide](plan/upstream-main-merge-2026-10-16.md#deploy-v11-from-zero). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
 
 The quick start below is for a new installation. Do not replace an existing installation's state with a newly generated file.
 
@@ -215,6 +217,10 @@ uv run python -m scripts.deploy deploy \
 The command prompts for the initial Owner password, runs a subscription-scope what-if, and requires the exact confirmation `deploy`. It stops on any Delete change. It then provisions the platform and observer, builds immutable Linux x86-64 packages, deploys the API and Functions, enables workers only after the observer exists, and verifies health, Function indexing, and password Owner login. Generated secrets are stored only in `.turnstile/deployments/<resource-group>.json` with mode `0600`; back up that ignored file in an approved secret store.
 
 For automation, copy `infra/owner.credentials.example.json` to `.turnstile/owner.credentials.json`, set the same email as `bootstrapOwnerEmail`, choose the password, run `chmod 600` on the file, and add `--owner-credentials .turnstile/owner.credentials.json`. Plaintext never enters Bicep or deployment state; only its scrypt hash is deployed.
+
+After the Owner changes their password in User settings, supply the current password
+for rerun verification or update that private credentials file. Keep the original
+deployment state and bootstrap hash; reruns do not reset the existing account.
 
 Use `scripts.deploy plan` for a preview without creating resources. See [Deployment](docs/deployment.md) for prerequisites, reruns, and recovery.
 
@@ -256,13 +262,17 @@ See [Troubleshooting](docs/troubleshooting.md) for startup, authentication, data
 
 ## Documentation
 
+The `docs/` tree mirrors upstream `main`. For this branch's configuration, complete migration chain,
+operations and acceptance evidence, also read the [branch documentation index](plan/README.md).
+
 | Guide | What it covers |
 | --- | --- |
 | [Documentation index](docs/README.md) | Entry point for operators and maintainers |
 | [Architecture](docs/architecture.md) | Runtime boundaries, ownership, and data flow |
 | [Configuration](docs/configuration.md) | Environment variables, authentication, and feature gates |
+| [Organization Management](plan/organization-management/operations.md) | Persistent directory, department delegation, reviewed Entra synchronization, initialization and upgrade |
 | [Deployment](docs/deployment.md) | Azure provisioning, packaging, rollout, and verification |
-| [Testing](docs/testing.md) | Local, contract, infrastructure, and end-to-end validation |
+| [Testing](plan/upstream-main-merge-2026-10-16.md#required-checks) | Local, contract, infrastructure, and end-to-end validation |
 | [Security](docs/security.md) | Threat boundaries, secret handling, and deployment controls |
 | [Troubleshooting](docs/troubleshooting.md) | Database, authentication, APIM, telemetry, and startup checks |
 

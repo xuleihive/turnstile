@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -40,20 +40,24 @@ from turnstile_core.domain.assistant_models import (
     PinnedReport,
     PinnedReportLayout,
 )
-from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
-    merge_application_owners,
-    merge_observed_users,
-)
+from turnstile_core.domain.data_access import DataAccessScope
 from turnstile_core.domain.models import EnterpriseEntityCatalog
 from turnstile_core.domain.runtime_models import (
     ChatMessage,
+    InvocationApiFormat,
     InvocationMetadata,
+    ManagedModel,
     ModelInvocationRequest,
     ToolCall,
 )
-from turnstile_core.integrations.gateway import elapsed_ms, supports_tool_calling
+from turnstile_core.integrations.gateway import elapsed_ms
+from turnstile_core.integrations.gateway_protocol import (
+    invocation_api_paths,
+    model_protocol_route,
+    registry_model_route,
+)
 from turnstile_core.persistence.repository import QueryRepository
+from turnstile_core.services.directory_catalog import catalog_for
 
 from .assistant_shared import (
     ANSWER_LANGUAGE,
@@ -111,6 +115,7 @@ Rules:
 8. Write your answer in {language}.
 """
 
+
 # Only the answer language varies. Anything unlisted falls back to English rather than to
 # Chinese, so an unexpected locale degrades to a language the reader probably shares.
 def _frozen_range(chart: ChartSpec) -> ChartSpec:
@@ -151,19 +156,60 @@ class AssistantService:
         repository: QueryRepository,
         runtime: ModelRuntimeService,
         settings: Settings,
+        department_ids: tuple[str, ...] | None = None,
+        data_scope: DataAccessScope | None = None,
     ) -> None:
         self._repository = repository
         self._runtime = runtime
         self._settings = settings
-        self._tools = AssistantTools(repository, self._catalog_payload)
+        self._department_ids = department_ids
+        self._data_scope = data_scope
+        self._tools = AssistantTools(repository, self._catalog_payload, department_ids, data_scope)
 
     # -- catalog ---------------------------------------------------------------
 
     def _catalog(self) -> EnterpriseEntityCatalog:
-        return merge_application_owners(
-            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
-            self._repository.application_owners(),
+        catalog = catalog_for(self._repository, self._settings)
+        if self._data_scope is not None:
+            return self._data_scope.filter_catalog(catalog)
+        if self._department_ids is None:
+            return catalog
+        allowed = set(self._department_ids)
+        departments = [row for row in catalog.departments if row.id in allowed]
+        organization_ids = {row.parent_id for row in departments}
+        projects = [row for row in catalog.projects if row.parent_id in allowed]
+        project_ids = {row.id for row in projects}
+        return catalog.model_copy(
+            update={
+                "organizations": [
+                    row for row in catalog.organizations if row.id in organization_ids
+                ],
+                "departments": departments,
+                "projects": projects,
+                "agents": [row for row in catalog.agents if row.parent_id in project_ids],
+                "users": [row for row in catalog.users if row.parent_id in allowed],
+            }
         )
+
+    def _scope_allows(self, row: Mapping[str, Any]) -> bool:
+        if self._data_scope is not None:
+            return self._data_scope.covers(row.get("directory_scope"))
+        if self._department_ids is None:
+            return True
+        recorded = row.get("directory_scope")
+        return (
+            isinstance(recorded, list)
+            and bool(recorded)
+            and set(recorded).issubset(set(self._department_ids))
+        )
+
+    def _public_record(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        if not self._scope_allows(row):
+            raise HTTPException(status_code=404, detail="Record not found in the current scope")
+        return {key: value for key, value in row.items() if key != "directory_scope"}
+
+    def _report(self, row: Mapping[str, Any]) -> PinnedReport:
+        return PinnedReport.model_validate(self._public_record(row))
 
     def _catalog_payload(self) -> dict[str, Any]:
         catalog = self._catalog()
@@ -177,7 +223,7 @@ class AssistantService:
 
     # -- model selection -------------------------------------------------------
 
-    def _eligible_models(self) -> list[Any]:
+    def _eligible_model_routes(self) -> list[tuple[ManagedModel, dict[str, Any]]]:
         """Registry models that can actually carry this assistant's tool calls.
 
         Declaring the requirement matters: a model without tool support answers from
@@ -186,37 +232,69 @@ class AssistantService:
         while its runtime has no tool protocol, so the runtime is checked too.
         """
         registry = self._runtime.registry()
-        runtimes = {
-            runtime.id
-            for runtime in registry.runtimes
-            if runtime.enabled
-            and supports_tool_calling(runtime.runtime_kind.value, runtime.config)
-        }
+        runtimes = {runtime.id for runtime in registry.runtimes if runtime.enabled}
+        providers = {provider.id for provider in registry.providers if provider.enabled}
         candidates = [
-            model
+            (model, registry_model_route(registry, model))
             for model in registry.models
             if model.enabled
             and "tools" in model.capabilities
             and model.runtime_id in runtimes
+            and model.provider_id in providers
             and "image_generation" not in model.capabilities
         ]
-        candidates.sort(key=lambda model: (not model.is_default, model.display_name))
-        return candidates
+        candidates.sort(key=lambda item: (not item[0].is_default, item[0].display_name))
+        return [item for item in candidates if invocation_api_paths(item[1])]
+
+    def _eligible_models(self) -> list[ManagedModel]:
+        return [model for model, _ in self._eligible_model_routes()]
+
+    def _resolve_selection(
+        self,
+        candidates: list[tuple[ManagedModel, dict[str, Any]]],
+        stored: dict[str, Any],
+    ) -> tuple[ManagedModel | None, dict[str, Any] | None, bool]:
+        requested = InvocationApiFormat(stored["api_format"]) if stored.get("api_format") else None
+        configured = stored.get("model_id")
+        pinned = next((item for item in candidates if item[0].id == configured), None)
+        if self._selected_candidate([item[0] for item in candidates], configured) is None:
+            return None, None, requested is None
+        compatible = [
+            item
+            for item in candidates
+            if requested is None or requested in invocation_api_paths(item[1])
+        ]
+        fallback = compatible or candidates
+        effective = pinned or (fallback[0] if fallback else None)
+        if effective is None:
+            return None, None, requested is None
+        model, route = effective
+        api_available = requested is None or requested in invocation_api_paths(route)
+        resolved = model_protocol_route(
+            route,
+            requested if api_available else None,
+            tools=True,
+        )
+        return model, resolved, api_available
+
+    def _select_invocation(self) -> tuple[UUID, UUID, str, InvocationApiFormat]:
+        model, route, _ = self._resolve_selection(
+            self._eligible_model_routes(),
+            self._repository.assistant_settings(),
+        )
+        if model is None or route is None:
+            raise HTTPException(status_code=409, detail="No enabled model can carry tool calls")
+        return (
+            model.runtime_id,
+            model.id,
+            model.model_key,
+            InvocationApiFormat(route["runtime_config"]["api_format"]),
+        )
 
     def _select_model(self) -> tuple[UUID, UUID, str]:
-        candidates = self._eligible_models()
-        if not candidates:
-            raise HTTPException(
-                status_code=409,
-                detail="No enabled model declares the tools capability",
-            )
-        configured = self._repository.assistant_settings().get("model_id")
-        chosen = self._selected_candidate(candidates, configured)
-        if chosen is None:
-            raise HTTPException(
-                status_code=409, detail="Configured or default model is unavailable",
-            )
-        return chosen.runtime_id, chosen.id, chosen.model_key
+        """Resolve a compatible protocol without bypassing model availability."""
+        runtime_id, model_id, model_key, _ = self._select_invocation()
+        return runtime_id, model_id, model_key
 
     def _selected_candidate(self, candidates: list[Any], configured: UUID | None) -> Any:
         if configured is not None:
@@ -230,14 +308,26 @@ class AssistantService:
     def settings(self) -> AssistantSettings:
         stored = self._repository.assistant_settings()
         configured = stored.get("model_id")
-        candidates = self._eligible_models()
-        effective = self._selected_candidate(candidates, configured)
+        candidates = self._eligible_model_routes()
+        effective, route, api_available = self._resolve_selection(candidates, stored)
         return AssistantSettings(
             model_id=configured,
             auto_title=bool(stored.get("auto_title", True)),
+            api_format=stored.get("api_format"),
             effective_model_id=effective.id if effective else None,
             effective_model_name=effective.display_name if effective else None,
             model_available=effective is not None,
+            api_available=api_available,
+            effective_api_format=route["runtime_config"]["api_format"] if route else None,
+            effective_api_path=route["runtime_config"]["path"] if route else None,
+            available_api_formats=next(
+                (
+                    list(invocation_api_paths(model_route))
+                    for model, model_route in candidates
+                    if effective and model.id == effective.id
+                ),
+                [],
+            ),
             available_models=[
                 AssistantModelChoice(
                     id=model.id,
@@ -246,24 +336,49 @@ class AssistantService:
                     runtime_name=model.runtime_name,
                     input_cost_per_million=model.input_cost_per_million,
                     output_cost_per_million=model.output_cost_per_million,
+                    api_formats=list(invocation_api_paths(model_route)),
                 )
-                for model in candidates
+                for model, model_route in candidates
             ],
             updated_at=stored.get("updated_at"),
             updated_by=stored.get("updated_by"),
         )
 
     def save_settings(self, write: AssistantSettingsWrite, updated_by: str) -> AssistantSettings:
-        if (write.model_id is not None
-            and write.model_id != self._repository.assistant_settings().get("model_id")
-            and not any(model.id == write.model_id for model in self._eligible_models())
+        stored = self._repository.assistant_settings()
+        candidates = self._eligible_model_routes()
+        if write.model_id is not None:
+            candidates = [item for item in candidates if item[0].id == write.model_id]
+        if (
+            write.model_id is not None
+            and not candidates
+            and write.model_id != stored.get("model_id")
         ):
             raise HTTPException(
                 status_code=409,
                 detail="That model is not enabled, or its runtime cannot carry tool calls",
             )
+        requested = write.api_format
+        if (
+            "api_format" not in write.model_fields_set
+            and stored.get("model_id") == write.model_id
+            and stored.get("api_format")
+        ):
+            requested = InvocationApiFormat(stored["api_format"])
+        if (
+            requested is not None
+            and (candidates or "api_format" in write.model_fields_set)
+            and not any(requested in invocation_api_paths(route) for _, route in candidates)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="The selected API protocol cannot carry tool calls on this model route",
+            )
         self._repository.save_assistant_settings(
-            model_id=write.model_id, auto_title=write.auto_title, updated_by=updated_by
+            model_id=write.model_id,
+            auto_title=write.auto_title,
+            api_format=requested.value if requested else None,
+            updated_by=updated_by,
         )
         return self.settings()
 
@@ -275,10 +390,15 @@ class AssistantService:
         *,
         user_id: str,
         user_name: str,
+        billing_user_id: str | None = None,
     ) -> AssistantReply:
+        if self._department_ids == () and (
+            self._data_scope is None or not self._data_scope.user_ids
+        ):
+            raise HTTPException(status_code=403, detail="No analysis scope is granted")
         started = time.monotonic()
         conversation_id = self._resolve_conversation(request.conversation_id, user_id)
-        runtime_id, model_id, model_key = self._select_model()
+        runtime_id, model_id, model_key, api_format = self._select_invocation()
         language = ANSWER_LANGUAGE.get(request.locale, "English")
 
         messages: list[ChatMessage] = [
@@ -298,7 +418,7 @@ class AssistantService:
             response = self._runtime.invoke(
                 ModelInvocationRequest(
                     metadata=self._metadata(
-                        user_id=user_id,
+                        user_id=billing_user_id or user_id,
                         user_name=user_name,
                         model_id=str(model_id),
                         model=model_key,
@@ -311,6 +431,7 @@ class AssistantService:
                     tools=tools,
                     temperature=0,
                     max_output_tokens=1200,
+                    api_format=api_format,
                 ),
             )
             if response.usage is not None:
@@ -322,13 +443,7 @@ class AssistantService:
             answer = response.content
             if not response.tool_calls:
                 break
-            messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=response.content or None,
-                    tool_calls=response.tool_calls,
-                )
-            )
+            messages.append(response.assistant_message())
             for call in response.tool_calls:
                 outcome, step = self._run_tool(
                     call, request.timezone, request.locale, len(steps) + 1
@@ -350,7 +465,7 @@ class AssistantService:
         else:
             # The loop ran out of rounds while the model was still calling tools. Say so
             # rather than presenting a partial answer as complete.
-            answer = answer or "Too many analysis steps. Please narrow the question."
+            answer = "Too many analysis steps. Please narrow the question."
 
         reply = AssistantReply(
             conversation_id=conversation_id,
@@ -380,7 +495,8 @@ class AssistantService:
             candidate = UUID(requested)
         except ValueError:
             return str(uuid4())
-        if self._repository.get_conversation(candidate, owner_id) is None:
+        row = self._repository.get_conversation(candidate, owner_id)
+        if row is None or not self._scope_allows(row):
             return str(uuid4())
         return str(candidate)
 
@@ -403,14 +519,19 @@ class AssistantService:
                 title=question.strip()[:TITLE_LENGTH] or "Untitled",
                 question=question,
                 reply=reply.model_dump(mode="json"),
+                directory_scope=(
+                    self._data_scope.snapshot() if self._data_scope is not None
+                    else list(self._department_ids) if self._department_ids is not None else None
+                ),
             )
         except Exception:  # noqa: BLE001 - telemetry must not break the reply
             logger.exception("Failed to record assistant conversation turn")
 
     def list_conversations(self, owner_id: str) -> list[ConversationSummary]:
         return [
-            ConversationSummary.model_validate(row)
+            ConversationSummary.model_validate(self._public_record(row))
             for row in self._repository.list_conversations(owner_id, HISTORY_LIMIT)
+            if self._scope_allows(row)
         ]
 
     def get_conversation(self, conversation_id: UUID, owner_id: str) -> Conversation:
@@ -419,20 +540,27 @@ class AssistantService:
             raise HTTPException(status_code=404, detail="Conversation not found")
         turns = row.get("turns", [])
         return Conversation.model_validate(
-            {k: v for k, v in row.items() if k != "turns"}
+            {k: v for k, v in self._public_record(row).items() if k != "turns"}
             | {"exchanges": [dict(turn) for turn in turns]}
         )
 
     def rename_conversation(
         self, conversation_id: UUID, owner_id: str, title: str
     ) -> ConversationSummary:
+        if self._department_ids is not None:
+            self.get_conversation(conversation_id, owner_id)
         row = self._repository.rename_conversation(conversation_id, owner_id, title)
         if row is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        return ConversationSummary.model_validate(row)
+        return ConversationSummary.model_validate(self._public_record(row))
 
     def title_conversation(
-        self, conversation_id: UUID, owner_id: str, locale: str
+        self,
+        conversation_id: UUID,
+        owner_id: str,
+        locale: str,
+        *,
+        billing_user_id: str | None = None,
     ) -> ConversationSummary:
         """Replace the placeholder title with one the model wrote.
 
@@ -459,24 +587,20 @@ class AssistantService:
                 conversation.model_dump(exclude={"exchanges"})
             )
 
-        title = self._summarise_title(conversation, owner_id, locale)
+        title = self._summarise_title(conversation, billing_user_id or owner_id, locale)
         if title is None:
             return ConversationSummary.model_validate(
                 conversation.model_dump(exclude={"exchanges"})
             )
-        row = self._repository.summarise_conversation_title(
-            conversation_id, owner_id, title
-        )
+        row = self._repository.summarise_conversation_title(conversation_id, owner_id, title)
         if row is None:
             # Renamed between the read and the write. The person's name wins.
             return self.list_one(conversation_id, owner_id)
-        return ConversationSummary.model_validate(row)
+        return ConversationSummary.model_validate(self._public_record(row))
 
     def list_one(self, conversation_id: UUID, owner_id: str) -> ConversationSummary:
         conversation = self.get_conversation(conversation_id, owner_id)
-        return ConversationSummary.model_validate(
-            conversation.model_dump(exclude={"exchanges"})
-        )
+        return ConversationSummary.model_validate(conversation.model_dump(exclude={"exchanges"}))
 
     def _summarise_title(
         self, conversation: Conversation, owner_id: str, locale: str
@@ -485,7 +609,7 @@ class AssistantService:
         first = conversation.exchanges[0]
         language = ANSWER_LANGUAGE.get(locale, "English")
         try:
-            runtime_id, model_id, model_key = self._select_model()
+            runtime_id, model_id, model_key, api_format = self._select_invocation()
             response = self._runtime.invoke(
                 ModelInvocationRequest(
                     metadata=self._metadata(
@@ -520,10 +644,12 @@ class AssistantService:
                         ),
                     ],
                     temperature=0,
-                    # A title cannot be long, so neither can the budget for one. This is
-                    # also the backstop against a model that ignores the prompt and starts
-                    # writing the answer again.
-                    max_output_tokens=32,
+                    # Responses counts reasoning against this budget as well; the
+                    # visible title remains bounded by TITLE_PROMPT and clean_title.
+                    max_output_tokens=(
+                        256 if api_format is InvocationApiFormat.OPENAI_RESPONSES else 32
+                    ),
+                    api_format=api_format,
                 ),
             )
         except Exception:  # noqa: BLE001 - a name is worth less than the conversation
@@ -532,8 +658,11 @@ class AssistantService:
         return clean_title(response.content)
 
     def delete_conversation(self, conversation_id: UUID, owner_id: str) -> None:
+        if self._department_ids is not None:
+            self.get_conversation(conversation_id, owner_id)
         if not self._repository.delete_conversation(conversation_id, owner_id):
             raise HTTPException(status_code=404, detail="Conversation not found")
+
     def _run_tool(
         self, call: ToolCall, timezone: str, locale: str, sequence: int
     ) -> tuple[Any | None, AssistantStep]:
@@ -593,14 +722,34 @@ class AssistantService:
             (item for item in catalog.departments if item.id == (user.parent_id if user else None)),
             None,
         )
-        organization = catalog.organizations[0]
+        organization = next(
+            (
+                item
+                for item in catalog.organizations
+                if department is not None and item.id == department.parent_id
+            ),
+            catalog.organizations[0] if catalog.organizations else None,
+        )
+        if organization is None or (
+            self._settings.directory_source == "database" and (user is None or department is None)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Link an active person before model analysis",
+            )
         return InvocationMetadata(
             organization_id=organization.id,
             organization=organization.name,
             department_id=department.id if department else "unattributed",
             department=department.name if department else "unattributed",
-            project_id="project-finops",
-            project="Model FinOps",
+            project_id=(
+                "unattributed"
+                if self._settings.directory_source == "database"
+                else "project-finops"
+            ),
+            project=(
+                "unattributed" if self._settings.directory_source == "database" else "Model FinOps"
+            ),
             agent_id=ASSISTANT_AGENT_ID,
             agent=ASSISTANT_AGENT_NAME,
             user_id=user_id,
@@ -618,8 +767,9 @@ class AssistantService:
 
     def list_pinned(self, owner_id: str) -> list[PinnedReport]:
         return [
-            PinnedReport.model_validate(row)
+            self._report(row)
             for row in self._repository.list_pinned_reports(owner_id)
+            if self._scope_allows(row)
         ]
 
     def pin(self, write: PinnedChartWrite, owner_id: str) -> PinnedReport:
@@ -647,14 +797,18 @@ class AssistantService:
             description=write.description,
             original_question=write.original_question,
             chart=write.chart.model_dump(mode="json"),
+            directory_scope=(
+                self._data_scope.snapshot() if self._data_scope is not None
+                else list(self._department_ids) if self._department_ids is not None else None
+            ),
         )
-        return PinnedReport.model_validate(row)
+        return self._report(row)
 
     def get_pinned(self, report_id: UUID, owner_id: str) -> PinnedReport:
         row = self._repository.get_pinned_report(report_id, owner_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Pinned report not found")
-        return PinnedReport.model_validate(row)
+        return self._report(row)
 
     def _managed_pinned(self, report_id: UUID, owner_id: str) -> PinnedReport:
         report = self.get_pinned(report_id, owner_id)
@@ -669,18 +823,16 @@ class AssistantService:
         row = self._repository.update_pinned_report(report_id, owner_id, title, description)
         if row is None:
             raise HTTPException(status_code=404, detail="Pinned report not found")
-        return PinnedReport.model_validate(row)
+        return self._report(row)
 
     def set_pinned_visibility(
         self, report_id: UUID, owner_id: str, visibility: str
     ) -> PinnedReport:
         self._managed_pinned(report_id, owner_id)
-        row = self._repository.update_pinned_report_visibility(
-            report_id, owner_id, visibility
-        )
+        row = self._repository.update_pinned_report_visibility(report_id, owner_id, visibility)
         if row is None:
             raise HTTPException(status_code=404, detail="Pinned report not found")
-        return PinnedReport.model_validate(row)
+        return self._report(row)
 
     def set_pinned_layout(
         self, report_id: UUID, owner_id: str, layout: PinnedReportLayout
@@ -700,7 +852,7 @@ class AssistantService:
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Pinned report not found")
-        return PinnedReport.model_validate(row)
+        return self._report(row)
 
     def unpin(self, report_id: UUID, owner_id: str) -> None:
         self._managed_pinned(report_id, owner_id)

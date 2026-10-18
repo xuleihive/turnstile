@@ -1,18 +1,24 @@
+import { CLIENT_USER_PHRASES } from "./ja/phrases-client-user"
 import { JAPANESE_CORE_PHRASES } from "./ja/phrases-core"
+import { USER_SETTINGS_PHRASES } from "./ja/phrases-user-settings"
 import { JAPANESE_COPILOT_PHRASES } from "./ja/phrases-copilot"
 import { JAPANESE_AUTH_PHRASES } from "./ja/phrases-auth"
 import { APPLICATION_CREATE_PHRASES } from "./ja/phrases-application-create"
 import { POOL_AFFINITY_PHRASES } from "./ja/phrases-pool-affinity"
 import { IMAGE_GENERATION_PHRASES } from "./ja/phrases-image-generation"
+import { ORGANIZATION_PHRASES } from "./ja/phrases-organization"
 import { DYNAMIC_RULES } from "./ja/dynamic-rules"
 
 const JAPANESE_PHRASES: Record<string, string> = {
   ...JAPANESE_CORE_PHRASES,
+  ...USER_SETTINGS_PHRASES,
   ...JAPANESE_COPILOT_PHRASES,
   ...JAPANESE_AUTH_PHRASES,
   ...APPLICATION_CREATE_PHRASES,
   ...POOL_AFFINITY_PHRASES,
   ...IMAGE_GENERATION_PHRASES,
+  ...ORGANIZATION_PHRASES,
+  ...CLIENT_USER_PHRASES,
 }
 
 const orderedPhrases = Object.entries(JAPANESE_PHRASES).sort(([left], [right]) => right.length - left.length)

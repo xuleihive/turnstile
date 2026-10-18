@@ -621,7 +621,16 @@ def _validate_budget_components(root: ET.Element, template: ET.Element) -> dict[
     actual_parents = _parents(root)
     expected_parents = _parents(template)
     bindings: dict[str, str] = {}
-    for variable_name in ("ledgerState", "applicationLedgerState", "applicationTokensPerMinute"):
+    for variable_name in (
+        "ledgerState", "applicationLedgerState", "applicationTokensPerMinute",
+        "effectiveApplicationTpm",
+    ):
+        if (variable_name == "applicationTokensPerMinute"
+            and root.find(".//set-variable[@name='telemetryUsageId']") is None
+            and template.find(".//set-variable[@name='telemetryUsageId']") is None
+            and not root.findall(f".//set-variable[@name='{variable_name}']")
+            and not template.findall(f".//set-variable[@name='{variable_name}']")):
+            continue
         actual = actual_parents[_variable(root, variable_name)]
         expected = expected_parents[_variable(template, variable_name)]
         if (
@@ -805,8 +814,22 @@ def _validate_parent_boundaries(root: ET.Element, template: ET.Element) -> None:
 def validate_parent_policy(
     source: str, canonical_parent: str, profiles: Sequence[ImageGenerationProfile] = (),
 ) -> str:
-    root = parse_policy(source)
-    template = parse_policy(canonical_parent)
+    from .apim_application_tpm import compose_application_tpm_policy
+    from .apim_directory_policy import strip_validated_directory_identity_policy
+
+    def without_slots(value: str) -> str:
+        return value.replace("__LEGACY_PROVIDER_ROUTING__", "").replace(
+            "__USAGE_OBSERVER_HEADERS__", ""
+        )
+
+    root, template = (
+        parse_policy(compose_application_tpm_policy(
+            without_slots(strip_validated_directory_identity_policy(source))
+        )),
+        parse_policy(compose_application_tpm_policy(
+            without_slots(strip_validated_directory_identity_policy(canonical_parent))
+        )),
+    )
     availability = root.find(".//set-variable[@name='availabilityProtocolVersion']")
     expected_availability = template.find(".//set-variable[@name='availabilityProtocolVersion']")
     if availability is not None or expected_availability is not None:
@@ -923,7 +946,15 @@ def validate_parent_policy(
     if marker is not None:
         if expression_tokens(marker.get("value", "")) != ("@", "(", "2", ")"):
             raise PolicyCompilationError("Legacy image policy requires explicit offline migration")
-        if compose_image_parent_policy(source, canonical_parent, profiles) != source:
+        normalized_source = compose_application_tpm_policy(
+            strip_validated_directory_identity_policy(source)
+        )
+        normalized_canonical = compose_application_tpm_policy(
+            strip_validated_directory_identity_policy(canonical_parent)
+        )
+        if compose_image_parent_policy(
+            normalized_source, normalized_canonical, profiles,
+        ) != normalized_source:
             raise PolicyCompilationError("Normal publication cannot migrate its parent policy")
     else:
         bindings = _validate_budget_components(root, template)

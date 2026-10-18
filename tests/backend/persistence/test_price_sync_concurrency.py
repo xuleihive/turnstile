@@ -195,7 +195,10 @@ def test_sync_waits_for_edit_then_rechecks_configuration(
             changes.get("input_cost_per_million", 0.36)
         )
         assert saved["price_source"] == changes.get("price_source", "azure_retail")
-        assert saved["price_sync_status"] == "superseded"
+        if kind == "model":
+            assert saved["price_sync_status"] is None
+        else:
+            assert saved["price_sync_status"] == "superseded"
         assert saved["list_input_cost_per_million"] is None
     finally:
         editor_repository.close()
@@ -388,6 +391,15 @@ def test_publication_activation_persists_catalog_pricing_in_postgres(
     try:
         registry = repository.registry()
         gateway = next(row for row in registry["gateways"] if row["implementation"] == "apim")
+        # Each case publishes once to its own legacy gateway. Reusing an active legacy
+        # publication would require v1.2's installed incremental publication program.
+        gateway = repository.create_registry_item("gateway", {
+            **{key: gateway[key] for key in (
+                "implementation", "base_url", "auth_type", "config",
+            )},
+            "name": f"Price publication {uuid4()}", "enabled": True, "is_default": False,
+            "credential_ciphertext": None, "credential_hint": None,
+        })
         provider = next(
             (row for row in registry["providers"] if row["brand_key"] == "microsoft_foundry"), None,
         )

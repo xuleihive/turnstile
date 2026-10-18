@@ -8,6 +8,7 @@ from tests.support.paths import REPOSITORY_ROOT
 ROOT = REPOSITORY_ROOT
 MAIN = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
 DATA_PLANE = (ROOT / "infra/modules/data-plane.bicep").read_text(encoding="utf-8")
+NETWORK = (ROOT / "infra/modules/platform-network.bicep").read_text(encoding="utf-8")
 APIM_SERVICE = (ROOT / "infra/modules/apim-service.bicep").read_text(encoding="utf-8")
 APIM_INTEGRATION = (ROOT / "infra/modules/apim-integration.bicep").read_text(
     encoding="utf-8"
@@ -247,9 +248,9 @@ def test_observer_uses_a_configurable_premium_v3_plan() -> None:
 
 
 def test_flex_functions_have_isolated_network_and_deployment_storage() -> None:
-    assert "addressPrefix: '10.42.3.0/27'" in DATA_PLANE
-    assert "addressPrefix: '10.42.3.32/27'" in DATA_PLANE
-    assert DATA_PLANE.count("serviceName: 'Microsoft.App/environments'") == 2
+    assert "addressPrefix: '10.42.3.0/27'" in NETWORK
+    assert "addressPrefix: '10.42.3.32/27'" in NETWORK
+    assert NETWORK.count("serviceName: 'Microsoft.App/environments'") == 2
     assert "var telemetryDeploymentContainerName = 'deploy-telemetry'" in DATA_PLANE
     assert "name: telemetryDeploymentContainerName" in DATA_PLANE
     assert "var deploymentContainerName = 'deploy-control-plane'" in CONTROL_PLANE
@@ -277,19 +278,21 @@ def test_public_runtime_resources_are_exempt_from_network_modify_policy() -> Non
         assert "publicNetworkAccess: 'Enabled'" in resource
 
 
-def test_vnet_subnets_are_created_serially() -> None:
-    telemetry_subnet = DATA_PLANE.split("resource telemetryFunctionSubnet", 1)[1].split(
-        "resource controlFunctionSubnet", 1
-    )[0]
-    control_subnet = DATA_PLANE.split("resource controlFunctionSubnet", 1)[1].split(
-        "resource privateEndpointSubnet", 1
-    )[0]
-    private_endpoint_subnet = DATA_PLANE.split("resource privateEndpointSubnet", 1)[
-        1
-    ].split("resource blobPrivateDnsZone", 1)[0]
-    assert "virtualNetwork" in telemetry_subnet.split("dependsOn:", 1)[1]
-    assert "telemetryFunctionSubnet" in control_subnet.split("dependsOn:", 1)[1]
-    assert "controlFunctionSubnet" in private_endpoint_subnet.split("dependsOn:", 1)[1]
+def test_vnet_subnets_have_one_owner_before_apim_and_runtime_creation() -> None:
+    assert "module platformNetwork 'modules/platform-network.bicep'" in MAIN
+    assert "ledgerSubnetResourceId: platformNetwork!.outputs.apimSubnetId" in MAIN
+    assert "subnets: [" in NETWORK
+    for name in ("snet-flex-telemetry", "snet-flex-control", "snet-private-endpoints",
+                 "snet-api", "snet-apim-ledger"):
+        assert f"name: '{name}'" in NETWORK
+    assert "virtualNetworkType: 'External'" in APIM_SERVICE
+    assert "subnetResourceId: ledgerSubnetResourceId" in APIM_SERVICE
+    assert "'BasicV2'" not in MAIN + APIM_SERVICE
+    for resource in (
+        "virtualNetwork", "telemetryFunctionSubnet", "privateEndpointSubnet", "apiSubnet",
+    ):
+        declaration = DATA_PLANE.split(f"resource {resource} ", 1)[1].split("\nresource ", 1)[0]
+        assert " existing = {" in declaration
 
 
 def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
@@ -479,7 +482,8 @@ def test_api_ledger_private_network_is_wired_for_new_and_existing_installations(
     for template in (DATA_PLANE, upgrade):
         subnet = template.split("resource apiSubnet ", 1)[1].split("\nresource ", 1)[0]
         assert "parent: virtualNetwork" in subnet
-        assert "serviceName: 'Microsoft.Web/serverFarms'" in subnet
+        if template == upgrade:
+            assert "serviceName: 'Microsoft.Web/serverFarms'" in subnet
         integration = template.split("resource apiVnetIntegration ", 1)[1].split(
             "\nresource ", 1,
         )[0]
@@ -487,8 +491,8 @@ def test_api_ledger_private_network_is_wired_for_new_and_existing_installations(
         assert "name: 'virtualNetwork'" in integration
         assert "subnetResourceId: apiSubnet.id" in integration
         assert "swiftSupported: true" in integration
-    assert "addressPrefix: '10.42.3.64/27'" in DATA_PLANE
-    assert "dependsOn: [\n    privateEndpointSubnet\n  ]" in DATA_PLANE
+    assert "addressPrefix: '10.42.3.64/27'" in NETWORK
+    assert "serviceName: 'Microsoft.Web/serverFarms'" in NETWORK
     assert "Microsoft.Storage/" not in upgrade
     assert "Microsoft.Authorization/" not in upgrade
     assert "appsettings" not in upgrade
@@ -529,6 +533,12 @@ def test_control_plane_features_default_to_disabled() -> None:
         assert declaration in MAIN
     assert "effectivePublicationWorkerEnabled = publicationWorkerEnabled" in CONTROL_PLANE
     assert "effectiveReleaseWorkerEnabled = releaseWorkerEnabled" in CONTROL_PLANE
+
+
+def test_standard_image_generation_does_not_restore_the_retired_opt_in() -> None:
+    for template in (MAIN, DATA_PLANE, CONTROL_PLANE):
+        assert "imageGenerationEnabled" not in template
+        assert "IMAGE_GENERATION_ENABLED" not in template
 
 
 def test_application_creation_is_gated_and_uses_the_exact_platform_ledger() -> None:

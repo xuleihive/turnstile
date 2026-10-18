@@ -48,7 +48,47 @@ tags:
   description: Authenticated, assigned and budget-governed internal model invocation.
 - name: Model Router
   description: User-scoped model routing drafts, validation, version publication, and lifecycle.
+- name: User Settings
+  description: Private current-account self service.
+- name: Organization Management
+  description: Persistent APIM directory, department delegation and reviewed read-only Entra synchronization.
+- name: Permission Management
+  description: Owner-only revisioned four-role menu configuration; automatic row scopes are not editable.
 paths:
+  /api/v1/client-downloads/user-options:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-downloads~1user-options
+  /api/v1/client-downloads/magpie-user:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-downloads~1magpie-user
+  /api/v1/client-auth/device-authorizations:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-auth~1device-authorizations
+  /api/v1/client-auth/verification:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-auth~1verification
+  /api/v1/client-auth/decision:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-auth~1decision
+  /api/v1/client-auth/token:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-auth~1token
+  /api/v1/client-auth/revoke:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-auth~1revoke
+  /api/v1/client-runtime/catalog:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1catalog
+  /api/v1/client-runtime/refresh-models:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1refresh-models
+  /api/v1/client-runtime/usage:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1usage
+  /api/v1/client-runtime/image-capabilities:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1image-capabilities
+  /api/v1/client-runtime/v1/models:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1v1~1models
+  /api/v1/client-runtime/models:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1models
+  /api/v1/client-runtime/{path}:
+    $ref: ./openapi/paths/client-user.yaml#/paths/~1api~1v1~1client-runtime~1{path}
+  /api/v1/client-downloads/options:
+    $ref: ./openapi/paths/client-downloads.yaml#/paths/~1api~1v1~1client-downloads~1options
+  /api/v1/client-downloads/magpie:
+    $ref: ./openapi/paths/client-downloads.yaml#/paths/~1api~1v1~1client-downloads~1magpie
+  /api/v1/permission-management:
+    $ref: ./openapi/paths/permission-management.yaml#/paths/~1api~1v1~1permission-management
   /api/v1/assistant/ask:
     $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1ask
   /api/v1/assistant/conversations:
@@ -79,6 +119,8 @@ paths:
     $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1reservations
   /api/v1/budgets/reservations/resolve:
     $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1reservations~1resolve
+  /api/v1/budgets/capabilities:
+    $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1capabilities
   /api/v1/budgets:
     $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets
   /api/v1/budgets/users:
@@ -333,8 +375,84 @@ paths:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}~1archive
   /api/v1/model-management/self-hosted-gateways/{deployment_id}/node-enrollments:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1self-hosted-gateways~1{deployment_id}~1node-enrollments
+  /api/v1/model-management/price-preview:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-preview
+  /api/v1/user-settings/me/account:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1account
+  /api/v1/user-settings/me/budget:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1budget
+  /api/v1/user-settings/me/models:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1models
+  /api/v1/user-settings/me/usage:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1usage
+  /api/v1/user-settings/me/profile:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1profile
+  /api/v1/user-settings/me/avatar:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1avatar
+  /api/v1/user-settings/me/password:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1password
+  /api/v1/organization-management/accounts:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1accounts
+  /api/v1/enterprise/query-entities:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1enterprise~1query-entities
+  /api/v1/organization-management/audit:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1audit
+  /api/v1/organization-management/capabilities:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1capabilities
+  /api/v1/organization-management/connections:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections
+  /api/v1/organization-management/connections/{connection_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections~1{connection_id}
+  /api/v1/organization-management/connections/{connection_id}/group-mappings:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections~1{connection_id}~1group-mappings
+  /api/v1/organization-management/connections/{connection_id}/sync-jobs:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections~1{connection_id}~1sync-jobs
+  /api/v1/organization-management/connections/{connection_id}/users/{object_id}/binding:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections~1{connection_id}~1users~1{object_id}~1binding
+  /api/v1/organization-management/connections/{connection_id}/validate:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1connections~1{connection_id}~1validate
+  /api/v1/organization-management/departments/{department_id}/administrators:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1departments~1{department_id}~1administrators
+  /api/v1/organization-management/menu-administrators/{scope_kind}/{scope_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1menu-administrators~1{scope_kind}~1{scope_id}
+  /api/v1/organization-management/organizations:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1organizations
+  /api/v1/organization-management/organizations/{organization_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1organizations~1{organization_id}
+  /api/v1/organization-management/organizations/{organization_id}/units:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1organizations~1{organization_id}~1units
+  /api/v1/organization-management/people:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people
+  /api/v1/organization-management/people/{person_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people~1{person_id}
+  /api/v1/organization-management/people/{person_id}/account-link:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people~1{person_id}~1account-link
+  /api/v1/organization-management/people/{person_id}/status-changes:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people~1{person_id}~1status-changes
+  /api/v1/organization-management/people/{person_id}/status-preview:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people~1{person_id}~1status-preview
+  /api/v1/organization-management/people/{person_id}/teams:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1people~1{person_id}~1teams
+  /api/v1/organization-management/sync-jobs:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1sync-jobs
+  /api/v1/organization-management/sync-jobs/{job_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1sync-jobs~1{job_id}
+  /api/v1/organization-management/sync-jobs/{job_id}/apply:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1sync-jobs~1{job_id}~1apply
+  /api/v1/organization-management/sync-jobs/{job_id}/cancel:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1sync-jobs~1{job_id}~1cancel
+  /api/v1/organization-management/sync-jobs/{job_id}/changes:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1sync-jobs~1{job_id}~1changes
+  /api/v1/organization-management/units/{unit_id}:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1units~1{unit_id}
+  /api/v1/organization-management/units/{unit_id}/members:
+    $ref: ./openapi/paths/organization-management.yaml#/paths/~1api~1v1~1organization-management~1units~1{unit_id}~1members
 components:
   securitySchemes:
+    clientBearer:
+      type: http
+      scheme: bearer
+      description: Revocable desktop user access or image-only capability token.
     sessionCookie:
       $ref: ./openapi/components/common.yaml#/securitySchemes/sessionCookie
   parameters:
@@ -382,6 +500,78 @@ components:
     ErrorResponse:
       $ref: ./openapi/components/common.yaml#/responses/ErrorResponse
   schemas:
+    DeviceRequest:
+      $ref: ./openapi/schemas/client-user.yaml#/schemas/DeviceRequest
+    Decision:
+      $ref: ./openapi/schemas/client-user.yaml#/schemas/Decision
+    TokenRequest:
+      $ref: ./openapi/schemas/client-user.yaml#/schemas/TokenRequest
+    UserDownload:
+      $ref: ./openapi/schemas/client-user.yaml#/schemas/UserDownload
+    GatewayApplicationBudgetProjection:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationBudgetProjection
+    ClientDownloadOptions:
+      $ref: ./openapi/schemas/client-downloads.yaml#/schemas/ClientDownloadOptions
+    ClientDownloadRequest:
+      $ref: ./openapi/schemas/client-downloads.yaml#/schemas/ClientDownloadRequest
+    ClientSubscription:
+      $ref: ./openapi/schemas/client-downloads.yaml#/schemas/ClientSubscription
+    ClientModel:
+      $ref: ./openapi/schemas/client-downloads.yaml#/schemas/ClientModel
+    AccountLinkWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/AccountLinkWrite
+    AdministratorsWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/AdministratorsWrite
+    ConnectionWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/ConnectionWrite
+    DirectoryPage:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/DirectoryPage
+    EnterpriseEntityCatalog:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/EnterpriseEntityCatalog
+    UsageQueryEntityCatalog:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/UsageQueryEntityCatalog
+    UsageQueryEntity:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/UsageQueryEntity
+    EnterpriseEntity:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/EnterpriseEntity
+    ExternalBindingWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/ExternalBindingWrite
+    GroupMapping:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/GroupMapping
+    GroupMappingsWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/GroupMappingsWrite
+    OrganizationWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/OrganizationWrite
+    OrganizationPersonCreate:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/OrganizationPersonCreate
+    PersonStatusWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/PersonStatusWrite
+    PersonWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/PersonWrite
+    SyncApplyWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/SyncApplyWrite
+    SyncJobWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/SyncJobWrite
+    TeamsWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/TeamsWrite
+    UnitMembersWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/UnitMembersWrite
+    UnitWrite:
+      $ref: ./openapi/schemas/organization-management.yaml#/schemas/UnitWrite
+    PriceSource:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSource
+    PricePreviewRequest:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PricePreviewRequest
+    PricePreviewResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PricePreviewResponse
+    PriceSyncRequest:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSyncRequest
+    PriceSyncResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceSyncResponse
+    PriceCatalogModelsResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceCatalogModelsResponse
+    PriceCatalogOptionsResponse:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceCatalogOptionsResponse
     ModelAvailabilityAccepted:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelAvailabilityAccepted
     ModelAvailabilityCommand:
@@ -778,6 +968,8 @@ components:
       $ref: ./openapi/schemas/budgets.yaml#/schemas/DepartmentEnforcementAuditEvent
     TokenBudgetRiskItem:
       $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetRiskItem
+    BudgetCapabilities:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/BudgetCapabilities
     TokenBudgetResponse:
       $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetResponse
     TokenBudgetPeopleResponse:
@@ -908,10 +1100,6 @@ components:
       $ref: ./openapi/schemas/common.yaml#/schemas/DistributionItem
     DistributionResponse:
       $ref: ./openapi/schemas/common.yaml#/schemas/DistributionResponse
-    EnterpriseEntity:
-      $ref: ./openapi/schemas/common.yaml#/schemas/EnterpriseEntity
-    EnterpriseEntityCatalog:
-      $ref: ./openapi/schemas/common.yaml#/schemas/EnterpriseEntityCatalog
     ExecutiveChanges:
       $ref: ./openapi/schemas/common.yaml#/schemas/ExecutiveChanges
     ExecutiveOverviewResponse:
@@ -945,7 +1133,7 @@ components:
     GatewayServingDeployment:
       $ref: ./openapi/schemas/common.yaml#/schemas/GatewayServingDeployment
     HTTPValidationError:
-      $ref: ./openapi/schemas/common.yaml#/schemas/HTTPValidationError
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/HTTPValidationError
     HealthStatus:
       $ref: ./openapi/schemas/common.yaml#/schemas/HealthStatus
     InvocationMetadata:
@@ -986,22 +1174,12 @@ components:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogInputRange
     PriceCatalogModel:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogModel
-    PriceCatalogModelsResponse:
-      $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogModelsResponse
     PriceCatalogOption:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogOption
-    PriceCatalogOptionsResponse:
-      $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogOptionsResponse
     PriceCatalogRuleSource:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogRuleSource
-    PriceSource:
-      $ref: ./openapi/schemas/common.yaml#/schemas/PriceSource
     PriceSyncDetail:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceSyncDetail
-    PriceSyncRequest:
-      $ref: ./openapi/schemas/common.yaml#/schemas/PriceSyncRequest
-    PriceSyncResponse:
-      $ref: ./openapi/schemas/common.yaml#/schemas/PriceSyncResponse
     PriceSyncStatus:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceSyncStatus
     Profile:
@@ -1053,7 +1231,7 @@ components:
     UsageAnomalyListResponse:
       $ref: ./openapi/schemas/common.yaml#/schemas/UsageAnomalyListResponse
     ValidationError:
-      $ref: ./openapi/schemas/common.yaml#/schemas/ValidationError
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/ValidationError
     ActiveRouteHead:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ActiveRouteHead
     ConfigurationApproval:
@@ -1128,6 +1306,44 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Input
     RouteSnapshot-Output:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Output
+    AccountEntity:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountEntity
+    AccountInformation:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountInformation
+    AvatarUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AvatarUpdate
+    EditableProfile:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/EditableProfile
+    PasswordUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PasswordUpdate
+    PermissionGroup:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PermissionGroup
+    PersonalAvatar:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalAvatar
+    PersonalBudget:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalBudget
+    PersonalModel:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModel
+    PersonalModelList:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelList
+    PersonalModelUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelUsage
+    PersonalUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsage
+    PersonalUsagePoint:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsagePoint
+    PersonalUsageTotals:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsageTotals
+    ProfileUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/ProfileUpdate
+    InvocationApiFormat:
+      $ref: ./openapi/schemas/common.yaml#/schemas/InvocationApiFormat
+    MenuAdministratorScope:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/MenuAdministratorScope
+    PermissionPolicyWrite:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/PermissionPolicyWrite
+    PriceMatch:
+      $ref: ./openapi/schemas/pricing.json#/schemas/PriceMatch
 x-event-contracts:
   usage-event:
     transport: Azure Event Hubs

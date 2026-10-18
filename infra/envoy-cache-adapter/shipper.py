@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -43,11 +44,11 @@ def _exact_counter(row: dict[str, Any], key: str, *, optional: bool = False) -> 
 def _execution_usage(row: dict[str, Any]) -> dict[str, Any]:
     from turnstile_core.domain.budget_completion import (
         exact_integer,
+        exact_usd_amount,
         normalized_identity,
+        usd_completion_charge,
         validate_completion,
     )
-    from turnstile_core.domain.gateway_targets import canonical_usage_id_v2
-    from turnstile_core.domain.ledger import LedgerAdmissionReceipt
 
     encoded = row.get("budget_execution")
     if not isinstance(encoded, str) or not 1 <= len(encoded) <= 16384:
@@ -55,14 +56,33 @@ def _execution_usage(row: dict[str, Any]) -> dict[str, Any]:
     receipts = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
     if not isinstance(receipts, list) or not 1 <= len(receipts) <= 2:
         raise ValueError("Execution requires bounded admission receipts")
-    receipts = [LedgerAdmissionReceipt.model_validate(item).model_dump(mode="json")
-                for item in receipts]
     seen: set[str] = set()
     for receipt in receipts:
+        if not isinstance(receipt, dict):
+            raise ValueError("Execution receipt must be an object")
         identity = normalized_identity(receipt["identity"])
         UUID(receipt["epoch"])
         if exact_integer(receipt["reserved_tokens"]) == 0:
             raise ValueError("Execution receipt must reserve tokens")
+        # The Observer ships only stdlib protocol modules, not the API's Pydantic models.
+        fields = {"identity", "epoch", "reserved_tokens", "budget_mode"}
+        mode = receipt.get("budget_mode", "tokens")
+        if mode == "usd":
+            fields.update({"reserved_usd", "price_snapshot"})
+            exact_usd_amount(receipt["reserved_usd"])
+            projection = receipt["price_snapshot"]
+            if (not isinstance(projection, dict)
+                    or projection.get("model_id") != identity["model_id"]):
+                raise ValueError("USD receipt requires its admitted model price")
+            usd_completion_charge(projection, {
+                "input_tokens": 0, "cached_tokens": 0, "cache_write_tokens": 0,
+                "output_tokens": 0,
+            })
+        elif mode != "tokens":
+            raise ValueError("Execution receipt budget mode is invalid")
+        if set(receipt) - fields:
+            raise ValueError("Execution receipt fields do not match the protocol")
+        receipt["identity"] = identity
         scope = identity["scope"]
         if (scope["scope_type"] in seen or any(identity[field] != row.get(field) for field in (
                 "gateway_profile_id", "native_gateway_id", "correlation_id", "model_id",
@@ -81,10 +101,15 @@ def _execution_usage(row: dict[str, Any]) -> dict[str, Any]:
     managed = _text(row, "gateway_is_managed", "").casefold()
     if managed not in {"true", "false"}:
         raise ValueError("Execution usage requires trusted Gateway management state")
-    usage_id = canonical_usage_id_v2(
-        gateway_profile_id, context_fields["apim_service_id"],
-        context_fields["native_gateway_id"], _text(row, "correlation_id", ""),
+    identity_parts = (
+        str(gateway_profile_id), context_fields["apim_service_id"].strip().casefold(),
+        context_fields["native_gateway_id"].strip().casefold(),
+        _text(row, "correlation_id", "").strip().casefold(),
     )
+    if not all(identity_parts):
+        raise ValueError("Execution usage requires complete canonical Gateway identity")
+    canonical = ".".join(base64.b64encode(value.encode()).decode() for value in identity_parts)
+    usage_id = "turnstile-v2-" + hashlib.sha256(canonical.encode()).hexdigest()
     if row.get("usage_id") != usage_id:
         raise ValueError("Execution usage identity does not match its Gateway context")
     result: dict[str, Any] = {
@@ -126,10 +151,19 @@ def _execution_usage(row: dict[str, Any]) -> dict[str, Any]:
         write = _exact_counter(
             row, "cache_write_tokens", optional=api_format != "anthropic_messages",
         )
+        advertised_total = None
+        if api_format != "anthropic_messages":
+            advertised_total = _exact_counter(row, "total_tokens")
+            if api_format == "openai_chat" and advertised_total != prompt + output:
+                # Some Chat APIs exclude reasoning from completion_tokens but include it
+                # in total_tokens. Never add it twice or infer an unexplained difference.
+                reasoning = _exact_counter(row, "reasoning_tokens", optional=True)
+                if advertised_total == prompt + output + reasoning:
+                    output += reasoning
         cached = read + write
         input_tokens = prompt if api_format == "anthropic_messages" else prompt - cached
         total = input_tokens + cached + output
-        if api_format != "anthropic_messages" and _exact_counter(row, "total_tokens") != total:
+        if advertised_total is not None and advertised_total != total:
             return result
         evidence = validate_completion({
             "source": "observer", "observed_at": row["timestamp"],

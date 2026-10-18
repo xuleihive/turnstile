@@ -318,6 +318,12 @@ class GatewayApplicationSummary(StrictModel):
     updated_at: datetime
 
 
+class GatewayApplicationBudgetProjection(StrictModel):
+    status: Literal["projected", "pending", "unavailable"]
+    tokens_per_minute: int | None = None
+    configuration_updated_at: datetime | None = None
+
+
 class GatewayApplicationDetail(GatewayApplicationSummary):
     subscriptions: list[GatewayApplicationSubscription]
     users: list[GatewayApplicationUserUsage]
@@ -325,6 +331,7 @@ class GatewayApplicationDetail(GatewayApplicationSummary):
     audit: list[GatewayApplicationAuditEvent]
     key_management_available: bool
     key_management_unavailable_reason: str | None = None
+    budget_projection: GatewayApplicationBudgetProjection | None = None
 
 
 class GatewayApplicationProvisioningDefaults(StrictModel):
@@ -371,7 +378,6 @@ class GatewayApplicationSubscriptionCreate(StrictModel):
         if any(not key.strip() or len(key) > 128 or len(tag) > 256
                for key, tag in value.items()):
             raise ValueError("Tags require nonblank keys up to 128 and values up to 256 characters")
-        application_organization(value)
         return value
 
     @model_validator(mode="after")

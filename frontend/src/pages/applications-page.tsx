@@ -5,6 +5,7 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  AppWindow,
   Camera,
   CheckCircle2,
   ChevronRight,
@@ -702,6 +703,10 @@ function ApplicationDetailView({
               {budget.pending_reservation_count ? <span>{budget.stale_reservation_count ? <><b>{budget.stale_reservation_count}</b> 条等待恢复</> : "预留均在结算窗口内"}{budget.oldest_reservation_at ? <> · 最早 <time>{formatTimestamp(budget.oldest_reservation_at, timezone)}</time></> : null}</span> : budget.pending_reservation_count === 0 && budget.ledger_snapshot_at ? <span>无待结算预留</span> : null}
               {budget.finalized_upper_bound_count ? <span><b>{budget.finalized_upper_bound_count}</b> 条无完整遥测，继续按请求上界计费</span> : null}
             </div>
+            {application.budget_projection && <div className="application-ledger-snapshot" role="status" aria-live="polite">
+              <span>{application.budget_projection.status === "projected" ? "额度配置已同步至网关账本" : application.budget_projection.status === "pending" ? "额度已保存，等待网关账本同步" : "无法确认网关账本同步状态"}</span>
+              <b>{application.budget_projection.tokens_per_minute == null ? "—" : `${formatFullCount(application.budget_projection.tokens_per_minute)} TPM`}</b>
+            </div>}
           </div> : <div className="application-card-empty"><WalletCards size={18} />未配置本月额度</div>}
         </section>
 
@@ -863,19 +868,15 @@ export function ApplicationsPage() {
   ]
 
   if (applicationId) {
+    const detailCategory = detail.data?.application_type === "agent" ? "agents" : "applications"
+    const DetailIcon = detailCategory === "agents" ? Bot : AppWindow
     return <div className="application-detail-workspace">
-    <header className="smh-page-header application-detail-breadcrumb">
-      <div>
-        <span className="smh-header-icon"><KeyRound size={17} aria-hidden="true" /></span>
-        <nav className="application-breadcrumb-trail" aria-label="订阅">
-          <a href={applicationRouteHref(null)} onClick={openApplicationRoute(null)}>订阅</a>
-          <ChevronRight size={13} aria-hidden="true" />
-          <span className="application-breadcrumb-current" title={detail.data?.display_name} aria-current="page">{detail.data?.display_name ?? applicationId}</span>
-        </nav>
-      </div>
-    </header>
-    {detail.error && !detail.data ? <div className="smh-empty application-detail-error"><KeyRound size={28} /><b>无法加载订阅详情</b><span>{String(detail.error)}</span><a className="ghost-button" href={applicationRouteHref(null)} onClick={openApplicationRoute(null)}>返回订阅</a></div>
-      : <main className="application-detail"><ApplicationDetailView application={detail.data} loading={detail.isLoading} refreshing={detail.isFetching} refreshError={detail.isRefetchError} onRefresh={() => { void detail.refetch() }} modelNames={modelNames} canEditAvatar={detail.data?.avatar_url !== undefined} canManage={user?.role === "owner"} governanceWriteAvailable={detail.data?.governance_write_available === true} models={registry.data?.models ?? []} registry={registry.data} /></main>}
+    <header className="smh-page-header application-detail-breadcrumb"><div>
+      <span className="smh-header-icon"><DetailIcon size={17} aria-hidden="true" /></span>
+      <nav className="application-breadcrumb-trail" aria-label="订阅管理"><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>订阅管理</a><ChevronRight size={13} /><a href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>{detailCategory === "agents" ? "智能体" : "应用"}</a><ChevronRight size={13} /><span className="application-breadcrumb-current" aria-current="page" title={detail.data?.display_name}>{detail.data?.display_name ?? applicationId}</span></nav>
+    </div></header>
+    {detail.error && !detail.data ? <div className="smh-empty application-detail-error"><DetailIcon size={28} /><b>{detailCategory === "agents" ? "无法加载智能体详情" : "无法加载应用详情"}</b><span>{String(detail.error)}</span><a className="ghost-button" href={applicationRouteHref(null, detailCategory)} onClick={openApplicationRoute(null, detailCategory)}>返回{detailCategory === "agents" ? "智能体" : "应用"}</a></div>
+      : <main className="application-detail"><ApplicationDetailView application={detail.data} loading={detail.isLoading} refreshing={detail.isFetching} refreshError={detail.isRefetchError} onRefresh={() => void detail.refetch()} registry={registry.data} modelNames={modelNames} canEditAvatar={detail.data?.avatar_url !== undefined} canManage={user?.role === "owner"} governanceWriteAvailable={detail.data?.governance_write_available === true} models={registry.data?.models ?? []} /></main>}
   </div>
   }
 

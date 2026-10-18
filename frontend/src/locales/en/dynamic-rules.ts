@@ -83,9 +83,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/有\s*(\d+)\s*个模型没有维护价格，相关 token 未计入费用统计。/g, (_match, value) => `${value} ${plural(value, "model")} ${Number(value) === 1 ? "has" : "have"} no maintained pricing; those tokens are excluded from cost totals.`],
   [/本次输出使用了\s*([\d,]+)\s*Token，已达到请求上限；模型可能在生成可见回答前耗尽了输出预算。后续调用已提高上限。/g, (_match, value) => `This response used ${value} output tokens and reached the request limit; the model may have exhausted its budget before producing visible text. The limit has been increased for subsequent invocations.`],
   [/(\d+)\s*\/\s*(\d+)\s*次调用失败，错误率超过\s*(\d+(?:\.\d+)?)%。/g, (_match, failed, total, threshold) => `${failed} of ${total} calls failed; error rate exceeded ${threshold}%.`],
-  // Anomaly rule names and descriptions are owner-editable rows in PostgreSQL with the threshold
-  // baked into the text, so they are matched by shape instead of by the seeded value. Keying them
-  // on an exact seed string silently broke as soon as an owner changed a threshold.
   [/慢请求超过\s*(\d+(?:\.\d+)?)\s*秒/g, (_match, value) => `Requests over ${value} ${Number(value) === 1 ? "second" : "seconds"}`],
   [/错误率超过\s*(\d+(?:\.\d+)?)%/g, (_match, value) => `Error rate above ${value}%`],
   [/高成本请求\s*P(\d+)/g, (_match, value) => `High-cost request P${value}`],
@@ -100,8 +97,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/已为\s*([\d,]+)\s*人更新(预算和模型访问|预算|模型访问)/g, (_match, value, changes) => `Updated ${changes === "预算和模型访问" ? "budgets and model access" : changes === "预算" ? "budgets" : "model access"} for ${value} ${plural(value, "person", "people")}`],
   [/选择全部\s*([\d,]+)\s*个结果/g, (_match, value) => `Select all ${value} results`],
   [/显示\s*([\d,]+)–([\d,]+)，共\s*([\d,]+)\s*人/g, (_match, start, end, total) => `Showing ${start}–${end} of ${total} people`],
-  // The signal pager counts 项, not 人. Without its own rule the generic "显示" phrase
-  // matched first and left the unit behind: "Showing 1–10, Total: 100 项".
   [/显示\s*([\d,]+)–([\d,]+)，共\s*([\d,]+)\s*项/g, (_match, start, end, total) => `Showing ${start}–${end} of ${total}`],
   [/本次合计\s*([\d,]+)\s*Token/g, (_match, value) => `${value} Token total`],
   [/允许调用\s*([\d,]+)\s*个模型/g, (_match, value) => `${value} allowed ${plural(value, "model")}`],
@@ -131,16 +126,10 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d+)\s*个 Agent/g, (_match, value) => `${value} ${plural(value, "Agent")}`],
   [/(\d+)\s*个连接/g, (_match, value) => `${value} ${plural(value, "connection")}`],
   [/(\d+)\s*个模型/g, (_match, value) => `${value} ${plural(value, "model")}`],
-  /* These two run before the generic `N 个图表` rule below on purpose. That rule matches
-     the middle of both sentences, and once it has replaced its fragment the sentence can
-     never match as a whole again — which is how the pin dialog came to read
-     "将作为第 5 charts加入…，Report name保持不变". Order is the fix, not a longer regex. */
   [/将作为第\s*(\d+)\s*个图表加入「([^」]*)」，报表名称保持不变。/g,
     (_match, index, title) => `Will be added as chart ${index} of \u201C${title}\u201D. The report name is unchanged.`],
   [/「([^」]*)」已包含此图表，保存会用最新数据刷新它。/g,
     (_match, title) => `\u201C${title}\u201D already has this chart. Saving refreshes it with the latest data.`],
-  /* Also specific-before-generic: this one was already unreachable, because the rule that
-     used to precede it consumed `5 个图表` out of `第 5 个图表`. */
   [/第\s*(\d+)\s*个图表/g, (_match, value) => `Chart ${value}`],
   [/(\d+)\s*个图表/g, (_match, value) => `${value} ${plural(value, "chart")}`],
   [/(\d+)\s*个部门/g, (_match, value) => `${value} ${plural(value, "department")}`],
@@ -166,4 +155,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
   [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `${value}% vs previous period`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `${value}% usage share`],
+  [/^全部 (\d+) 个模型 · 已更新 (\d+) · 无变化 (\d+) · 手动跳过 (\d+)$/g,
+    (_match, total, updated, unchanged, manual) => `${total} models · ${updated} updated · ${unchanged} unchanged · ${manual} manual skipped`],
+  [/^同步全部 (\d+) 个已保存模型的定价$/g, (_match, count) => `Sync pricing for all ${count} saved models`],
 ]

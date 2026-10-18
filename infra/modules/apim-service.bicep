@@ -13,13 +13,15 @@ param publisherName string
 
 @allowed([
   'Developer'
-  'BasicV2'
   'StandardV2'
 ])
 param skuName string
 
 @minValue(1)
 param capacity int
+
+@description('Dedicated private-ledger subnet. Developer injects; StandardV2 integrates outbound.')
+param ledgerSubnetResourceId string
 
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
   name: name
@@ -34,6 +36,8 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
   properties: {
     publisherEmail: publisherEmail
     publisherName: publisherName
+    virtualNetworkType: 'External'
+    virtualNetworkConfiguration: { subnetResourceId: ledgerSubnetResourceId }
   }
 }
 

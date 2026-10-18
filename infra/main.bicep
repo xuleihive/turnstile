@@ -45,7 +45,6 @@ param apimPublisherName string = 'Turnstile'
 
 @allowed([
   'Developer'
-  'BasicV2'
   'StandardV2'
 ])
 param apimSkuName string = 'StandardV2'
@@ -173,6 +172,12 @@ param bootstrapOwnerEmail string
 @secure()
 param bootstrapOwnerPasswordHash string
 
+@description('Explicit opt-in for a new, empty business database only. Existing installations use the directory upgrade CLI.')
+param directoryEmptyInitializationAllowed bool = false
+
+@description('Matching core runtime SHA-256; the deploy runner supplies it for explicit empty-directory installations.')
+param directoryExpectedCoreDigest string = ''
+
 @description('Provision the isolated APIM publication Function with publishing disabled until explicitly enabled.')
 param provisionControlPlane bool = false
 
@@ -228,6 +233,17 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' =
 
 var effectiveApimResourceGroupName = provisionApimService ? platformResourceGroup.name : existingApimResourceGroupName
 
+module platformNetwork 'modules/platform-network.bicep' = if (provisionApimService) {
+  name: 'turnstile-platform-network'
+  scope: platformResourceGroup
+  params: {
+    location: location
+    virtualNetworkName: 'vnet-${resourcePrefix}-${suffix}'
+    apimSkuName: apimSkuName
+    apimNetworkSecurityGroupName: 'nsg-${resourcePrefix}-apim-${suffix}'
+  }
+}
+
 module apim 'modules/apim-service.bicep' = if (provisionApimService) {
   name: 'turnstile-apim'
   scope: platformResourceGroup
@@ -238,6 +254,7 @@ module apim 'modules/apim-service.bicep' = if (provisionApimService) {
     publisherName: apimPublisherName
     skuName: apimSkuName
     capacity: apimCapacity
+    ledgerSubnetResourceId: platformNetwork!.outputs.apimSubnetId
   }
 }
 
@@ -280,6 +297,8 @@ module dataPlane 'modules/data-plane.bicep' = {
     entraAllowedEmailDomains: entraAllowedEmailDomains
     bootstrapOwnerEmail: bootstrapOwnerEmail
     bootstrapOwnerPasswordHash: bootstrapOwnerPasswordHash
+    directoryEmptyInitializationAllowed: directoryEmptyInitializationAllowed
+    directoryExpectedCoreDigest: directoryExpectedCoreDigest
   }
 }
 
@@ -365,6 +384,8 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
     ledgerStorageName: dataPlane.outputs.ledgerStorageName
     ledgerTableName: ledgerTableName
     ledgerTableEndpoint: dataPlane.outputs.ledgerTableEndpoint
+    directorySource: directoryEmptyInitializationAllowed ? 'database' : 'legacy'
+    directoryExpectedCoreDigest: directoryExpectedCoreDigest
   }
 }
 

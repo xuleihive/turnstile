@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from ..domain.model_availability import ModelAvailabilityConflict
 from ..domain.models import ModelIdentity
+from ..domain.pricing import PriceConfigurationChanged
 from ..domain.runtime_models import apply_databricks_adoption
 
 
@@ -78,10 +79,13 @@ class PostgreSqlRegistryRepositoryMixin:
                                         AS assignment_required,
                                     metadata.publication_id,
                                     binding.value->'model'->'image_profile' AS image_profile,
-                                    -- A model with no price row was priced by hand, which is
-                                    -- what 'manual' means, so the COALESCE is the whole
-                                    -- backfill.
-                                    COALESCE(price.price_source, 'manual') AS price_source,
+                                    -- Explicit manual rows stay manual; an unconfigured
+                                    -- model follows the public synchronization default.
+                                    COALESCE(price.price_source, 'models_dev') AS price_source,
+                                    (price.model_id IS NOT NULL) AS price_source_configured,
+                                    price.updated_at AS price_config_updated_at,
+                                    price.match_metadata,
+                                    price.source_snapshot,
                                     price.price_reference,
                                     price.list_input_cost_per_million,
                                     price.list_output_cost_per_million,
@@ -143,6 +147,199 @@ class PostgreSqlRegistryRepositoryMixin:
             "runtimes": cast(Sequence[dict[str, Any]], runtimes),
             "models": cast(Sequence[dict[str, Any]], models),
         }
+
+    # A sync reads every model, talks to a price feed over the network, then writes. Between the
+    # read and the write someone can open the model and change how it is priced -- switch it back
+    # to manual and type a rate, repoint it, change the discount. The plan carries what it was
+    # made against and every write is guarded by it, so a result that is about to land on a
+    # configuration that no longer exists lands nowhere instead.
+    _PRICE_CONFIG_STILL_MATCHES = """
+        (%(expected_updated_at)s::timestamptz IS NULL
+            OR model.updated_at = %(expected_updated_at)s::timestamptz)
+        AND NOT EXISTS (
+            SELECT 1 FROM gateway_publication removing
+            WHERE removing.publication_kind = 'model_remove'
+              AND removing.status IN (
+                'queued','validating','provisioning','building_revision',
+                'verifying','promoting','rolling_back'
+              )
+              AND removing.desired_spec #>> '{removed_models,0,model_id}' = model.id::text
+        )
+        AND EXISTS (
+            SELECT 1 FROM model_runtime runtime
+            LEFT JOIN model_runtime_price runtime_price ON runtime_price.runtime_id = runtime.id
+            LEFT JOIN managed_model_price guard ON guard.model_id = model.id
+            WHERE runtime.id = model.runtime_id
+              AND (
+                (%(expected_configured)s AND guard.model_id IS NOT NULL
+                  AND guard.price_source = %(expected_source)s
+                  AND guard.price_reference IS NOT DISTINCT FROM %(expected_reference)s
+                  AND (%(expected_price_updated_at)s::timestamptz IS NULL
+                    OR guard.updated_at = %(expected_price_updated_at)s::timestamptz))
+                OR (NOT %(expected_configured)s AND guard.model_id IS NULL)
+              )
+              AND COALESCE(guard.price_discount_percent, runtime_price.price_discount_percent)
+                  IS NOT DISTINCT FROM %(expected_discount_percent)s::numeric
+              AND (%(expected_context_price_tiers)s::jsonb IS NULL
+                OR COALESCE(guard.context_price_tiers, '[]'::jsonb)
+                    = %(expected_context_price_tiers)s::jsonb)
+              AND (%(expected_list_prices)s::jsonb IS NULL OR jsonb_build_object(
+                'list_input_cost_per_million', guard.list_input_cost_per_million,
+                'list_output_cost_per_million', guard.list_output_cost_per_million,
+                'list_cached_cost_per_million', guard.list_cached_cost_per_million,
+                'list_cache_write_cost_per_million', guard.list_cache_write_cost_per_million
+              ) = %(expected_list_prices)s::jsonb)
+        )
+    """
+
+    def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
+        written = 0
+        with self._connection() as connection, connection.transaction():
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
+            )
+            for update in updates:
+                parameters = dict(update)
+                parameters.setdefault("expected_configured", True)
+                parameters.setdefault("expected_updated_at", None)
+                parameters.setdefault("expected_price_updated_at", None)
+                parameters.setdefault("price_source", parameters.get("expected_source"))
+                parameters.setdefault("price_reference", parameters.get("expected_reference"))
+                for key in ("expected_context_price_tiers", "expected_list_prices",
+                            "context_price_tiers", "pending_context_price_tiers"):
+                    parameters[key] = Jsonb(update[key]) if update.get(key) is not None else None
+                parameters["match_metadata"] = (
+                    Jsonb(update["match_metadata"]) if update.get("match_metadata") else None
+                )
+                parameters["source_snapshot"] = (
+                    Jsonb(update["source_snapshot"]) if update.get("source_snapshot") else None
+                )
+                parameters["pending_list_price"] = (
+                    Jsonb(update["pending_list_price"])
+                    if update.get("pending_list_price") is not None
+                    else None
+                )
+                superseded = False
+                if update.get("writes"):
+                    # The charged rates live on managed_model and always have: they are what
+                    # the billing path reads, and this job is only one of the ways they get
+                    # set. Where they came from is the part that is new.
+                    row = connection.execute(
+                        f"""UPDATE managed_model model SET
+                               input_cost_per_million = %(input_cost_per_million)s,
+                               output_cost_per_million = %(output_cost_per_million)s,
+                               cached_cost_per_million = %(cached_cost_per_million)s,
+                               cache_write_cost_per_million =
+                                   %(cache_write_cost_per_million)s,
+                               updated_at = now()
+                           WHERE model.id = %(model_id)s
+                             AND {self._PRICE_CONFIG_STILL_MATCHES}
+                           RETURNING model.id""",
+                        parameters,
+                    ).fetchone()
+                    if row is None:
+                        superseded = True
+                    else:
+                        written += 1
+
+                if superseded:
+                    # Nothing about the rates changed, so nothing about the baseline should
+                    # either. Only the record of what happened, and only if the row is still
+                    # the one that was planned for.
+                    connection.execute(
+                        """UPDATE managed_model_price SET
+                               price_sync_status = 'superseded',
+                               price_sync_message =
+                                   '同步期间该模型的计价配置被改动，本次结果已作废，未写入',
+                               price_synced_at = now(),
+                               updated_at = now()
+                           WHERE model_id = %(model_id)s
+                             AND price_source = %(expected_source)s
+                             AND price_reference IS NOT DISTINCT FROM %(expected_reference)s
+                             AND (%(expected_price_updated_at)s::timestamptz IS NULL
+                               OR updated_at = %(expected_price_updated_at)s::timestamptz)""",
+                        parameters,
+                    )
+                    continue
+
+                if update.get("writes"):
+                    connection.execute(
+                        """INSERT INTO managed_model_price (
+                               model_id, price_source, price_reference
+                           ) VALUES (%(model_id)s, %(price_source)s, %(price_reference)s)
+                           ON CONFLICT (model_id) DO NOTHING""", parameters,
+                    )
+
+                # The outcome is recorded either way. On a skip the rates stay exactly as they
+                # are and only the record changes, so the registry can say why a model was
+                # passed over instead of going quiet. Successful first-time matches insert
+                # their price row above; unmatched unconfigured models remain unconfigured.
+                #
+                # list_* moves only when the sync accepted the price. A figure held back for
+                # review goes to pending_list_price, because a baseline that follows the price
+                # it is meant to gate agrees with it on the second run.
+                connection.execute(
+                    f"""UPDATE managed_model_price price SET
+                           price_source = CASE WHEN %(writes)s
+                               THEN %(price_source)s ELSE price.price_source END,
+                           price_reference = CASE WHEN %(writes)s
+                               THEN %(price_reference)s ELSE price.price_reference END,
+                           match_metadata = CASE WHEN %(writes)s
+                               THEN %(match_metadata)s::jsonb ELSE price.match_metadata END,
+                           source_snapshot = CASE WHEN %(writes)s
+                               THEN %(source_snapshot)s::jsonb ELSE price.source_snapshot END,
+                           context_price_tiers = CASE
+                               WHEN %(writes)s AND %(context_price_tiers)s::jsonb IS NOT NULL
+                                   THEN %(context_price_tiers)s::jsonb
+                               ELSE price.context_price_tiers END,
+                           pending_context_price_tiers = CASE
+                               WHEN %(writes)s THEN NULL
+                               WHEN %(pending_context_price_tiers)s::jsonb IS NOT NULL
+                                   THEN %(pending_context_price_tiers)s::jsonb
+                               ELSE price.pending_context_price_tiers END,
+                           list_input_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_input_cost_per_million)s,
+                                             list_input_cost_per_million)
+                               ELSE list_input_cost_per_million END,
+                           list_output_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_output_cost_per_million)s,
+                                             list_output_cost_per_million)
+                               ELSE list_output_cost_per_million END,
+                           list_cached_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_cached_cost_per_million)s,
+                                             list_cached_cost_per_million)
+                               ELSE list_cached_cost_per_million END,
+                           list_cache_write_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_cache_write_cost_per_million)s,
+                                             list_cache_write_cost_per_million)
+                               ELSE list_cache_write_cost_per_million END,
+                           -- Accepting the price clears the proposal; proposing one replaces
+                           -- it; a run that could not read the source leaves the standing
+                           -- proposal alone rather than forgetting what is waiting.
+                           --
+                           -- The cast is load-bearing. This parameter appears only inside
+                           -- `IS NOT NULL` and a CASE branch, so when it is NULL -- which is
+                           -- every ordinary sync -- PostgreSQL has nothing to infer a type
+                           -- from and rejects the statement with AmbiguousParameter.
+                           pending_list_price = CASE
+                               WHEN %(writes)s THEN NULL
+                               WHEN %(pending_list_price)s::jsonb IS NOT NULL
+                                   THEN %(pending_list_price)s::jsonb
+                               ELSE pending_list_price END,
+                           price_sync_status = %(status)s,
+                           price_sync_message = %(message)s,
+                           price_synced_at = now(),
+                           updated_at = now()
+                       WHERE model_id = %(model_id)s
+                         AND (%(writes)s OR EXISTS (
+                           SELECT 1 FROM managed_model model
+                           WHERE model.id = price.model_id
+                             AND {self._PRICE_CONFIG_STILL_MATCHES}
+                         ))""",
+                    parameters,
+                )
+        self._invalidate_identities()
+        return written
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
         parameters = dict(values)
@@ -255,17 +452,7 @@ class PostgreSqlRegistryRepositoryMixin:
                         metadata["publication_id"],
                     ),
                 )
-                price = {
-                    "price_source": values.get("price_source") or "manual",
-                    "price_reference": values.get("price_reference"),
-                    "price_discount_percent": values.get("price_discount_percent"),
-                    "context_price_tiers": values.get("context_price_tiers") or [],
-                }
-                if price != {
-                    "price_source": "manual", "price_reference": None,
-                    "price_discount_percent": None, "context_price_tiers": [],
-                }:
-                    price = self._write_price(connection, kind, row["id"], values)
+                price = self._write_price(connection, "model", row["id"], values)
                 row = {**row, **metadata, **price}
             else:
                 raise ValueError(f"Unsupported registry kind: {kind}")
@@ -563,10 +750,11 @@ class PostgreSqlRegistryRepositoryMixin:
         price_fields = {
             "runtime": {"price_discount_percent"},
             "model": {
-                "price_source", "price_reference", "price_discount_percent", "context_price_tiers",
+                "price_source", "price_reference", "price_discount_percent",
                 "list_input_cost_per_million", "list_output_cost_per_million",
                 "list_cached_cost_per_million", "list_cache_write_cost_per_million",
-                "pending_list_price", "pending_context_price_tiers",
+                "match_metadata", "source_snapshot",
+                "context_price_tiers", "pending_list_price", "pending_context_price_tiers",
                 "price_synced_at", "price_sync_status", "price_sync_message",
             },
         }.get(kind, set())
@@ -582,6 +770,13 @@ class PostgreSqlRegistryRepositoryMixin:
                 connection.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
                 )
+            if kind == "model" and values.get("pricing_expected_updated_at") is not None:
+                guard = connection.execute(
+                    "SELECT updated_at FROM managed_model WHERE id = %s FOR UPDATE",
+                    (item_id,),
+                ).fetchone()
+                if guard is None or guard["updated_at"] != values["pricing_expected_updated_at"]:
+                    raise PriceConfigurationChanged("模型在定价期间已修改，请刷新后重试")
             if kind == "model":
                 current = connection.execute(
                     "SELECT enabled FROM managed_model WHERE id = %s FOR UPDATE", (item_id,),
@@ -701,165 +896,6 @@ class PostgreSqlRegistryRepositoryMixin:
         self._invalidate_identities()
         return cast(dict[str, Any] | None, row)
 
-    _PRICE_CONFIG_STILL_MATCHES = """
-        EXISTS (
-            SELECT 1 FROM managed_model_price guard
-            LEFT JOIN model_runtime runtime ON runtime.id = model.runtime_id
-            LEFT JOIN model_runtime_price runtime_price
-                ON runtime_price.runtime_id = runtime.id
-            WHERE guard.model_id = model.id
-              AND guard.price_source = %(expected_source)s
-              AND guard.price_reference IS NOT DISTINCT FROM %(expected_reference)s
-              AND guard.context_price_tiers = %(expected_context_price_tiers)s::jsonb
-                            AND jsonb_build_object(
-                    'list_input_cost_per_million',
-                    guard.list_input_cost_per_million,
-                    'list_output_cost_per_million',
-                    guard.list_output_cost_per_million,
-                    'list_cached_cost_per_million',
-                    guard.list_cached_cost_per_million,
-                    'list_cache_write_cost_per_million',
-                    guard.list_cache_write_cost_per_million
-                                    ) = %(expected_list_prices)s::jsonb
-              AND COALESCE(
-                    guard.price_discount_percent, runtime_price.price_discount_percent
-                  ) IS NOT DISTINCT FROM %(expected_discount_percent)s
-        )
-    """
-
-    def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
-        written = 0
-        with self._connection() as connection, connection.transaction():
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
-            )
-            for update in updates:
-                parameters = dict(update)
-                parameters["pending_list_price"] = (
-                    Jsonb(update["pending_list_price"])
-                    if update.get("pending_list_price") is not None
-                    else None
-                )
-                parameters["expected_context_price_tiers"] = Jsonb(
-                    update.get("expected_context_price_tiers") or []
-                )
-                parameters["expected_list_prices"] = Jsonb(update.get("expected_list_prices") or {
-                    column: None for column in (
-                        "list_input_cost_per_million", "list_output_cost_per_million",
-                        "list_cached_cost_per_million", "list_cache_write_cost_per_million",
-                    )
-                })
-                parameters["context_price_tiers"] = (
-                    Jsonb(update["context_price_tiers"])
-                    if update.get("context_price_tiers") is not None else None
-                )
-                parameters["pending_context_price_tiers"] = (
-                    Jsonb(update["pending_context_price_tiers"])
-                    if update.get("pending_context_price_tiers") is not None else None
-                )
-                superseded = False
-                if update.get("writes"):
-                    # The charged rates live on managed_model and always have: they are what
-                    # the billing path reads, and this job is only one of the ways they get
-                    # set. Where they came from is the part that is new.
-                    row = connection.execute(
-                        f"""UPDATE managed_model model SET
-                               input_cost_per_million = %(input_cost_per_million)s,
-                               output_cost_per_million = %(output_cost_per_million)s,
-                               cached_cost_per_million = %(cached_cost_per_million)s,
-                               cache_write_cost_per_million =
-                                   %(cache_write_cost_per_million)s,
-                               updated_at = now()
-                           WHERE model.id = %(model_id)s
-                             AND {self._PRICE_CONFIG_STILL_MATCHES}
-                           RETURNING model.id""",
-                        parameters,
-                    ).fetchone()
-                    if row is None:
-                        superseded = True
-                    else:
-                        written += 1
-                else:
-                    current = connection.execute(
-                        f"""SELECT model.id FROM managed_model model
-                            WHERE model.id = %(model_id)s
-                              AND {self._PRICE_CONFIG_STILL_MATCHES}""",
-                        parameters,
-                    ).fetchone()
-                    superseded = current is None
-
-                if superseded:
-                    # Nothing about the rates changed, so nothing about the baseline should
-                    # either. Only the record of what happened, and only if the row is still
-                    # the one that was planned for.
-                    connection.execute(
-                        """UPDATE managed_model_price SET
-                               price_sync_status = 'superseded',
-                               price_sync_message =
-                                   '同步期间该模型的计价配置被改动，本次结果已作废，未写入',
-                               price_synced_at = now(),
-                               updated_at = now()
-                           WHERE model_id = %(model_id)s""",
-                        parameters,
-                    )
-                    continue
-
-                # The outcome is recorded either way. On a skip the rates stay exactly as they
-                # are and only the record changes, so the registry can say why a model was
-                # passed over instead of going quiet. An UPDATE is enough: a model without a
-                # price row is manual, and the planner never selects one.
-                #
-                # list_* moves only when the sync accepted the price. A figure held back for
-                # review goes to pending_list_price, because a baseline that follows the price
-                # it is meant to gate agrees with it on the second run.
-                connection.execute(
-                    """UPDATE managed_model_price SET
-                           context_price_tiers = CASE
-                               WHEN %(writes)s AND %(context_price_tiers)s::jsonb IS NOT NULL
-                               THEN %(context_price_tiers)s::jsonb ELSE context_price_tiers END,
-                           pending_context_price_tiers = CASE
-                               WHEN %(writes)s THEN NULL
-                               WHEN %(pending_context_price_tiers)s::jsonb IS NOT NULL
-                               THEN %(pending_context_price_tiers)s::jsonb
-                               ELSE pending_context_price_tiers END,
-                           list_input_cost_per_million = CASE WHEN %(writes)s
-                               THEN COALESCE(%(list_input_cost_per_million)s,
-                                             list_input_cost_per_million)
-                               ELSE list_input_cost_per_million END,
-                           list_output_cost_per_million = CASE WHEN %(writes)s
-                               THEN COALESCE(%(list_output_cost_per_million)s,
-                                             list_output_cost_per_million)
-                               ELSE list_output_cost_per_million END,
-                           list_cached_cost_per_million = CASE WHEN %(writes)s
-                               THEN COALESCE(%(list_cached_cost_per_million)s,
-                                             list_cached_cost_per_million)
-                               ELSE list_cached_cost_per_million END,
-                           list_cache_write_cost_per_million = CASE WHEN %(writes)s
-                               THEN COALESCE(%(list_cache_write_cost_per_million)s,
-                                             list_cache_write_cost_per_million)
-                               ELSE list_cache_write_cost_per_million END,
-                           -- Accepting the price clears the proposal; proposing one replaces
-                           -- it; a run that could not read the source leaves the standing
-                           -- proposal alone rather than forgetting what is waiting.
-                           --
-                           -- The cast is load-bearing. This parameter appears only inside
-                           -- `IS NOT NULL` and a CASE branch, so when it is NULL -- which is
-                           -- every ordinary sync -- PostgreSQL has nothing to infer a type
-                           -- from and rejects the statement with AmbiguousParameter.
-                           pending_list_price = CASE
-                               WHEN %(writes)s THEN NULL
-                               WHEN %(pending_list_price)s::jsonb IS NOT NULL
-                                   THEN %(pending_list_price)s::jsonb
-                               ELSE pending_list_price END,
-                           price_sync_status = %(status)s,
-                           price_sync_message = %(message)s,
-                           price_synced_at = now(),
-                           updated_at = now()
-                       WHERE model_id = %(model_id)s""",
-                    parameters,
-                )
-        return written
-
     @staticmethod
     def _write_price(
         connection: Any,
@@ -885,7 +921,7 @@ class PostgreSqlRegistryRepositoryMixin:
         ).fetchone()
         merged = {
             "price_source": values.get(
-                "price_source", current["price_source"] if current else "manual"
+                "price_source", current["price_source"] if current else "models_dev"
             ),
             "price_reference": values.get(
                 "price_reference", current["price_reference"] if current else None
@@ -903,22 +939,26 @@ class PostgreSqlRegistryRepositoryMixin:
         if merged["price_source"] == "manual":
             merged["price_reference"] = None
             merged["context_price_tiers"] = []
-        identity_changed = current is None or any(
-            merged[field] != current.get(field)
-            for field in ("price_source", "price_reference")
+        baseline_fields = (
+            "list_input_cost_per_million", "list_output_cost_per_million",
+            "list_cached_cost_per_million", "list_cache_write_cost_per_million",
+            "match_metadata", "source_snapshot",
+            "context_price_tiers", "pending_list_price", "pending_context_price_tiers",
+            "price_synced_at", "price_sync_status", "price_sync_message",
+        )
+        reset = current is None or any(
+            merged[field] != current.get(field) for field in ("price_source", "price_reference")
         )
         tiers_changed = merged["context_price_tiers"] != (
             (current.get("context_price_tiers") or []) if current else []
         )
-        for field in (
-            "list_input_cost_per_million", "list_output_cost_per_million",
-            "list_cached_cost_per_million", "list_cache_write_cost_per_million",
-            "pending_list_price", "pending_context_price_tiers",
-            "price_synced_at", "price_sync_status", "price_sync_message",
-        ):
-            previous = current.get(field) if current and not identity_changed else None
-            merged[field] = values.get(field, previous)
-        if identity_changed or tiers_changed:
+        for field in baseline_fields:
+            if field == "context_price_tiers":
+                continue
+            merged[field] = values.get(
+                field, None if reset else current.get(field) if current else None,
+            )
+        if reset or tiers_changed or values.get("source_snapshot") is not None:
             merged["pending_list_price"] = None
             merged["pending_context_price_tiers"] = None
         if tiers_changed:
@@ -926,48 +966,34 @@ class PostgreSqlRegistryRepositoryMixin:
             merged["price_sync_message"] = None
             merged["price_synced_at"] = values.get("price_synced_at", datetime.now(UTC))
         if merged["price_source"] == "manual":
-            for field in (
-                "list_input_cost_per_million", "list_output_cost_per_million",
-                "list_cached_cost_per_million", "list_cache_write_cost_per_million",
-                "pending_list_price", "pending_context_price_tiers",
-                "price_synced_at", "price_sync_status", "price_sync_message",
-            ):
-                merged[field] = None
-        parameters = {**merged, "model_id": item_id}
-        parameters["context_price_tiers"] = Jsonb(merged["context_price_tiers"])
-        for field in ("pending_list_price", "pending_context_price_tiers"):
-            parameters[field] = Jsonb(merged[field]) if merged[field] is not None else None
+            for field in baseline_fields:
+                if field != "context_price_tiers":
+                    merged[field] = None
+        json_fields = {
+            "match_metadata", "source_snapshot", "context_price_tiers",
+            "pending_list_price", "pending_context_price_tiers",
+        }
+        baseline = {
+            field: Jsonb(merged[field]) if field in json_fields
+            and merged[field] is not None else merged[field] for field in baseline_fields
+        }
         connection.execute(
-            """INSERT INTO managed_model_price (
+            f"""INSERT INTO managed_model_price (
                    model_id, price_source, price_reference, price_discount_percent,
-                   context_price_tiers, list_input_cost_per_million,
-                   list_output_cost_per_million, list_cached_cost_per_million,
-                   list_cache_write_cost_per_million, pending_list_price,
-                   pending_context_price_tiers, price_synced_at,
-                   price_sync_status, price_sync_message
-               ) VALUES (
-                   %(model_id)s, %(price_source)s, %(price_reference)s, %(price_discount_percent)s,
-                   %(context_price_tiers)s, %(list_input_cost_per_million)s,
-                   %(list_output_cost_per_million)s, %(list_cached_cost_per_million)s,
-                   %(list_cache_write_cost_per_million)s, %(pending_list_price)s,
-                   %(pending_context_price_tiers)s, %(price_synced_at)s,
-                   %(price_sync_status)s, %(price_sync_message)s
-               )
+                   {", ".join(baseline_fields)}
+               ) VALUES (%s, %s, %s, %s, {", ".join(["%s"] * len(baseline_fields))})
                ON CONFLICT (model_id) DO UPDATE SET
                  price_source = EXCLUDED.price_source,
                  price_reference = EXCLUDED.price_reference,
                  price_discount_percent = EXCLUDED.price_discount_percent,
-                 context_price_tiers = EXCLUDED.context_price_tiers,
-                 list_input_cost_per_million = EXCLUDED.list_input_cost_per_million,
-                 list_output_cost_per_million = EXCLUDED.list_output_cost_per_million,
-                 list_cached_cost_per_million = EXCLUDED.list_cached_cost_per_million,
-                 list_cache_write_cost_per_million = EXCLUDED.list_cache_write_cost_per_million,
-                 pending_list_price = EXCLUDED.pending_list_price,
-                 pending_context_price_tiers = EXCLUDED.pending_context_price_tiers,
-                 price_sync_status = EXCLUDED.price_sync_status,
-                 price_sync_message = EXCLUDED.price_sync_message,
-                 price_synced_at = EXCLUDED.price_synced_at,
+                 {", ".join(f"{field} = EXCLUDED.{field}" for field in baseline_fields)},
                  updated_at = now()""",
-            parameters,
+            (
+                item_id,
+                merged["price_source"],
+                merged["price_reference"],
+                merged["price_discount_percent"],
+                *baseline.values(),
+            ),
         )
         return merged

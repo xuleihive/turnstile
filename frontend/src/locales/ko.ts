@@ -1,18 +1,24 @@
+import { CLIENT_USER_PHRASES } from "./ko/phrases-client-user"
 import { KOREAN_CORE_PHRASES } from "./ko/phrases-core"
+import { USER_SETTINGS_PHRASES } from "./ko/phrases-user-settings"
 import { KOREAN_COPILOT_PHRASES } from "./ko/phrases-copilot"
 import { KOREAN_AUTH_PHRASES } from "./ko/phrases-auth"
 import { APPLICATION_CREATE_PHRASES } from "./ko/phrases-application-create"
 import { POOL_AFFINITY_PHRASES } from "./ko/phrases-pool-affinity"
 import { IMAGE_GENERATION_PHRASES } from "./ko/phrases-image-generation"
+import { ORGANIZATION_PHRASES } from "./ko/phrases-organization"
 import { DYNAMIC_RULES } from "./ko/dynamic-rules"
 
 const KOREAN_PHRASES: Record<string, string> = {
   ...KOREAN_CORE_PHRASES,
+  ...USER_SETTINGS_PHRASES,
   ...KOREAN_COPILOT_PHRASES,
   ...KOREAN_AUTH_PHRASES,
   ...APPLICATION_CREATE_PHRASES,
   ...POOL_AFFINITY_PHRASES,
   ...IMAGE_GENERATION_PHRASES,
+  ...ORGANIZATION_PHRASES,
+  ...CLIENT_USER_PHRASES,
 }
 
 const orderedPhrases = Object.entries(KOREAN_PHRASES).sort(([left], [right]) => right.length - left.length)

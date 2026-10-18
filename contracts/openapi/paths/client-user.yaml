@@ -1,0 +1,300 @@
+paths:
+  /api/v1/client-downloads/user-options:
+    get:
+      tags:
+      - Client User
+      summary: User Options
+      operationId: user_options_api_v1_client_downloads_user_options_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response User Options Api V1 Client Downloads User Options
+                  Get
+      security:
+      - sessionCookie: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-downloads/magpie-user:
+    post:
+      tags:
+      - Client User
+      summary: Download
+      operationId: download_api_v1_client_downloads_magpie_user_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/UserDownload'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - sessionCookie: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-auth/device-authorizations:
+    post:
+      tags:
+      - Client User
+      summary: Device
+      operationId: device_api_v1_client_auth_device_authorizations_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/DeviceRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-auth/verification:
+    get:
+      tags:
+      - Client User
+      summary: Verification
+      operationId: verification_api_v1_client_auth_verification_get
+      parameters:
+      - name: user_code
+        in: query
+        required: true
+        schema:
+          type: string
+          title: User Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security:
+      - sessionCookie: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-auth/decision:
+    post:
+      tags:
+      - Client User
+      summary: Decision
+      operationId: decision_api_v1_client_auth_decision_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/Decision'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security:
+      - sessionCookie: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-auth/token:
+    post:
+      tags:
+      - Client User
+      summary: Token
+      operationId: token_api_v1_client_auth_token_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/TokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-auth/revoke:
+    post:
+      tags:
+      - Client User
+      summary: Revoke
+      operationId: revoke_api_v1_client_auth_revoke_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/catalog:
+    get:
+      tags:
+      - Client User
+      summary: Catalog
+      operationId: catalog_api_v1_client_runtime_catalog_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/usage:
+    get:
+      tags:
+      - Client User
+      summary: Usage
+      operationId: usage_api_v1_client_runtime_usage_get
+      parameters:
+      - name: fresh
+        in: query
+        required: false
+        description: Bypass the 60-second usage cache for an explicit quota-control decision; ordinary polling keeps the cache.
+        schema:
+          type: boolean
+          default: false
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/refresh-models:
+    post:
+      tags: [Client User]
+      summary: Refresh the bound subscription's model catalog without reauthentication
+      operationId: refresh_models_api_v1_client_runtime_refresh_models_post
+      responses:
+        '200':
+          description: Latest authorized catalog for the existing binding
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+  /api/v1/client-runtime/image-capabilities:
+    post:
+      tags:
+      - Client User
+      summary: Image Capability
+      operationId: image_capability_api_v1_client_runtime_image_capabilities_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/v1/models:
+    get:
+      tags:
+      - Client User
+      summary: Models
+      operationId: models_api_v1_client_runtime_v1_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/models:
+    get:
+      tags:
+      - Client User
+      summary: Models
+      operationId: models_api_v1_client_runtime_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.
+  /api/v1/client-runtime/{path}:
+    post:
+      tags:
+      - Client User
+      summary: Proxy
+      operationId: proxy_api_v1_client_runtime__path__post
+      parameters:
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yaml#/components/schemas/HTTPValidationError'
+      security:
+      - clientBearer: []
+      description: Private desktop client endpoint; credentials and authorization
+        are never inferred from caller identity headers.

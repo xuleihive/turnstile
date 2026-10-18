@@ -1,10 +1,4 @@
-import shutil
-import subprocess
-from pathlib import Path
-
-import pytest
-
-from tests.support.paths import FRONTEND_SOURCE, REPOSITORY_ROOT, read_frontend_styles
+from tests.support.paths import FRONTEND_SOURCE, read_frontend_styles
 
 
 def test_connection_metadata_actions_use_the_owner_connection_endpoint() -> None:
@@ -899,9 +893,9 @@ def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     ).read_text(encoding="utf-8")
     styles = read_frontend_styles()
 
-    assert '{ label: "APIM 后端池", icon: Network, page: "apim-native-routes" }' in app
+    assert '{ label: "负载均衡", icon: Network, page: "apim-native-routes" }' in app
     assert 'page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen=' in app
-    assert 'aria-label="打开 APIM 后端池列表"' in app
+    assert 'aria-label="打开负载均衡列表"' in app
     assert 'className="settings-mobile-topbar-end-action"' in app
     assert "ApimNativeRouteDialog" not in model_page
     assert "model-route-action" not in model_page
@@ -1022,29 +1016,3 @@ def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     assert ".apim-native-route-content" not in styles
     assert ".apim-native-route-readiness" in styles
     assert ".apim-native-route-dialog" not in styles
-
-@pytest.mark.parametrize(
-    "suite_name",
-    (
-        "model-edit-form.test.mjs",
-        "model-publication-connections.test.mjs",
-        "vite-proxy.test.mjs",
-    ),
-)
-def test_model_form_unit_cases(suite_name: str) -> None:
-    node = shutil.which("node")
-    assert node is not None, "Node.js is required for frontend unit tests"
-    result = subprocess.run(
-        [
-            node,
-            "--experimental-strip-types",
-            "--test",
-            str(Path(__file__).with_name(suite_name)),
-        ],
-        cwd=REPOSITORY_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr

@@ -31,6 +31,8 @@
 
 Turnstile 是一个用于治理 AI 模型访问的自托管控制平面。它整合了 Azure API Management 网关、Token 与成本遥测、预算、应用访问、模型接入、发布控制和运维 Web 控制台。
 
+企业插件的配置、使用和管理请阅读[企业插件使用文档](docs/enterprise-plugin/README.md)，分别面向终端用户与管理员，并附脱敏界面截图。
+
 > [!NOTE]
 > **Turnstile v1.2** 是当前公开版本。项目正在快速迭代，API、配置项和部署流程可能会随着项目成熟而变化。升级生产部署前，请仔细审阅相关变更。
 
@@ -176,7 +178,7 @@ npx --yes @redocly/cli@2.38.0 lint contracts/openapi.yaml
 git diff --check
 ```
 
-内存仓库仅用于隔离的单元测试。集成与端到端验证必须使用真实 Turnstile 部署及其配置的 Azure 服务。详情请参阅[测试文档](docs/testing.md)与[端到端验证](docs/e2e-validation.md)。
+内存仓库仅用于隔离的单元测试。集成与端到端验证必须使用真实 Turnstile 部署及其配置的 Azure 服务。详情请参阅[测试文档](plan/upstream-main-merge-2026-10-16.md#database-validation)与[端到端验证](docs/e2e-validation.md)。
 
 ## 部署
 
@@ -184,8 +186,8 @@ Bicep 模板会创建 PostgreSQL、Event Hubs、Storage、Key Vault、Applicatio
 
 对于 **Turnstile v1.2**，请先选择对应路径：
 
-- **升级已有安装：**按照[升级指南](docs/deployment.md#prepare-for-v12)操作。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需补齐必要的基础设施配置。
-- **完全从零安装：**按照[全新部署指南](docs/deployment.md#deploy-v11-from-zero)操作。使用独立前缀和新状态，默认新建 StandardV2 APIM；提供商模型与凭据需要另行准备。
+- **升级已有安装：**按照[升级指南](plan/upstream-main-merge-2026-10-16.md#prepare-for-v12)操作。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需补齐必要的基础设施配置。
+- **完全从零安装：**按照[全新部署指南](plan/upstream-main-merge-2026-10-16.md#deploy-v11-from-zero)操作。使用独立前缀和新状态，默认新建 StandardV2 APIM；提供商模型与凭据需要另行准备。
 
 以下快速步骤用于新安装。已有安装不能用新生成的文件替换原部署状态。
 
@@ -248,13 +250,16 @@ Turnstile不会创建或修改客户的Foundry项目；执行IAM授权的Azure�
 
 ## 文档
 
+`docs/` 保持与上游 `main` 一致。本分支的配置、完整迁移链、运维和验收记录请同时阅读[分支文档入口](plan/README.md)。
+
 | 指南 | 内容 |
 | --- | --- |
 | [文档索引](docs/README.md) | 运维人员和维护人员的入口 |
+| [组织管理](plan/organization-management/operations.md) | 数据库组织目录、部门授权、Entra 同步审核、初始化与升级流程 |
 | [架构](docs/architecture.md) | 运行时边界、组件归属与数据流 |
 | [配置](docs/configuration.md) | 环境变量、身份验证与功能开关 |
 | [部署](docs/deployment.md) | Azure 预配、打包、发布与验证 |
-| [测试](docs/testing.md) | 本地、契约、基础设施与端到端验证 |
+| [测试](plan/upstream-main-merge-2026-10-16.md#database-validation) | 本地、契约、基础设施与端到端验证 |
 | [安全](docs/security.md) | 威胁边界、密钥处理与部署控制 |
 | [故障排除](docs/troubleshooting.md) | 数据库、身份验证、APIM、遥测与启动检查 |
 

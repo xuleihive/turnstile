@@ -465,6 +465,13 @@ schemas:
         items:
           $ref: ../../openapi.yaml#/components/schemas/DepartmentEnforcement
         type: array
+      coverage:
+        type: string
+        enum:
+        - global
+        - department
+        default: global
+        description: Department-scoped organization rows are visible subtotals, not global limits or usage.
     additionalProperties: false
     type: object
     required:
@@ -680,3 +687,25 @@ schemas:
     - department_id
     - updated_count
     title: TokenBudgetBulkResult
+  BudgetCapabilities:
+    properties:
+      token_available:
+        type: boolean
+        title: Token Available
+        default: true
+      usd_available:
+        type: boolean
+        title: Usd Available
+      reason_code:
+        type: string
+        title: Reason Code
+      message:
+        type: string
+        title: Message
+    additionalProperties: false
+    type: object
+    required:
+    - usd_available
+    - reason_code
+    - message
+    title: BudgetCapabilities

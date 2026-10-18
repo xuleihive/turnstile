@@ -1,0 +1,101 @@
+schemas:
+  UserDownload:
+    type: object
+    additionalProperties: false
+    required: [acknowledged]
+    properties:
+      acknowledged:
+        type: boolean
+        const: true
+  DeviceRequest:
+    properties:
+      user_id:
+        type: string
+        format: uuid
+        title: User Id
+      binding:
+        type: string
+        maxLength: 64
+        minLength: 64
+        title: Binding
+      installation_id:
+        type: string
+        format: uuid
+        title: Installation Id
+      purpose:
+        type: string
+        enum:
+        - login
+        - import
+        - reauth
+        title: Purpose
+        default: login
+    additionalProperties: false
+    type: object
+    required:
+    - user_id
+    - binding
+    - installation_id
+    title: DeviceRequest
+  Decision:
+    properties:
+      user_code:
+        type: string
+        pattern: ^[A-Z2-9]{4}-[A-Z2-9]{4}$
+        title: User Code
+      approve:
+        type: boolean
+        title: Approve
+      application_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Application Id
+      subscription_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Subscription Id
+      gateway_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Gateway Id
+    additionalProperties: false
+    type: object
+    required:
+    - user_code
+    - approve
+    title: Decision
+  TokenRequest:
+    properties:
+      grant_type:
+        type: string
+        enum:
+        - device_code
+        - refresh_token
+        title: Grant Type
+      device_code:
+        type: string
+        maxLength: 100
+        title: Device Code
+        default: ''
+      refresh_token:
+        type: string
+        maxLength: 100
+        title: Refresh Token
+        default: ''
+      request_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Request Id
+    additionalProperties: false
+    type: object
+    required:
+    - grant_type
+    title: TokenRequest
