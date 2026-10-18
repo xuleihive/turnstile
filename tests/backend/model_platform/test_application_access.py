@@ -295,6 +295,7 @@ def test_application_organization_sql_preserves_other_tags_and_records_before_af
     tags_cursor = MagicMock()
     tags_cursor.fetchone.return_value = {"tags": {"environment": "test"}}
     connection.execute.side_effect = [
+        MagicMock(**{"fetchone.return_value": {"present": None}}),
         application_cursor,
         tags_cursor,
         MagicMock(),
@@ -316,11 +317,11 @@ def test_application_organization_sql_preserves_other_tags_and_records_before_af
         "owner_id": None,
     }
     statements = [call.args[0] for call in connection.execute.call_args_list]
-    assert "FOR UPDATE" in statements[0] and "FOR UPDATE" in statements[1]
-    tag_values = connection.execute.call_args_list[2].args[1]
+    assert "FOR UPDATE" in statements[1] and "FOR UPDATE" in statements[2]
+    tag_values = connection.execute.call_args_list[3].args[1]
     assert tag_values[0] == application_id
     assert tag_values[1].obj == {"environment": "test", "organization_id": "org-contoso-global"}
-    audit_values = connection.execute.call_args_list[4].args[1]
+    audit_values = connection.execute.call_args_list[5].args[1]
     assert audit_values[1].obj == {"organization_id": None, "department_id": None, "owner_id": None}
     assert audit_values[2].obj == {
         "organization_id": "org-contoso-global",
@@ -395,6 +396,7 @@ def test_application_department_sql_writes_column_and_audit_in_one_transaction(
         "tags": {"environment": "test", "organization_id": "org-contoso-global"},
     }
     connection.execute.side_effect = [
+        MagicMock(**{"fetchone.return_value": {"present": None}}),
         application_cursor,
         tags_cursor,
         MagicMock(),
@@ -419,13 +421,13 @@ def test_application_department_sql_writes_column_and_audit_in_one_transaction(
     }
     connection.transaction.assert_called_once()
     if not changed:
-        assert connection.execute.call_count == 2
+        assert connection.execute.call_count == 3
         return
-    column_statement, column_values = connection.execute.call_args_list[3].args
+    column_statement, column_values = connection.execute.call_args_list[4].args
     assert "SET department_id = %s" in column_statement
     assert column_values == ("department-platform", None, "owner", application_id)
-    before = connection.execute.call_args_list[4].args[1][1].obj
-    after = connection.execute.call_args_list[4].args[1][2].obj
+    before = connection.execute.call_args_list[5].args[1][1].obj
+    after = connection.execute.call_args_list[5].args[1][2].obj
     assert before == {
         "organization_id": "org-contoso-global",
         "department_id": None,
@@ -450,6 +452,7 @@ def test_application_person_sql_updates_management_owner_and_audits_no_consumpti
     tags_cursor = MagicMock()
     tags_cursor.fetchone.return_value = {"tags": {"organization_id": "org-contoso-global"}}
     connection.execute.side_effect = [
+        MagicMock(**{"fetchone.return_value": {"present": None}}),
         application_cursor,
         tags_cursor,
         MagicMock(),
@@ -471,10 +474,10 @@ def test_application_person_sql_updates_management_owner_and_audits_no_consumpti
         )
     assert result is not None and result["owner_id"] == "test.user01@contoso.com"
     connection.transaction.assert_called_once()
-    statement, values = connection.execute.call_args_list[3].args
+    statement, values = connection.execute.call_args_list[4].args
     assert "owner_id = %s" in statement
     assert values == ("department-platform", "test.user01@contoso.com", "owner", application_id)
-    audit = connection.execute.call_args_list[4].args[1]
+    audit = connection.execute.call_args_list[5].args[1]
     assert audit[1].obj["owner_id"] is None
     assert audit[2].obj["owner_id"] == "test.user01@contoso.com"
     assert all(
@@ -1489,12 +1492,13 @@ def test_application_usd_dtos_tags_and_registered_organization() -> None:
     )
     assert request.tags == {"environment": "test"}
     assert application_organization({}).organization_id is None
+    unresolved = GatewayApplicationSubscriptionCreate(
+        subscription_id="unit",
+        display_name="Unit",
+        tags={"organization_id": "not-a-directory-id"},
+    )
     with pytest.raises(ValueError, match="Unknown application organization"):
-        GatewayApplicationSubscriptionCreate(
-            subscription_id="unit",
-            display_name="Unit",
-            tags={"organization_id": "not-a-directory-id"},
-        )
+        application_organization(unresolved.tags)
     for invalid in [{"": "value"}, {"key": "x" * 257}, {str(index): "v" for index in range(33)}]:
         with pytest.raises(ValueError):
             GatewayApplicationSubscriptionCreate(

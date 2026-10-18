@@ -22,7 +22,7 @@ ImageFixture = tuple[InMemoryRepository, ImageInvocationRequest, ImageRouter]
 def images() -> Iterator[ImageFixture]:
     repository, request = image_fixture()
     router = ImageRouter()
-    service = ModelRuntimeService(repository, Settings(), router)
+    service = ModelRuntimeService(repository, Settings(image_generation_enabled=True), router)
     app.dependency_overrides[get_repository] = lambda: repository
     app.dependency_overrides[runtime_service] = lambda: service
     yield repository, request, router

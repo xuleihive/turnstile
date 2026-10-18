@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -45,6 +46,18 @@ class ApimUsageObserverConfig(BaseModel):
         ):
             raise ValueError("APIM usage observer must be a credential-free HTTPS origin")
         return self
+
+
+def core_runtime_digest(root: Path | None = None) -> str:
+    root = root or Path(__file__).resolve().parent
+    checksum = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" not in path.parts:
+            checksum.update(path.relative_to(root).as_posix().encode())
+            checksum.update(b"\0")
+            checksum.update(path.read_bytes())
+            checksum.update(b"\0")
+    return checksum.hexdigest()
 
 
 class Settings(BaseSettings):
@@ -229,8 +242,27 @@ class Settings(BaseSettings):
             raise ValueError(
                 "APIM usage observer URL and key Named Value must be configured together"
             )
-        if self.control_plane_enabled and not observer_url and not self.apim_usage_observers:
+        if self.control_plane_enabled and not observer_url:
             raise ValueError("The enabled control plane requires an APIM usage observer")
+        if (
+            self.organization_management_enabled
+            or self.directory_sync_enabled
+            or self.directory_identity_projection_enabled
+        ) and self.directory_source != "database":
+            raise ValueError("Directory capabilities require DIRECTORY_SOURCE=database")
+        if (
+            self.production
+            and self.directory_source == "database"
+            and not self.directory_expected_core_digest
+        ):
+            raise ValueError("Production directory mode requires DIRECTORY_EXPECTED_CORE_DIGEST")
+        if (
+            self.directory_expected_core_digest
+            and self.directory_expected_core_digest != core_runtime_digest()
+        ):
+            raise ValueError(
+                "Mounted directory runtime does not match DIRECTORY_EXPECTED_CORE_DIGEST"
+            )
         return self
 
     @model_validator(mode="after")
@@ -332,6 +364,33 @@ class Settings(BaseSettings):
         if not isinstance(values, dict):
             raise ValueError("MODEL_COEFFICIENTS_JSON must be an object")
         return {str(key): float(value) for key, value in values.items()}
+
+    image_generation_enabled: bool = False
+
+    directory_source: Literal["legacy", "database"] = "legacy"
+
+    directory_empty_initialization_allowed: bool = False
+
+    organization_management_enabled: bool = False
+
+    directory_sync_enabled: bool = False
+
+    directory_identity_projection_enabled: bool = False
+
+    directory_protocol_version: int = Field(default=1, ge=1, le=1)
+
+    directory_expected_core_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    directory_managed_identity_tenant_id: str | None = None
+
+    directory_deployment_cloud: Literal["public", "usgov", "china"] = "public"
+
+    entra_allowed_tenant_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("directory_expected_core_digest", mode="before")
+    @classmethod
+    def empty_directory_digest(cls, value: object) -> object:
+        return None if value == "" else value
 
 
 @lru_cache

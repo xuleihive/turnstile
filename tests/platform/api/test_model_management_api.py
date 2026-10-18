@@ -62,8 +62,8 @@ def publication_api() -> Iterator[InMemoryRepository]:
         repository,
         CredentialCipher(Fernet.generate_key()),
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-        image_generation_defaults=Settings().image_generation_defaults,
-    )
+        image_generation_defaults=Settings(image_generation_enabled=True).image_generation_defaults,
+    image_generation_enabled=True)
     app.dependency_overrides[get_repository] = lambda: repository
     app.dependency_overrides[control_plane_service] = lambda: service
     app.dependency_overrides[require_authenticated_session] = lambda: owner
@@ -215,7 +215,7 @@ def test_gateway_creation_api_generates_identity_and_retries_the_same_request(
     ))
     service = GatewayControlPlaneService(
         publication_api, self_hosted_gateway_provisioning_enabled=True,
-    )
+    image_generation_enabled=True)
     app.dependency_overrides[control_plane_service] = lambda: service
     path = f"/api/v1/model-management/apim-targets/{TARGET}/self-hosted-gateway-provisions"
     payload = {"display_name": "New Docker gateway", "endpoint_url": "https://edge.example.test/unit/llm",
@@ -281,7 +281,7 @@ def test_gateway_provision_endpoints_preserve_owner_and_origin_guards(
 def test_gateway_bootstrap_response_is_not_cached_and_never_uses_model_keys(
     publication_api: InMemoryRepository,
 ) -> None:
-    service = GatewayControlPlaneService(publication_api)
+    service = GatewayControlPlaneService(publication_api, image_generation_enabled=True)
     app.dependency_overrides[control_plane_service] = lambda: service
     result = SelfHostedGatewayBootstrap.model_validate({
         "deployment_id": UUID(int=104), "native_gateway_id": "turnstile-generated",
@@ -312,7 +312,7 @@ def test_invalid_image_deployment_returns_conflict_without_publication(
 ) -> None:
     service = GatewayControlPlaneService(
         publication_api, apim_principal_id="unit-principal"
-    )
+    , image_generation_enabled=True)
     app.dependency_overrides[control_plane_service] = lambda: service
     payload = image_publication(publication_api).model_dump(mode="json")
     payload["model"]["deployment_name"] = deployment_name
@@ -332,7 +332,7 @@ def management_runtime_service(
             management_api_key=SecretStr("management-secret"),
             credential_encryption_key=SecretStr(Fernet.generate_key().decode()),
             apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-        ),
+        image_generation_enabled=True),
     )
     app.dependency_overrides[runtime_service] = lambda: service
     yield service
@@ -429,6 +429,25 @@ def test_gateway_name_missing_record_returns_404_without_management_key(
         json={"name": "Missing"}, headers={"Prefer": "return=minimal"},
     )
     assert response.status_code == 404
+    assert publication_api.gateways == original
+
+
+@pytest.mark.parametrize("minimal", [False, True])
+def test_gateway_name_rejects_duplicate_display_names_without_writing(
+    publication_api: InMemoryRepository, management_runtime_service: ModelRuntimeService,
+    minimal: bool,
+) -> None:
+    del management_runtime_service
+    gateway = publication_api.gateways[0]
+    publication_api.gateways.append({**gateway, "id": UUID(int=901), "name": "Existing gateway"})
+    original = deepcopy(publication_api.gateways)
+    response = client.patch(
+        f"/api/v1/model-management/gateways/{gateway['id']}/name",
+        json={"name": "Existing gateway"},
+        headers={"Prefer": "return=minimal"} if minimal else {},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Gateway display name is already in use"
     assert publication_api.gateways == original
 
 
@@ -708,7 +727,7 @@ def test_release_operation_queueing_fails_fast_when_worker_is_disabled(
     publication_api: InMemoryRepository,
 ) -> None:
     cipher = CredentialCipher(Fernet.generate_key())
-    enabled = GatewayControlPlaneService(publication_api, cipher)
+    enabled = GatewayControlPlaneService(publication_api, cipher, image_generation_enabled=True)
     publication = enabled.publish(
         GatewayPublicationCreate.model_validate(
             bedrock_publication(gateway_id(publication_api))
@@ -719,7 +738,7 @@ def test_release_operation_queueing_fails_fast_when_worker_is_disabled(
         publication_api,
         cipher,
         release_worker_enabled=False,
-    )
+    image_generation_enabled=True)
     app.dependency_overrides[control_plane_service] = lambda: disabled
 
     release_list = client.get("/api/v1/model-management/releases?limit=100")
@@ -1710,7 +1729,7 @@ def test_model_backend_pool_rejects_incompatible_runtime_path(
     effective = GatewayControlPlaneService(
         publication_api,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    ).publish(
+    image_generation_enabled=True).publish(
         GatewayPublicationCreate.model_validate(
             {
                 "gateway_profile_id": gateway_id(publication_api),
@@ -1807,7 +1826,7 @@ def test_model_backend_pool_rejects_runtime_without_equivalent_deployment(
     effective = GatewayControlPlaneService(
         publication_api,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    ).publish(
+    image_generation_enabled=True).publish(
         GatewayPublicationCreate.model_validate(
             {
                 "gateway_profile_id": gateway_id(publication_api),

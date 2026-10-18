@@ -2065,6 +2065,7 @@ class InMemoryPublicationRepositoryMixin:
                     "allowed_roles": ["owner", "admin", "member"],
                 },
             )
+        model_spec = {**model_spec, **(model_spec.get("price_configuration") or {})}
         logical_model_id = (
             UUID(str(binding["logical_model_id"]))
             if binding.get("logical_model_id") is not None

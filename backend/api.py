@@ -4,14 +4,18 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from turnstile_core.config import get_settings
+from turnstile_core.domain.directory import DirectoryError
 from turnstile_core.security import CredentialCipher
+from turnstile_core.services.directory_catalog import directory_store
 
 from .data_sources.github_copilot.router import router as github_copilot_router
 from .http.application_access import router as application_access_router
@@ -21,28 +25,22 @@ from .http.authentication import get_entra_verifier as _get_entra_verifier
 from .http.authentication import router as authentication_router
 from .http.budgets import router as budgets_router
 from .http.dependencies import get_repository
+from .http.directory_sync import router as directory_sync_router
 from .http.governance import router as governance_router
-from .http.model_platform import (
-    protected_router as model_platform_protected_router,
-)
-from .http.model_platform import (
-    publication_router as model_platform_publication_router,
-)
+from .http.model_platform import protected_router as model_platform_protected_router
+from .http.model_platform import publication_router as model_platform_publication_router
 from .http.observability import router as observability_router
-from .http.service_dependencies import (
-    application_access_service as _application_access_service,
-)
-from .http.service_dependencies import (
-    assistant_service as _assistant_service,
-)
-from .http.service_dependencies import (
-    control_plane_service as _control_plane_service,
-)
-from .http.service_dependencies import (
-    runtime_service as _runtime_service,
-)
+from .http.organization_management import router as organization_management_router
+from .http.permission_management import router as permission_management_router
+from .http.private_routes import PrivateRouteBodyLimit
+from .http.service_dependencies import application_access_service as _application_access_service
+from .http.service_dependencies import assistant_service as _assistant_service
+from .http.service_dependencies import control_plane_service as _control_plane_service
+from .http.service_dependencies import runtime_service as _runtime_service
 from .http.session import require_allowed_write_origin, require_authenticated_session
 from .http.static_files import validate_production_web_dist
+from .http.user_settings import UserSettingsBodyLimit
+from .http.user_settings import router as user_settings_router
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +61,58 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     get_repository()
     if settings.production:
         CredentialCipher.from_settings(settings)
+    if settings.directory_source == "database":
+        if not settings.database_url:
+            raise RuntimeError("Database directory requires DATABASE_URL")
+        store = directory_store(settings.database_url)
+        store.state()
+        if settings.directory_empty_initialization_allowed:
+            store.initialize_empty()
+        store.require_ready()
     yield
 
 
-app = FastAPI(title="Turnstile API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Token Observability API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(UserSettingsBodyLimit)
+app.add_middleware(
+    PrivateRouteBodyLimit,
+    path_prefix="/api/v1/organization-management/",
+    max_body_bytes=256 * 1024,
+)
+
+
+@app.exception_handler(RequestValidationError)
+async def private_validation_errors(request: Request, error: RequestValidationError) -> Response:
+    if request.url.path.startswith(
+        (
+            "/api/v1/user-settings/",
+            "/api/v1/auth/",
+            "/api/v1/organization-management/",
+        )
+    ):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {"loc": item["loc"], "msg": item["msg"], "type": item["type"]}
+                    for item in error.errors()
+                ]
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    return await request_validation_exception_handler(request, error)
+
+
+@app.exception_handler(DirectoryError)
+async def directory_errors(request: Request, error: DirectoryError) -> Response:
+    del request
+    return JSONResponse(
+        status_code=error.status,
+        content={"detail": str(error), "code": error.code},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 protected = APIRouter(
     dependencies=[
         Depends(require_authenticated_session),
@@ -78,7 +124,7 @@ app.add_middleware(
     allow_origins=get_settings().cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "Idempotency-Key"],
 )
 
 
@@ -98,6 +144,13 @@ app.include_router(assistant_title_router)
 app.include_router(model_platform_publication_router)
 app.include_router(github_copilot_router)
 app.include_router(authentication_router)
+app.include_router(user_settings_router)
+app.include_router(organization_management_router)
+app.include_router(directory_sync_router)
+app.include_router(permission_management_router)
+app.add_middleware(
+    PrivateRouteBodyLimit, path_prefix="/api/v1/permission-management", max_body_bytes=65536,
+)
 
 
 # Registered after every real API route and before the single-page-application

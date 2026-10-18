@@ -48,7 +48,7 @@ def image_fixture(assigned: bool = True) -> tuple[InMemoryRepository, ImageInvoc
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     row = next(item for item in repository.gateway_publications if item["id"] == publication.id)
     row["status"] = "promoting"
     repository.claim_gateway_publication("unit-worker", 180)
@@ -68,7 +68,7 @@ def image_fixture(assigned: bool = True) -> tuple[InMemoryRepository, ImageInvoc
 def test_image_service_records_exact_attempt_without_image_or_prompt() -> None:
     repository, request = image_fixture()
     router = ImageRouter()
-    service = ModelRuntimeService(repository, Settings(), router)
+    service = ModelRuntimeService(repository, Settings(image_generation_enabled=True), router)
     result = service.generate_image(request, role="owner")
     attempt = repository.billable_requests[UUID(result.request_id)]
     assert attempt.state == "exact" and attempt.actual_tokens == 32
@@ -82,7 +82,10 @@ def test_image_service_records_exact_attempt_without_image_or_prompt() -> None:
 def test_image_selection_rejects_unavailable_gateway_before_reserving_or_dispatching() -> None:
     repository, request = image_fixture()
     router = ImageRouter()
-    service = ModelRuntimeService(repository, Settings(apim_target_registry_enabled=True), router)
+    service = ModelRuntimeService(
+        repository, Settings(apim_target_registry_enabled=True, image_generation_enabled=True),
+        router,
+    )
     repository.invocation_route = Mock(return_value=None)  # type: ignore[method-assign]
     selected = request.model_copy(update={"gateway_profile_id": UUID(int=7),
                                           "gateway_deployment_id": UUID(int=8)})
@@ -112,7 +115,7 @@ def test_image_failure_retains_uncertainty_or_real_usage(measured: bool) -> None
             usage=usage,
         )
     )
-    service = ModelRuntimeService(repository, Settings(), router)
+    service = ModelRuntimeService(repository, Settings(image_generation_enabled=True), router)
     with pytest.raises(HTTPException) as raised:
         service.generate_image(request, role="owner")
     assert raised.value.headers is not None
@@ -134,7 +137,7 @@ def test_image_denial_occurs_before_attempt_or_dispatch(
 ) -> None:
     repository, request = image_fixture(assigned)
     router = ImageRouter()
-    service = ModelRuntimeService(repository, Settings(), router)
+    service = ModelRuntimeService(repository, Settings(image_generation_enabled=True), router)
     with pytest.raises(HTTPException) as raised:
         service.generate_image(request, role=role)
     assert raised.value.status_code == expected

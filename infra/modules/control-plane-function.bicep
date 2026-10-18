@@ -30,6 +30,7 @@ param subscriptionAgentMap object = {}
 param publicationWorkerEnabled bool = false
 param releaseWorkerEnabled bool = false
 param applicationProvisioningEnabled bool = false
+param imageGenerationEnabled bool = false
 param databricksOAuthEnabled bool = false
 @minValue(1)
 param applicationDefaultMonthlyTokenLimit int = 100000
@@ -40,6 +41,9 @@ param eventHubName string = 'llm-usage'
 param ledgerStorageName string
 param ledgerTableName string = 'TurnstileLedger'
 param ledgerTableEndpoint string
+@allowed(['legacy', 'database'])
+param directorySource string = 'legacy'
+param directoryExpectedCoreDigest string = ''
 
 var storageName = 'stturnstilecp${take(suffix, 11)}'
 var planName = 'plan-${resourcePrefix}-control-${suffix}'
@@ -164,10 +168,15 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${credentialEncryptionKeySecretUri})' }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
+        { name: 'DIRECTORY_SOURCE', value: directorySource }
+        { name: 'DIRECTORY_EXPECTED_CORE_DIGEST', value: directoryExpectedCoreDigest }
+        { name: 'DIRECTORY_SYNC_ENABLED', value: 'false' }
+        { name: 'DIRECTORY_IDENTITY_PROJECTION_ENABLED', value: 'false' }
         { name: 'CONTROL_PLANE_ENABLED', value: string(effectiveEnabled) }
         { name: 'GATEWAY_PUBLICATION_WORKER_ENABLED', value: string(effectivePublicationWorkerEnabled) }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(effectiveReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(applicationProvisioningEnabled) }
+        { name: 'IMAGE_GENERATION_ENABLED', value: string(imageGenerationEnabled) }
         { name: 'DATABRICKS_OAUTH_ENABLED', value: string(databricksOAuthEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(applicationDefaultMonthlyTokenLimit) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(applicationDefaultTokensPerMinute) }

@@ -56,3 +56,126 @@ schemas:
       session_expires_at:
         type: string
         format: date-time
+      avatar_url:
+        type:
+        - string
+        - 'null'
+        description: Private current-account avatar URL for password sessions; null
+          for Microsoft sessions.
+      directory_scope_key:
+        type: string
+        default: global
+        description: Server-derived authorization-scope digest for private client
+          cache invalidation.
+      directory_permission_revision:
+        type: integer
+        minimum: 0
+        default: 0
+      governance_user_id:
+        type:
+        - string
+        - 'null'
+        default: null
+        description: Stable governance identity from an explicit current-account person
+          link.
+      menu_permission_group:
+        type: string
+        enum:
+        - user
+        - organization_admin
+        - department_admin
+        - team_admin
+        default: user
+        description: Local navigation group only; Owner remains a separate platform
+          role.
+      menu_permission_groups:
+        type: array
+        items:
+          type: string
+          enum:
+          - user
+          - organization_admin
+          - department_admin
+          - team_admin
+        description: Local groups with unioned menus; Ordinary User when none assigned.
+      menu_permissions:
+        type: array
+        items:
+          type: string
+        description: Server-derived menu union, not APIM or business API authorization.
+      menu_administrator_scopes:
+        type: array
+        default: []
+        description: Effective exact administrator appointments. Never infer scope
+          from the global menu group union.
+        items:
+          type: object
+          required:
+          - scope_kind
+          - scope_id
+          - organization_id
+          - scope_name
+          properties:
+            scope_kind:
+              type: string
+              enum:
+              - organization
+              - department
+              - team
+            scope_id:
+              type: string
+            organization_id:
+              type: string
+            scope_name:
+              type: string
+  MenuAdministratorScope:
+    properties:
+      scope_kind:
+        type: string
+        enum:
+        - organization
+        - department
+        - team
+        title: Scope Kind
+      scope_id:
+        type: string
+        title: Scope Id
+      organization_id:
+        type: string
+        title: Organization Id
+      scope_name:
+        type: string
+        title: Scope Name
+    additionalProperties: false
+    type: object
+    required:
+    - scope_kind
+    - scope_id
+    - organization_id
+    - scope_name
+    title: MenuAdministratorScope
+  PermissionPolicyWrite:
+    properties:
+      expected_revision:
+        type: integer
+        minimum: 1.0
+        title: Expected Revision
+      groups:
+        additionalProperties:
+          items:
+            type: string
+          type: array
+        propertyNames:
+          enum:
+          - user
+          - organization_admin
+          - department_admin
+          - team_admin
+        type: object
+        title: Groups
+    additionalProperties: false
+    type: object
+    required:
+    - expected_revision
+    - groups
+    title: PermissionPolicyWrite

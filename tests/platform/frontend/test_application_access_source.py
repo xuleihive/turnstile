@@ -169,8 +169,8 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert 'className="smh-page-header application-detail-breadcrumb"' in page
     assert 'className="application-breadcrumb-trail"' in page
     assert 'aria-current="page"' in page
-    assert page.count("onClick={openApplicationRoute(null)}") >= 2
-    assert "detailCategory" not in page
+    assert page.count("onClick={openApplicationRoute(null, detailCategory)}") >= 2
+    assert 'detail.data?.application_type === "agent"' in page
     assert "if (applicationId) {" in page
     assert "useResizablePane" in page
     assert 'storageKey: "turnstile_subscriptions_navigation_width"' in page
@@ -255,11 +255,12 @@ def test_application_detail_breadcrumb_reuses_inventory_header_geometry() -> Non
         '<header className="smh-page-header application-detail-breadcrumb">', 1
     )[1].split("</header>", 1)[0]
     assert 'className="smh-header-icon"' in header
-    assert '<KeyRound size={17}' in header
+    assert '<DetailIcon size={17}' in header
     assert '<nav className="application-breadcrumb-trail"' in header
     assert 'aria-current="page"' in header
-    assert '>订阅</a>' in header
-    assert header.count("<ChevronRight") == 1
+    assert '>订阅管理</a>' in header
+    assert 'detailCategory === "agents" ? "智能体" : "应用"' in header
+    assert header.count("<ChevronRight") == 2
     assert 'className="smh-page-header applications-header"' in page
     header_styles = styles.split(".application-detail-breadcrumb {", 1)[1].split("}", 1)[0]
     assert "font-size: 14px;" in header_styles

@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid5
 
 from pydantic import (
@@ -28,11 +28,7 @@ from .gateway_targets import (
     GatewayServingDeployment,
     MultiTargetRollout,
 )
-from .image_profiles import (
-    ImageGenerationLimits,
-    ImageGenerationProfile,
-    validate_image_profile,
-)
+from .image_profiles import ImageGenerationLimits, ImageGenerationProfile, validate_image_profile
 from .models import StrictModel
 from .runtime_models import (
     BrandKey,
@@ -59,6 +55,12 @@ PUBLICATION_PROBE_ACTIONS: tuple[str, ...] = tuple(_PUBLICATION_PERMISSIONS["pro
 PUBLICATION_OAUTH_ACTIONS: tuple[str, ...] = tuple(_PUBLICATION_PERMISSIONS["oauth"])
 GATEWAY_PROVISION_ACTIONS: tuple[str, ...] = tuple(_PUBLICATION_PERMISSIONS["gateway_provision"])
 GATEWAY_BOOTSTRAP_ACTIONS: tuple[str, ...] = tuple(_PUBLICATION_PERMISSIONS["gateway_bootstrap"])
+
+
+class MultiTargetPublicationRequestAccepted(StrictModel):
+    rollout: MultiTargetRollout
+    publications: list[GatewayPublicationView]
+    status_url: str
 
 
 class ApiFormat(StrEnum):
@@ -279,6 +281,14 @@ class ModelTarget(StrictModel):
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
     assignment_required: bool = True
     image_profile: ImageGenerationProfile | None = None
+    price_configuration: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_pricing(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        values = handler(self)
+        if self.price_configuration is None:
+            values.pop("price_configuration", None)
+        return cast(dict[str, Any], values)
 
     @model_validator(mode="after")
     def validate_image_contract(self) -> ModelTarget:
@@ -291,7 +301,7 @@ class ModelTarget(StrictModel):
             self.price_source is PriceSource.MANUAL or len(self.context_price_references) != 2
         ):
             raise ValueError("A custom context rule requires both short and long catalog tiers")
-        if self.price_source is not PriceSource.MANUAL:
+        if self.price_source not in {PriceSource.MANUAL, PriceSource.MODELS_DEV}:
             reference = (self.price_reference or "").strip()
             if not self.context_price_references and (
                 not reference or not reference.startswith(f"{self.price_source.value}:")
@@ -301,7 +311,9 @@ class ModelTarget(StrictModel):
         if self.image_profile is not None:
             if self.capabilities != ["image_generation"]:
                 raise ValueError("An image profile belongs only to an image model")
-            if self.price_source not in {PriceSource.MANUAL, PriceSource.AZURE_RETAIL}:
+            if self.price_source not in {
+                PriceSource.MANUAL, PriceSource.MODELS_DEV, PriceSource.AZURE_RETAIL,
+            }:
                 raise ValueError("Image generation requires manual or Azure retail prices")
             validate_image_profile(self.image_profile)
         return self
@@ -370,23 +382,28 @@ class ModelCreateTarget(StrictModel):
         if self.context_price_rule is not None and len(self.context_price_references) != 2:
             raise ValueError("A custom context rule requires both short and long catalog tiers")
         if self.context_price_references:
-            if self.price_source is PriceSource.MANUAL or self.operation == "image_generation":
+            if (self.price_source in {None, PriceSource.MANUAL}
+                or self.operation == "image_generation"):
                 raise ValueError("Context pricing requires a catalog-priced text model")
             if (len(self.context_price_references) < 2
                 or len(set(self.context_price_references)) != len(self.context_price_references)):
                 raise ValueError("Context pricing requires distinct tier references")
+            assert self.price_source is not None
             if any(not reference.startswith(f"{self.price_source.value}:")
                    for reference in self.context_price_references):
                 raise ValueError("Context references must use the selected source")
         if self.price_source is PriceSource.MANUAL:
             self.price_reference = None
-        elif not self.context_price_references:
+        elif (self.price_source not in {None, PriceSource.MODELS_DEV}
+              and not self.context_price_references):
             reference = (self.price_reference or "").strip()
             if not reference or not reference.startswith(f"{self.price_source.value}:"):
                 raise ValueError("Catalog pricing requires a reference from its selected source")
             self.price_reference = reference
         if self.operation == "image_generation":
-            if self.price_source not in {PriceSource.MANUAL, PriceSource.AZURE_RETAIL}:
+            if self.price_source not in {
+                None, PriceSource.MODELS_DEV, PriceSource.MANUAL, PriceSource.AZURE_RETAIL,
+            }:
                 raise ValueError("Image generation requires manual or Azure retail prices")
             if self.deployment_name is None:
                 raise ValueError("Image generation requires an existing Foundry deployment")
@@ -397,7 +414,9 @@ class ModelCreateTarget(StrictModel):
         if self.operation == "decision":
             if self.deployment_name is None:
                 raise ValueError("Decision requires an existing Foundry deployment")
-            if self.price_source not in {PriceSource.MANUAL, PriceSource.AZURE_RETAIL}:
+            if self.price_source not in {
+                None, PriceSource.MODELS_DEV, PriceSource.MANUAL, PriceSource.AZURE_RETAIL,
+            }:
                 raise ValueError("Decision requires manual or Azure retail prices")
         explicit = (self.model_key, self.display_name, self.upstream_model_id)
         if self.deployment_name is not None:
@@ -412,9 +431,9 @@ class ModelCreateTarget(StrictModel):
             )
         return self
 
-    price_source: PriceSource = PriceSource.MANUAL
+    price_source: PriceSource | None = None
 
-    price_reference: str | None = Field(default=None, max_length=1000)
+    price_reference: str | None = Field(default=None, max_length=1500)
 
     price_discount_percent: float | None = Field(default=None, gt=0, le=100)
 
@@ -423,6 +442,10 @@ class ModelCreateTarget(StrictModel):
     context_price_rule: ContextPriceRule | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+
+    price_entry_digest: str | None = Field(default=None, max_length=64)
+
+    allow_unpriced: bool = False
 
 
 class GatewayPublicationCreate(StrictModel):
@@ -1578,10 +1601,4 @@ class GatewayReleaseDetail(GatewayReleaseSummary):
 
 class GatewayPublicationRequestAccepted(StrictModel):
     publication: GatewayPublicationView
-    status_url: str
-
-
-class MultiTargetPublicationRequestAccepted(StrictModel):
-    rollout: MultiTargetRollout
-    publications: list[GatewayPublicationView]
     status_url: str

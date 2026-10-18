@@ -14,7 +14,7 @@ from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
 @pytest.mark.parametrize("legacy_value", [None, "false", "true"])
-def test_images_are_available_without_a_feature_switch(
+def test_image_capability_preserves_the_explicit_feature_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, legacy_value: str | None,
 ) -> None:
     if legacy_value is None:
@@ -22,10 +22,10 @@ def test_images_are_available_without_a_feature_switch(
     else:
         monkeypatch.setenv("IMAGE_GENERATION_ENABLED", legacy_value)
     settings = Settings(credential_key_file=tmp_path / "key")
-    assert "image_generation_enabled" not in Settings.model_fields
+    assert settings.image_generation_enabled is (legacy_value == "true")
     assert settings.image_generation_defaults.output_reservation_tokens == 8192
     registry = ModelRuntimeService(InMemoryRepository(), settings).registry()
-    assert registry.image_generation_supported is True
+    assert registry.image_generation_supported is (legacy_value == "true")
     assert registry.image_configuration_schema_version == 4
     assert ApiFormat.OPENAI_IMAGES.value == "openai_images"
 

@@ -34,7 +34,6 @@ from ..domain.application_access import (
     application_subscription_id_for,
     decode_application_avatar_data_url,
 )
-from ..domain.enterprise import enterprise_catalog, merge_observed_users
 from ..domain.models import TrendResponse
 from ..integrations.apim_control_plane_contract import (
     ApimSubscriptionKeyClient,
@@ -48,6 +47,7 @@ from .control_plane import (
     ControlPlaneNotFoundError,
     ControlPlaneUnavailableError,
 )
+from .directory_catalog import catalog_for
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +399,7 @@ class ApplicationAccessService:
     def update_application_organization(
         self, application_id: UUID, request: GatewayApplicationOrganizationUpdate, actor: str,
     ) -> GatewayApplicationOrganization:
-        catalog = merge_observed_users(enterprise_catalog(), self._repository.observed_users())
+        catalog = catalog_for(self._repository)
         organization = application_organization(
             {"organization_id": request.organization_id} if request.organization_id else {},
             request.department_id,
@@ -509,12 +509,11 @@ class ApplicationAccessService:
         period_end: date,
     ) -> list[GatewayApplicationSummary]:
         application_ids = [UUID(str(row["id"])) for row in rows]
-        departments = {item.id: item.name for item in enterprise_catalog().departments}
+        catalog = catalog_for(self._repository, include_inactive=True)
+        departments = {item.id: item.name for item in catalog.departments}
         people = {
             item.id: item.name
-            for item in merge_observed_users(
-                enterprise_catalog(), self._repository.observed_users(),
-            ).users
+            for item in catalog.users
         } if any(row.get("owner_id") for row in rows) else {}
         subscriptions: dict[UUID, list[Mapping[str, object]]] = {}
         for item in self._repository.list_gateway_application_subscriptions(
@@ -689,6 +688,7 @@ class ApplicationAccessService:
                         **dict(row),
                         **application_organization(
                             cast(dict[str, str], row.get("tags") or {}),
+                            catalog=catalog,
                         ).model_dump(
                             exclude={"projected", "department_id", "department_name",
                                      "person_id", "person_name"},

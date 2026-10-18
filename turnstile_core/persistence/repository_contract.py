@@ -36,6 +36,7 @@ from ..domain.models import (
     OptimizationEventCreate,
     ReconciledUsage,
     TokenUsageRecord,
+    UsageQueryEntityCatalog,
 )
 from ..domain.runtime_models import PlatformInvocationAttempt, PlatformInvocationCompletion
 from .repository_support import UsageFilters
@@ -205,6 +206,14 @@ class QueryRepository(ABC):
     def observed_users(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def historical_entities(
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+    ) -> UsageQueryEntityCatalog: ...
+
+    @abstractmethod
     def application_owners(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
@@ -267,6 +276,7 @@ class QueryRepository(ABC):
         description: str,
         original_question: str,
         chart: Mapping[str, Any],
+        directory_scope: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
     @abstractmethod
@@ -330,6 +340,7 @@ class QueryRepository(ABC):
         title: str,
         question: str,
         reply: Mapping[str, Any],
+        directory_scope: list[str] | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -350,7 +361,12 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def save_assistant_settings(
-        self, *, model_id: UUID | None, auto_title: bool, updated_by: str
+        self,
+        *,
+        model_id: UUID | None,
+        auto_title: bool,
+        updated_by: str,
+        api_format: str | None = None,
     ) -> dict[str, Any]: ...
 
     @abstractmethod
@@ -387,12 +403,28 @@ class QueryRepository(ABC):
     def create_optimization(self, create: OptimizationEventCreate) -> dict[str, Any]: ...
 
     @abstractmethod
-    def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]: ...
+    def list_token_budgets(
+        self,
+        period_start: date,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self,
+        from_: datetime,
+        to: datetime,
+        user_id: str | None = None,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def personal_usage(
+        self, user_id: str, from_: datetime, to: datetime, interval: str, timezone: str
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
     def upsert_token_budget(
@@ -427,7 +459,11 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def list_token_budget_audit(
-        self, period_start: date, limit: int
+        self,
+        period_start: date,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
@@ -445,7 +481,11 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def list_department_enforcement(self) -> Sequence[dict[str, Any]]: ...
+    def list_department_enforcement(
+        self,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
+    ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def set_department_enforcement(
@@ -454,7 +494,12 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def list_department_enforcement_audit(
-        self, from_: datetime, to: datetime, limit: int
+        self,
+        from_: datetime,
+        to: datetime,
+        limit: int,
+        *,
+        allowed_department_ids: tuple[str, ...] | None = None,
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod

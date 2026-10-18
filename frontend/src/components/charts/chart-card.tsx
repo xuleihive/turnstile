@@ -110,8 +110,8 @@ function ChartBody({ chart, fill = false }: { chart: ChartSpec; fill?: boolean }
       <ResizableTable className="assistant-table" minWidths={[120, ...chart.series.map(() => 90)]}>
         <thead>
           <tr>
-            <th>{chart.category_label}</th>
-            {chart.series.map((series) => <th key={series.key}>{series.label}</th>)}
+            <th><span>{chart.category_label}</span></th>
+            {chart.series.map((series) => <th key={series.key}><span>{series.label}</span></th>)}
           </tr>
         </thead>
         <tbody>

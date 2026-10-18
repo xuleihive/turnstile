@@ -10,12 +10,13 @@ const chartModes: Array<{ value: ChartMode; label: string; icon: typeof ChartNoA
   { value: "heatmap", label: "热力图", icon: Grid3X3 },
 ]
 
-export function ChartModeToggle({ value, onChange }: {
+export function ChartModeToggle({ value, onChange, modes }: {
   value: ChartMode
   onChange: (value: ChartMode) => void
+  modes?: readonly ChartMode[]
 }) {
   return <div className="chart-mode-toggle" role="group" aria-label="图表类型">
-    {chartModes.map((item) => {
+    {chartModes.filter((item) => !modes || modes.includes(item.value)).map((item) => {
       const Icon = item.icon
       return <button
         key={item.value}

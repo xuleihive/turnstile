@@ -419,6 +419,10 @@ def test_diagnostic_owner_api_requires_selection_and_disables_caching(
         ("request_source", "runtime-diagnostic"),
         ("user_id", "system-runtime-health-check"),
         ("request_source", "runtime-health-check"),
+        ("user_id", "SYSTEM-RUNTIME-DIAGNOSTIC"),
+        ("user_id", "System-Runtime-Health-Check"),
+        ("request_source", "RUNTIME-DIAGNOSTIC"),
+        ("request_source", "Runtime-Health-Check"),
     ],
 )
 def test_normal_invocation_cannot_spoof_diagnostic_identity(field: str, value: str) -> None:

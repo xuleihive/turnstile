@@ -11,23 +11,30 @@ The API, telemetry and control-plane Functions, observer, and budget ledger requ
 Turnstile v1.2 is the current public release. Upgrading an existing v1.1 installation requires
 reviewing the migrations and protocol steps below in addition to uploading application packages.
 
+For this merged fork, review and apply all pending migrations shipped with the compatible candidate
+through `uv run python -m backend.migrate`, before starting packages that require the new schema.
+Preserve every applied version and checksum. The [complete migration inventory](testing.md#migration-inventory)
+lists both histories in runner order: the full filename minus `.up.sql` identifies a version,
+not its numeric prefix. Feature introduction migrations below are not a selectable subset of
+the candidate chain. Feature flags and external protocol installation remain separate steps.
+
 | Change | Required preparation | Verify before use |
 | --- | --- | --- |
-| Catalog pricing, discounts and context tiers | Compatible API, Control Plane and Telemetry readers; migrations through 009 | Regional references, all price buckets, explicit tier boundaries and preserved historical snapshots. |
-| Registered targets, initialization and multi-target API publication | Migrations 011-013 and target-specific worker configuration | Exact APIM identity, endpoint trust, declared capabilities and per-target results; multi-target publication is an API workflow, not a multi-select Add Model form. |
-| Create a Self-hosted Gateway | Migration 014 and the separately reviewed Gateway-management permissions | API association, a running operator-managed container, HTTPS, restart-persistent ingress and configuration-token renewal. |
-| Platform invocation attempts and explicit Gateway selection | Migration 015 and compatible API readers | Failures remain visible; selected Gateway scope is respected; incomplete usage is not billed as zero. |
-| Versioned model availability | Migration 016, compatible workers, Table access, all retained Revision policies and self-hosted enrollment | Full fresh coverage, disabled rejection and enabled recovery across all serving Gateways. |
-| Atomic budget execution | Separate opt-in flags, identities and reviewed cutover | Existing balances, admission, completion and recovery; an application update does not activate the protocol. |
+| Catalog pricing, discounts and context tiers | Compatible API, Control Plane and Telemetry readers; `007_model_price_source`, `008_price_review_and_guard`, `009_context_tier_pricing` and `010_models_dev_pricing` | Regional references, all price buckets, explicit tier boundaries and preserved historical snapshots. |
+| Registered targets, initialization and multi-target API publication | `011_gateway_targets`, `012_apim_onboarding`, `013_multi_target_rollout` and target-specific worker configuration | Exact APIM identity, endpoint trust, declared capabilities and per-target results; multi-target publication is an API workflow, not a multi-select Add Model form. |
+| Create a Self-hosted Gateway | `014_self_hosted_gateway_provisioning` and the separately reviewed Gateway-management permissions | API association, a running operator-managed container, HTTPS, restart-persistent ingress and configuration-token renewal. |
+| Platform invocation attempts and explicit Gateway selection | `015_platform_invocation_trace`, `026_invocation_trace_service_identity`, `027_product_schema_alignment` and compatible API readers | Failures remain visible; selected Gateway scope is respected; incomplete usage is not billed as zero. |
+| Versioned model availability | `016_model_availability`, compatible workers, Table access, all retained Revision policies and self-hosted enrollment | Full fresh coverage, disabled rejection and enabled recovery across all serving Gateways. |
+| Atomic budget execution and USD reservations | Complete candidate chain, including `010_budget_execution_protocol` and `021_usd_budget_reservations`; separate opt-in flags, identities and reviewed cutover | Existing balances, admission, completion and recovery; an application update does not activate the protocol. |
 
 1. Back up the existing private deployment state in an approved secret store. Keep the database,
   APIM/API identities, model references, budgets and historical releases; do not start with a new
   deployment state to upgrade an existing installation.
-2. Select and validate one compatible application candidate. Inspect which numbered migrations are
+2. Select and validate one compatible application candidate. Inspect which full migration versions are
   missing and retain the checksums of all applied migrations. Never edit an applied migration.
 3. Review separate infrastructure and policy changes, permissions, network reachability and the
   expected maintenance impact. Do not grant APIM operation-creation rights to the runtime Publisher.
-4. Deploy the matching application packages and approved migrations, then verify the actual mounted
+4. Apply the approved pending chain before starting matching application packages; verify the mounted
   packages, served frontend assets, Function host/index and API contracts.
 5. Complete each enabled feature's own installation and real acceptance checks. Record missing
   prerequisites as unavailable, and preserve prior failures and in-flight request evidence.
@@ -109,9 +116,11 @@ Neither role grants Gateway deletion, model subscription key reads, shared-key r
 updates or role assignment. The existing Publisher role is unchanged. These installation-time
 permissions require operator authorization; the application never grants itself additional roles.
 
-Before rollout, approve and apply only migration `014_self_hosted_gateway_provisioning`, preserving
-existing migration checksums and history. Deploy matching API, Control-plane and shared-model
-readers with creation disabled, then enable the settings described in
+Before rollout, approve and apply the complete pending candidate chain through `backend.migrate`,
+including `014_self_hosted_gateway_provisioning`, `027_product_schema_alignment` and
+`028_product_index_alignment`, preserving existing migration checksums and history.
+Deploy matching API, Control-plane and shared-model readers with creation disabled, then
+enable the settings described in
 [configuration](configuration.md#create-a-self-hosted-gateway-from-turnstile). Confirm the managed
 identities' effective permissions and real worker execution, not merely application availability.
 The endpoint must be reachable through HTTPS from the API and Control-plane applications.
@@ -125,8 +134,13 @@ Retain existing APIM resources, containers, application state and financial hist
 ## Budget execution cutover
 
 The atomic budget protocol is not activated by an application update. Keep all new execution flags
-off until migration `010_budget_execution_protocol`, compatible API/Telemetry/Control Plane packages,
-and the Observer image have been verified. The Observer build uses an isolated allowlist of its four
+off until the complete pending candidate chain has been applied through `backend.migrate` and
+verified. Its budget work includes `010_budget_execution_protocol`,
+`017_budget_terminal_observation`, `018_budget_reservation_resolution`,
+`021_usd_budget_reservations`, `023_usd_reservation_resolution` and
+`025_usage_cost_component_prices`; applying only the original protocol migration is insufficient
+for the current readers and USD settlement. Verify compatible API/Telemetry/Control Plane packages
+and the Observer image before activation. The Observer build uses an isolated allowlist of its four
 runtime files and three shared standard-library completion modules; its version digest includes
 those modules. Do not build from the adapter directory alone or upload a whole working tree.
 
@@ -138,7 +152,8 @@ roles or private connectivity require a separate infrastructure review, not a fe
 1. Record the current parent and operation policies, all retained revisions, reader versions, active
   work and per-scope financial counters. Verify that each application can reach the existing Table
   with its own managed identity and only its required access.
-2. Apply only the approved new migration and deploy compatible readers/writers with flags disabled.
+2. Apply all approved pending candidate migrations and deploy compatible readers/writers with
+  flags disabled.
   Confirm five Telemetry functions are indexed and the real worker can run, not just that its site
   reports Running. Preserve the existing always-on policy.
 3. Prepare an explicit epoch, model counting contracts and disabled scope seeds. Use
@@ -243,34 +258,81 @@ The supported Databricks publication path is native Anthropic chat/streaming, no
 generation or an assumption of every OpenAI-compatible operation.
 
 Foundry text, governed images and an OpenAI-compatible provider have separate model and
-credential prerequisites. Images are available without an enablement setting and require an
+credential prerequisites. Images require the explicit `IMAGE_GENERATION_ENABLED` opt-in, an
 existing Foundry image deployment, image-ready APIM infrastructure and consent for paid probes.
 Publication probes also consume upstream
 requests; include them when choosing a validation budget. Never enable an upstream provider's
 local-key authentication or weaken networking merely to complete installation.
 
-### Control-plane host storage networking
+### User settings database upgrade
 
-New installations provision the Control-plane Function's own host storage with public network
-access disabled, managed-identity authentication and Blob, Queue and Table private endpoints.
-These endpoints are distinct from the telemetry storage endpoints. The existing platform private
-DNS zones are linked to the Function VNet and receive records for this specific storage account.
+For the permission-management upgrade, apply pending `018_permission_management` using
+the same `backend.migrate` entry point before the candidate API starts. Preserve 001-017
+checksums and business tables; 018 adds only policy/audit and the effective-appointment
+projection. Stage matching API/Telemetry/Control-plane core manifests. Record complete
+settings, package hashes and a restorable database backup; pause workers during deployment
+and restore their original states/settings after readback. Entra sync and gateway identity
+projection switches must retain their current values.
 
-For an older installation, use
-[control-plane-storage-network-upgrade.bicep](../infra/control-plane-storage-network-upgrade.bicep).
-Select the storage account named by that Function's `AzureWebJobsStorage__accountName`, its existing
-resource group, VNet and private endpoint subnet. The three platform storage private DNS zones must
-already exist in that resource group and be linked to the Function VNet. The upgrade reuses the
-same private endpoint module as a fresh installation; it does not recreate the Function, storage,
-VNet or resource group, change application settings, open public access or grant additional roles.
-Review a subscription-scope what-if before deployment and require that only the selected account's
-three private endpoints and their DNS zone groups are created.
+Menu/row authorization is a security behavior change, including ordinary-user self scope.
+Do not expose Members through an older package that lacks this authorization after rollback.
+Retain additive 018 schema and audit, restore only a compatible secured runtime or hold
+the API in maintenance. Database restore is a separate recovery operation, not a package
+rollback. See [permission design](../plan/permission-management/design.md).
 
-After deployment, verify approved endpoint connections and the corresponding private DNS records,
-then verify actual timer listener activity and the original publication's transition out of
-`queued`. A Function App showing `Running` and indexed functions is not sufficient: a listener
-can fail to acquire its host-storage lease while the application still reports `Running`.
-Do not submit another publication to work around a task that has never been claimed.
+The user-settings API requires `migrations/011_user_settings_profile.up.sql`. It adds
+`app_user_avatar` for private normalized avatars and `account_security_event` for account
+change auditing and password-verification throttling. It does not rewrite existing accounts,
+sessions, budgets or usage, and needs no infrastructure changes or new Graph permissions.
+This migration's table definitions do not depend on `009_assistant_api_format` or
+`010_models_dev_pricing`, but deploying the current candidate still requires its complete
+pending chain. `011_gateway_targets` is a separate full version, not a substitute.
+
+For a fresh deployment, the existing API staging step includes all numbered migrations,
+including `011_user_settings_profile`. App Service runs migration, initial-Owner bootstrap and
+API startup in that order with `&&`; migration failure prevents bootstrap and API startup. No new Bicep
+parameter, Owner field, Graph scope, Blob Storage resource or deployment mode is required.
+The explicit pre-deployment migration procedure below is for an existing installation.
+
+No second SQL upgrade script is required: clean installs and existing installations use
+the same numbered migration through `backend.migrate`. If `011_user_settings_profile` is already
+recorded with the matching checksum, leave it unchanged and let the runner skip it. A later schema change
+needs a new numbered migration; do not add a second script that recreates these tables.
+
+Use the installation's actual backup capabilities. Azure PostgreSQL Burstable does not
+support customer on-demand backups; do not change its SKU or network rules just to run an
+upgrade. Verify existing automatic backups and recovery retention, and use a compatible
+`pg_dump --format=custom` in the authorized database environment when a fresh logical
+backup is needed. Encrypt the backup, restrict its permissions, and retain its recovery key
+outside Git. `pg_restore --list` validates the archive catalog, not a successful restore;
+test restoration separately against an explicitly authorized isolated database.
+Deployment-state secrets and installation-specific SCM/backup helpers remain private.
+
+1. Back up the existing database and record its `schema_migration` versions and checksums.
+   Use the installation's existing secret configuration and authorized migration environment;
+   do not put `DATABASE_URL` or credentials into Git or the command line.
+2. Before deploying the new API, apply pending migrations through the existing runner:
+
+   ```bash
+   uv run python -m backend.migrate
+   ```
+
+   The runner applies each pending file transactionally and verifies existing checksums.
+   Rerunning it skips applied files; do not run the SQL directly or edit an applied file.
+   The API startup migration check does not replace this pre-deployment step. Run it in
+   the existing authorized database environment without exposing credentials or temporarily
+   opening the database firewall.
+3. Confirm `011_user_settings_profile` appears once in `schema_migration`, both new tables
+   exist, and earlier checksums and account/budget/usage data are unchanged. Deploy the
+   matching API and frontend packages through the existing deployment process.
+4. Verify password-account display-name and avatar updates, wrong-password rejection,
+   password replacement followed by reauthentication, and read-only Microsoft profiles.
+   A successful password change revokes all existing Turnstile sessions for that account.
+
+For an application rollback, restore the previous API/frontend packages and retain the
+additive tables and migration ledger entry. Do not drop audit or avatar data or rewrite
+migration history. Rolling back packages does not restore changed passwords or revoked
+sessions; database restoration requires a separately reviewed recovery procedure.
 
 ### Immediate model-access upgrade
 
@@ -463,11 +525,18 @@ need `Microsoft.ApiManagement/service/apis/operations/write`.
 
 The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account. Enabled Owner accounts are immediately listed in People under the default AI Platform department so the bootstrap Owner can assign model access before generating gateway traffic. Member department placement still comes from attributed gateway usage.
 
-To rotate a password later, run the existing account command from an authorized application execution context:
+Password users can change their own password in User settings. Operators can also use
+the existing account command from an authorized application execution context:
 
 ```bash
 python -m backend.accounts <owner-email> --role owner
 ```
+
+After changing the Owner password, use the current password for deployment verification.
+Update any private `--owner-credentials` file used by automation, retaining mode `0600`.
+Do not replace the deployment state, platform keys or stored bootstrap hash: that hash
+creates an Owner only while the account table is empty. Existing accounts and their
+display names/passwords remain unchanged by restarts and repeated bootstrap attempts.
 
 ## Customer Foundry onboarding
 
@@ -520,7 +589,14 @@ Apply pending migrations `004_apim_usage_identity_guard`, `005_billable_request_
 
 The API and Control-plane packages both require the pinned Pillow dependency for full image validation. The Control-plane artifact includes the public canonical parent policy at `policies/foundry-finops-policy.xml`; publication and image rollback read it through `CONTROL_PLANE_PARENT_POLICY_PATH`. The publisher verifies the live policy and its readback, and refuses incompatible image policies instead of transforming an unknown live template. Use the APIM infrastructure upgrade below before publishing image models on an older installation; do not rerun the bootstrap template against customer routing.
 
-Image generation has no separate enablement switch. Keep the evidence-v2 cutoff unset during the code and migration rollout; authorizing paid publication probes and scheduling the future evidence cutoff remain separate operational decisions. This upgrade does not provision a Foundry account or model, modify an upstream deployment, or grant new provider roles.
+`IMAGE_GENERATION_ENABLED` defaults to false in this fork; the Bicep parameter
+`imageGenerationEnabled` also defaults to false. Keep `IMAGE_GENERATION_ENABLED=false` during
+the code and migration rollout. Enable it only after verifying the image infrastructure,
+compatible packages and provider prerequisites described in [configuration](configuration.md).
+Keep the evidence-v2 cutoff unset during rollout, or preserve an existing cutoff unchanged.
+Neither migration nor the image flag authorizes paid publication probes or scheduling the future
+evidence cutoff; these remain separate operational decisions. This upgrade does not provision a
+Foundry account or model, modify an upstream deployment, or grant new provider roles.
 
 ### Incremental APIM infrastructure upgrade
 

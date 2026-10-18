@@ -18,6 +18,7 @@ from ..domain.application_access import (
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionProvisionSpec,
     application_id_for,
+    application_organization,
     application_subscription_id_for,
 )
 from ..domain.control_plane import (
@@ -156,6 +157,7 @@ from ..persistence.repository import QueryRepository
 from ..pricing.catalog import CompositeCatalog, build_default_catalog, parse_context_tier
 from ..pricing.context import context_price_reference, resolve_context_prices
 from ..security import CredentialCipher
+from .directory_catalog import catalog_for
 
 
 class ControlPlaneConflictError(ValueError):
@@ -213,6 +215,7 @@ class GatewayControlPlaneService:
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         application_product_id: str = _APPLICATION_PRODUCT_ID,
+        image_generation_enabled: bool = False,
         image_generation_defaults: ImageGenerationLimits | None = None,
         databricks_oauth_enabled: bool = False,
         target_inventory_sync_enabled: bool = False,
@@ -238,6 +241,7 @@ class GatewayControlPlaneService:
         self._application_default_tokens_per_minute = application_default_tokens_per_minute
         self._application_product_id = application_product_id
         self._image_generation_defaults = image_generation_defaults
+        self._image_generation_enabled = image_generation_enabled
         self._target_inventory_sync_enabled = target_inventory_sync_enabled
         self._deployment_scoping_enabled = deployment_scoping_enabled
         self._target_registry_enabled = target_registry_enabled
@@ -1366,6 +1370,10 @@ class GatewayControlPlaneService:
             )
         ):
             raise ControlPlaneConflictError("APIM subscription ID already exists")
+        try:
+            application_organization(request.tags, catalog=catalog_for(self._repository))
+        except ValueError as error:
+            raise ControlPlaneConflictError(str(error)) from error
         spec = GatewayApplicationSubscriptionProvisionSpec(
             provisioning_version=2,
             gateway_profile_id=gateway_profile_id,
@@ -2300,6 +2308,8 @@ class GatewayControlPlaneService:
         effective = GatewayPublication.model_validate(effective_row)
         declared_profiles = {}
         for model_id, configuration in (image_configurations or {}).items():
+            if not self._image_generation_enabled:
+                raise ControlPlaneUnavailableError("Image generation is not enabled")
             model = self._find(registry["models"], model_id)
             if model is None or model.get("capabilities") != ["image_generation"]:
                 raise ControlPlaneConflictError("An image profile requires an existing image model")
@@ -3230,11 +3240,15 @@ class GatewayControlPlaneService:
         return GatewayReleaseSpec.model_validate(payload)
 
     def publish(
-        self, write: GatewayPublicationCreate, created_by: str
+        self, write: GatewayPublicationCreate, created_by: str,
+        *, pricing_values: dict[str, Any] | None = None,
     ) -> GatewayPublication:
+        if write.model.operation == "image_generation" and not self._image_generation_enabled:
+            raise ControlPlaneUnavailableError("Image generation is not enabled")
         logical_model_id = uuid4() if self._target_registry_enabled else None
         prepared = self._prepare_model_publication(
             write, logical_model_id, reuse_existing_model=self._target_registry_enabled,
+            pricing_values=pricing_values,
         )
         return self._queue_release(
             prepared.spec,
@@ -3249,6 +3263,7 @@ class GatewayControlPlaneService:
         write: GatewayPublicationCreate,
         logical_model_id: UUID | None,
         *, reuse_existing_model: bool = False,
+        pricing_values: dict[str, Any] | None = None,
     ) -> _PreparedModelPublication:
         from ..persistence.repository_support import _managed_program_publication
 
@@ -3316,7 +3331,9 @@ class GatewayControlPlaneService:
                         model = model.model_copy(update={
                             "context_price_tiers": previous_model.context_price_tiers,
                         })
-        if not reused:
+        if pricing_values is not None:
+            model = model.model_copy(update={"price_configuration": pricing_values})
+        elif not reused:
             model = self._price_model(model, runtime)
         binding_runtime = self._model_binding_runtime(provider, runtime, model)
 
@@ -4676,7 +4693,7 @@ class GatewayControlPlaneService:
                 output_cost_per_million=model.output_cost_per_million,
                 cached_cost_per_million=model.cached_cost_per_million,
                 cache_write_cost_per_million=model.cache_write_cost_per_million,
-                price_source=model.price_source,
+                price_source=model.price_source or PriceSource.MANUAL,
                 price_reference=model.price_reference,
                 price_discount_percent=model.price_discount_percent,
                 context_price_references=model.context_price_references,
@@ -4713,7 +4730,12 @@ class GatewayControlPlaneService:
         return ModelTarget(
             **model.model_dump(exclude={
                 "deployment_name", "operation", "image_configuration",
+                "price_source", "price_reference", "price_discount_percent",
+                "price_entry_digest", "allow_unpriced",
             }),
+            price_source=model.price_source or PriceSource.MANUAL,
+            price_reference=model.price_reference,
+            price_discount_percent=model.price_discount_percent,
             family_key=family,
             capabilities=capabilities,
             allowed_roles=["owner", "admin", "member"],
@@ -5011,8 +5033,10 @@ class GatewayControlPlaneService:
         }:
             return ApiFormat.ANTHROPIC_MESSAGES
         return ApiFormat.OPENAI_CHAT
+
+
     def _price_model(self, model: ModelTarget, runtime: Mapping[str, Any]) -> ModelTarget:
-        if model.price_source is PriceSource.MANUAL:
+        if model.price_source in {PriceSource.MANUAL, PriceSource.MODELS_DEV}:
             return model
         percent = model.price_discount_percent
         if percent is None and runtime.get("price_discount_percent") is not None:

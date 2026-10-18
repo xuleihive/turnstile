@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Activity,
+  Archive,
   AlertTriangle,
   Bot,
   ChartPie,
@@ -61,7 +62,10 @@ import { ChartSeriesLegend, useSeriesToggle } from "../../../components/finops/c
 import { CategoryAxisTick, categoryAxisWidth, categoryTickGutter, useChartWidthKey } from "../../../components/finops/category-axis"
 import { ResizableGridTable } from "../../../components/ui/resizable-table"
 import { FinOpsChartTooltip } from "../../../components/finops/chart-tooltip"
-import { FilterMenuField } from "../../../components/finops/filter-menu-field"
+import { FilterMenuField, MultiSelectFilterField } from "../../../components/finops/filter-menu-field"
+import {
+  reconcileUsageScope, usageArchiveFilter, usageArchiveSelection, usageFacetOptions, usageSelection,
+} from "../../../lib/usage-filter-scope"
 import { AnomalyRuleManagement } from "./anomaly-rule-management"
 import { AgentInvocation } from "./dashboard-invocation"
 import {
@@ -101,6 +105,7 @@ import type {
   TrendDimension,
   TrendMetric,
   UsageFilters,
+  UsageDirectoryStatus,
   UsageAnomaly,
   UsageRequestDetail,
   UsageRequestSummary,
@@ -155,22 +160,40 @@ export function FinOpsDashboard({
   const tab = initialTab
   const header = pageHeaders[tab]
   const HeaderIcon = header.icon
-  const entityQuery = useQuery(finopsQueries.entities())
   const registryQuery = useQuery(finopsQueries.registry())
-  const filters = useMemo<UsageFilters>(() => ({ ...usageWindow(days), ...scope }), [days, scope])
+  const managedScope = useMemo(() => ({
+    ...scope, directory_status: usageArchiveSelection(scope.directory_status),
+  }), [scope])
+  const scopeFilters = useMemo<UsageFilters>(() => ({
+    ...usageWindow(days), ...managedScope,
+    directory_status: usageArchiveFilter(managedScope.directory_status),
+  }), [days, managedScope])
+  const activeEntities = useQuery({ ...finopsQueries.entities(), enabled: tab === "invoke" })
+  const historyEntities = useQuery({ ...finopsQueries.queryEntities(scopeFilters), enabled: tab !== "invoke" })
+  const effectiveScope = useMemo(() => historyEntities.data
+    ? reconcileUsageScope(managedScope, historyEntities.data) : managedScope, [managedScope, historyEntities.data])
+  const filters = useMemo(() => ({
+    ...scopeFilters, ...effectiveScope,
+    directory_status: usageArchiveFilter(effectiveScope.directory_status),
+  }), [scopeFilters, effectiveScope])
+  const entityQuery = tab === "invoke" ? activeEntities : historyEntities
   const entities = entityQuery.data
   const unpricedModels = registryQuery.data?.models.filter(model => model.enabled && !hasModelPrices(model)) ?? []
   const costAvailable = registryQuery.data != null && unpricedModels.length === 0
-  const agents = entities?.agents ?? []
-  const users = entities?.users.filter((item) => !scope.department_id || item.parent_id === scope.department_id) ?? []
-  const updateScope = (patch: Partial<FinOpsScope>) => onScopeChange({ ...scope, ...patch })
-  const activeFilterCount = Object.values(scope).filter(Boolean).length + (days === 30 ? 0 : 1)
+  const facets = historyEntities.data ? usageFacetOptions(historyEntities.data, filters) : null
+  const updateScope = (patch: Partial<FinOpsScope>) => onScopeChange({ ...effectiveScope, ...patch })
+  const directoryStatuses = managedScope.directory_status
+  const activeFilterCount = Object.entries(effectiveScope).filter(([key, value]) =>
+    key !== "directory_status" && (Array.isArray(value) ? value.length > 0 : Boolean(value))).length
+    + (days === 30 ? 0 : 1)
+    + (directoryStatuses.length === 1 && directoryStatuses[0] === "active" ? 0 : 1)
   const refreshCurrentPage = async () => {
     setIsRefreshing(true)
     try {
       await Promise.all([
         queryClient.refetchQueries({ queryKey: finopsKeys.all, type: "active" }),
         queryClient.refetchQueries({ queryKey: finopsKeys.entities, type: "active" }),
+        queryClient.refetchQueries({ queryKey: finopsKeys.queryEntities(filters), type: "active" }),
         queryClient.refetchQueries({ queryKey: finopsKeys.registry, type: "active" }),
       ])
     } finally {
@@ -184,16 +207,23 @@ export function FinOpsDashboard({
     </header>
     {tab !== "invoke" && <div className="finops-filterbar">
       <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== 30} allowAll={false} options={[{ value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(Number(next))} />
-      {entities && <>
-        <FilterMenuField label="组织" icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
-        <FilterMenuField label="部门" icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
+      <MultiSelectFilterField label="归档状态" icon={Archive} value={directoryStatuses}
+        translateValues active={directoryStatuses.length !== 1 || directoryStatuses[0] !== "active"}
+        options={[{ value: "active", label: "启用" }, { value: "archived", label: "已归档" }]}
+        onChange={next => updateScope({
+          directory_status: next as UsageDirectoryStatus[], organization_id: undefined,
+          department_id: undefined, agent_id: undefined, user_id: undefined,
+        })} />
+      {facets && <>
+        <MultiSelectFilterField label="组织" icon={Building2} value={usageSelection(effectiveScope.organization_id)} options={facets.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
+        <MultiSelectFilterField label="部门" icon={Users} value={usageSelection(effectiveScope.department_id)} options={facets.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
         {/* No project filter. It is the one dimension no token carries -- the APIM policy
             writes it as `unattributed` outright -- so 98.8% of production tokens have
             none, and a control that narrows to 1.2% of the spend is a trap rather than a
             tool. `project_id` stays in the API and the schema for callers that do send
             it. */}
-        <FilterMenuField label="智能体" icon={Bot} value={scope.agent_id} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
-        <FilterMenuField label="人员" icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
+        <MultiSelectFilterField label="智能体" icon={Bot} value={usageSelection(effectiveScope.agent_id)} options={facets.agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
+        <MultiSelectFilterField label="人员" icon={UserRound} value={usageSelection(effectiveScope.user_id)} options={facets.users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
       </>}
       {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange(30); onScopeChange({}) }}><X size={14} />重置</Button>}
     </div>}
@@ -206,7 +236,7 @@ export function FinOpsDashboard({
         {entities && registryQuery.data && tab === "analytics" && <ModelUsage filters={filters} costAvailable={costAvailable} />}
         {entities && tab === "trends" && <UsageTrends filters={filters} />}
         {entities && registryQuery.data && tab === "governance" && <Governance filters={filters} entities={entities} models={registryQuery.data.models} onOpenRequest={onOpenRequest} />}
-        {entities && registryQuery.data && tab === "requests" && <RequestTrace filters={filters} models={registryQuery.data.models} />}
+        {entities && registryQuery.data && tab === "requests" && <RequestTrace key={JSON.stringify(effectiveScope)} filters={filters} models={registryQuery.data.models} />}
         {entities && tab === "invoke" && <AgentInvocation entities={entities} />}
       </div>
     </div>
@@ -1032,7 +1062,7 @@ function GovernanceSignalTable({ signals, onSelect }: {
   const rows = signals.slice(start, start + SIGNALS_PER_PAGE)
   return <>
     <ResizableGridTable className="governance-table" role="table" aria-label="治理信号" headerSelector=".governance-head" minWidths={[220, 120, 90, 90, 140, 24]} columnGap={14} horizontalPadding={36}>
-      <div className="governance-head" role="row"><span>信号</span><span>维度</span><span>实际值</span><span>阈值</span><span>时间</span><span /></div>
+      <div className="governance-head" role="row"><span><span>信号</span></span><span><span>维度</span></span><span><span>实际值</span></span><span><span>阈值</span></span><span><span>时间</span></span><span /></div>
       {rows.map((item) => <button type="button" className="governance-signal-row" key={item.id} title={`查看信号详情：${item.title}`} aria-label={`查看信号详情：${item.title}，${item.dimension_name}`} onClick={() => onSelect(item)}><span><i className={item.severity} /><b>{item.title}</b><small>{item.description}</small></span><span>{item.dimension_name}</span><span>{item.actual_value.toFixed(2)}</span><span>{item.threshold_value.toFixed(2)}</span><span>{new Date(item.detected_at).toLocaleString(getIntlLocale())}</span><ChevronRight aria-hidden="true" size={16} /></button>)}
     </ResizableGridTable>
     {pageCount > 1 && <div className="people-table-footer">

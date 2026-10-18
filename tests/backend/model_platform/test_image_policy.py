@@ -25,7 +25,7 @@ def test_image_operation_has_budget_marker_and_bypasses_text_observer() -> None:
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     compiled = ApimPolicyCompiler(
         usage_observer_url="https://observer.example",
         usage_observer_key_named_value="adapter-key",

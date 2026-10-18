@@ -356,8 +356,9 @@ export function ModelPublicationDialog({
   const [modelKey, setModelKey] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [upstreamModelId, setUpstreamModelId] = useState("")
-  const [contextWindow, setContextWindow] = useState("")
   const [pricing, setPricing] = useState(() => createModelPriceDraft(registry.context_pricing_supported === true, registry.context_price_rules_supported === true))
+  const contextWindow = pricing.contextWindow ?? ""
+  const setContextWindow = (value: string) => setPricing(current => ({ ...current, contextWindow: value, contextOrigin: "user" }))
   const { inputPrice, outputPrice, cacheReadPrice, cacheWritePrice } = pricing
   const [formError, setFormError] = useState<string | null>(null)
   const [publishError, setPublishError] = useState<string | null>(null)
@@ -531,6 +532,10 @@ export function ModelPublicationDialog({
         output_cost_per_million: pricing.contextPricingPreview ? null : numberOrNull(outputPrice),
         cached_cost_per_million: decision || pricing.contextPricingPreview ? null : numberOrNull(cacheReadPrice),
         cache_write_cost_per_million: decision || imageGeneration || pricing.contextPricingPreview ? null : numberOrNull(cacheWritePrice),
+        ...(pricing.priceSource === "models_dev" ? {
+          price_entry_digest: pricing.priceEntryDigest || null,
+          allow_unpriced: pricing.allowUnpriced,
+        } : {}),
         ...(pricing.contextPricingPreview ? {
           context_price_references: pricing.contextPriceReferences,
           ...(contextPriceRulePayload(pricing) ? { context_price_rule: contextPriceRulePayload(pricing) } : {}),
@@ -808,6 +813,11 @@ export function ModelPublicationDialog({
                 draft={pricing} setDraft={setPricing} busy={publishing}
                 showAnthropic={!decision && !imageGeneration}
                 imageGeneration={imageGeneration}
+                publicRequest={{ runtime_id: selectedRuntime.id, operation: imageGeneration ? "image_generation" : "chat",
+                  deployment_name: foundry ? foundryDeployment : undefined,
+                  upstream_model_id: foundry ? undefined : upstreamModelId,
+                  model_key: foundry ? undefined : effectiveModelKey,
+                  display_name: foundry ? undefined : effectiveDisplayName }}
                 connectionDiscount={selectedRuntime.price_discount_percent ?? null} />
               {!imageGeneration && (!decision || pricing.priceSource !== "manual") && <div className="form-grid">
                 <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input id="publication-context-window" type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>

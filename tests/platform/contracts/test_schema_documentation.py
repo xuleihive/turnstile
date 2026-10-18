@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
+
+from backend.migrate import migration_files
 from tests.support.paths import REPOSITORY_ROOT
 
 EXPECTED_DOCUMENTS = {
     "README.md",
     "architecture.md",
     "configuration.md",
+    "organization-management.md",
     "deployment.md",
     "e2e-validation.md",
     "security.md",
@@ -45,7 +49,7 @@ def test_readme_covers_the_operator_journey() -> None:
 
 
 def test_repository_documents_one_database_entry_point() -> None:
-    migrations = sorted((REPOSITORY_ROOT / "migrations").glob("*.up.sql"))
+    migrations = migration_files(REPOSITORY_ROOT / "migrations")
     documents = [
         REPOSITORY_ROOT / "README.md",
         *sorted((REPOSITORY_ROOT / "docs").glob("*.md")),
@@ -60,6 +64,69 @@ def test_repository_documents_one_database_entry_point() -> None:
         text = path.read_text(encoding="utf-8")
         assert "database-baseline" not in text
         assert "migration-manifest" not in text
+
+
+def test_documented_migration_inventory_matches_runner_order_and_count() -> None:
+    testing = (REPOSITORY_ROOT / "docs/testing.md").read_text(encoding="utf-8")
+    inventory = testing.split("### Migration inventory", 1)[1].split("\n### ", 1)[0]
+    documented = re.findall(r"^\| `([0-9]{3}_[^`]+\.up\.sql)` \|", inventory, re.MULTILINE)
+    expected = [path.name for path in migration_files(REPOSITORY_ROOT / "migrations")]
+
+    assert documented == expected
+    count = re.search(r"current chain contains \*\*([0-9]+) migrations\*\*", inventory)
+    assert count is not None and int(count[1]) == len(expected)
+    assert "full filename minus `.up.sql`" in " ".join(testing.split())
+    assert "per numbered migration (currently" not in testing
+
+
+def test_deployment_prerequisites_require_the_complete_candidate_chain() -> None:
+    deployment = (REPOSITORY_ROOT / "docs/deployment.md").read_text(encoding="utf-8")
+    normalized = " ".join(deployment.split())
+    cutover = deployment.split("## Budget execution cutover", 1)[1].split("\n## ", 1)[0]
+
+    assert "all pending migrations shipped with the compatible candidate" in normalized
+    assert "testing.md#migration-inventory" in deployment
+    assert "backend.migrate" in cutover
+    for version in (
+        "010_budget_execution_protocol",
+        "017_budget_terminal_observation",
+        "018_budget_reservation_resolution",
+        "021_usd_budget_reservations",
+        "023_usd_reservation_resolution",
+        "025_usage_cost_component_prices",
+    ):
+        assert f"`{version}`" in cutover
+    assert not re.search(r"\|[^\n]*\b[Mm]igrations? (?:through )?[0-9]{3}\b", deployment)
+    assert "apply only migration" not in normalized
+    assert "Apply only the approved new migration and" not in normalized
+    assert "If `011` is already recorded" not in normalized
+
+
+def test_pricing_upgrade_distinguishes_sql_defaults_from_absent_row_reading() -> None:
+    testing = " ".join((REPOSITORY_ROOT / "docs/testing.md").read_text().split())
+
+    assert "`007_model_price_source` creates the side tables" in testing
+    assert "`model_runtime_price` and `managed_model_price`" in testing
+    assert "SQL column default remains `manual`" in testing
+    assert "Explicit manual rows remain manual" in testing
+    assert "absent row follows the default public catalog" in testing
+    assert "neither migration backfills existing models or rewrites charged rates" in testing
+    assert "only adds nullable columns" not in testing
+    assert "defaults every existing model" not in testing
+
+
+def test_bootstrap_and_directory_docs_use_candidate_migrations_not_old_counts() -> None:
+    e2e = " ".join((REPOSITORY_ROOT / "docs/e2e-validation.md").read_text().split())
+    directory = " ".join((REPOSITORY_ROOT / "docs/organization-management.md").read_text().split())
+
+    assert "backend.migrate" in e2e
+    assert "testing.md#migration-inventory" in e2e
+    assert "- [ ] Apply `001_initial_schema`" not in e2e
+    assert "testing.md#migration-inventory" in directory
+    assert "`018_permission_management`" in directory
+    assert "every applied checksum" in directory
+    assert "schemas 012-017" not in directory
+    assert "require all 18 applied checksums" not in directory
 
 
 def test_documentation_contains_no_original_environment_identifiers() -> None:
@@ -101,8 +168,9 @@ def test_image_upgrade_documents_independent_defaults_and_validation_limits() ->
     configuration = (REPOSITORY_ROOT / "docs/configuration.md").read_text()
     architecture = (REPOSITORY_ROOT / "docs/architecture.md").read_text()
     testing = (REPOSITORY_ROOT / "docs/testing.md").read_text()
+    deployment = " ".join((REPOSITORY_ROOT / "docs/deployment.md").read_text().split())
     assert (
-        "Image generation is a standard capability and requires no enablement setting"
+        "`IMAGE_GENERATION_ENABLED` defaults to false"
         in configuration
     )
     assert "effective_at = NULL" in configuration
@@ -110,6 +178,10 @@ def test_image_upgrade_documents_independent_defaults_and_validation_limits() ->
     assert architecture.count("## Ledger finalization") == 1
     assert "SQL source checks cannot prove" in testing
     assert "separately authorized real targets" in testing
+    assert "`IMAGE_GENERATION_ENABLED` defaults to false" in deployment
+    assert "Keep `IMAGE_GENERATION_ENABLED=false`" in deployment
+    assert "no separate enablement switch" not in deployment
+    assert "without an enablement setting" not in deployment
 
 
 def test_model_availability_documents_installation_and_evidence_boundaries() -> None:

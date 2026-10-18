@@ -2720,27 +2720,12 @@ class PostgreSqlPublicationRepositoryMixin:
                         publication_id,
                     ),
                 )
-                connection.execute(
-                    """INSERT INTO managed_model_price (
-                           model_id, price_source, price_reference, price_discount_percent,
-                           list_input_cost_per_million, list_output_cost_per_million,
-                           list_cached_cost_per_million, list_cache_write_cost_per_million,
-                           price_synced_at, price_sync_status, context_price_tiers
-                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        model["id"], model_spec.get("price_source", "manual"),
-                        model_spec.get("price_reference"), model_spec.get("price_discount_percent"),
-                        model_spec.get("list_input_cost_per_million"),
-                        model_spec.get("list_output_cost_per_million"),
-                        model_spec.get("list_cached_cost_per_million"),
-                        model_spec.get("list_cache_write_cost_per_million"),
-                        publication["created_at"]
-                        if model_spec.get("price_source", "manual") != "manual" else None,
-                        "ok" if model_spec.get("price_source", "manual") != "manual" else None,
-                        Jsonb(model_spec.get("context_price_tiers") or []),
-                    ),
-                )
-            self._sync_active_route_bindings(connection, publication)
+                if pricing := model_spec.get("price_configuration"):
+                    from .repository_registry import PostgreSqlRegistryRepositoryMixin
+
+                    PostgreSqlRegistryRepositoryMixin._write_price(
+                        connection, "model", model["id"], pricing,
+                    )
             row = self._complete_gateway_activation(
                 connection, publication, publication_id, actor
             )

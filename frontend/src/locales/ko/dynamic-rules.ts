@@ -81,8 +81,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/有\s*(\d+)\s*个模型没有维护价格，相关 token 未计入费用统计。/g, (_match, value) => `모델 ${value}개에 가격이 설정되지 않아 해당 token은 비용 집계에서 제외됩니다.`],
   [/本次输出使用了\s*([\d,]+)\s*Token，已达到请求上限；模型可能在生成可见回答前耗尽了输出预算。后续调用已提高上限。/g, (_match, value) => `이번 응답에서 출력 Token ${value}을(를) 사용해 요청 한도에 도달했습니다. 모델이 표시 가능한 응답을 생성하기 전에 출력 예산을 소진했을 수 있습니다. 이후 호출의 한도는 상향되었습니다.`],
   [/(\d+)\s*\/\s*(\d+)\s*次调用失败，错误率超过\s*(\d+(?:\.\d+)?)%。/g, (_match, failed, total, threshold) => `${total}건 중 ${failed}건 호출이 실패했으며 오류율이 ${threshold}%를 초과했습니다.`],
-  // 이상 징후 규칙의 이름과 설명은 임계값이 문자열에 포함된 채 PostgreSQL에 저장되는 편집 가능한 데이터이므로,
-  // 시드 문자열이 아니라 형태로 매칭한다. 임계값을 바꾸면 정확 일치 키는 즉시 깨진다.
   [/慢请求超过\s*(\d+(?:\.\d+)?)\s*秒/g, (_match, value) => `${value}초 초과 요청`],
   [/错误率超过\s*(\d+(?:\.\d+)?)%/g, (_match, value) => `오류율 ${value}% 초과`],
   [/高成本请求\s*P(\d+)/g, (_match, value) => `고비용 요청 P${value}`],
@@ -125,8 +123,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d+)\s*个智能体/g, (_match, value) => `Agent ${value}개`],
   [/(\d+)\s*个 Agent/g, (_match, value) => `Agent ${value}개`],
   [/(\d+)\s*个模型/g, (_match, value) => `모델 ${value}개`],
-  /* 아래의 일반 `N 个图表` 규칙보다 먼저 와야 한다. 그 규칙이 문장 중간만 바꾸면
-     문장 전체로는 다시 일치하지 않는다. */
   [/将作为第\s*(\d+)\s*个图表加入「([^」]*)」，报表名称保持不变。/g,
     (_match, index, title) => `'${title}'에 ${index}번째 차트로 추가됩니다. 리포트 이름은 변경되지 않습니다.`],
   [/「([^」]*)」已包含此图表，保存会用最新数据刷新它。/g,
@@ -156,4 +152,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
   [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `이전 기간 대비 ${value}%`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `사용량 비중 ${value}%`],
+  [/^全部 (\d+) 个模型 · 已更新 (\d+) · 无变化 (\d+) · 手动跳过 (\d+)$/g,
+    (_match, total, updated, unchanged, manual) => `${total}개 모델 · 업데이트 ${updated} · 변경 없음 ${unchanged} · 수동 건너뜀 ${manual}`],
+  [/^同步全部 (\d+) 个已保存模型的定价$/g, (_match, count) => `저장된 전체 ${count}개 모델 가격 동기화`],
 ]

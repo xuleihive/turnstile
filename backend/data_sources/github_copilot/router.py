@@ -28,6 +28,7 @@ from ...http.session import (
     OwnerSession,
     require_allowed_write_origin,
     require_authenticated_session,
+    require_unscoped_read,
 )
 from ...services.runtime_service import ModelRuntimeService
 from .assistant import CopilotAssistantService
@@ -71,6 +72,7 @@ router = APIRouter()
 protected = APIRouter(
     dependencies=[
         Depends(require_authenticated_session),
+        Depends(require_unscoped_read),
         Depends(require_allowed_write_origin),
     ]
 )
@@ -115,13 +117,9 @@ CopilotAssistantDependency = Annotated[
 def request_origin(request: Request) -> str:
     proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0]
     host = (
-        request.headers.get("x-forwarded-host")
-        or request.headers.get("host")
-        or request.url.netloc
+        request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     ).split(",")[0]
-    if proto.strip() not in {"http", "https"} or any(
-        character in host for character in "/\\?#@"
-    ):
+    if proto.strip() not in {"http", "https"} or any(character in host for character in "/\\?#@"):
         raise HTTPException(status_code=400, detail="Invalid request origin")
     return f"{proto.strip()}://{host.strip()}"
 
@@ -221,9 +219,7 @@ def start_copilot_oauth(
         callback_origin = request_origin(request)
         normalized_organization = organization.strip().lower() if organization else None
         if purpose == "organization" and identity.role != "owner":
-            raise CopilotPermissionError(
-                "Owner role is required to connect organization data"
-            )
+            raise CopilotPermissionError("Owner role is required to connect organization data")
         if purpose == "organization" and not normalized_organization:
             raise ValueError("A GitHub organization is required")
         url = service.oauth_authorize_url(
@@ -262,10 +258,7 @@ async def complete_copilot_oauth(
     except CopilotPermissionError as permission_error:
         logger.warning("GitHub OAuth callback rejected: %s", permission_error)
         return RedirectResponse(
-            url=(
-                "/?page=finops-overview&source=github-copilot"
-                "&github_error=permission_denied"
-            ),
+            url=("/?page=finops-overview&source=github-copilot&github_error=permission_denied"),
             status_code=302,
         )
     except GitHubCopilotApiError as api_error:

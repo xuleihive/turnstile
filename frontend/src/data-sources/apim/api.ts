@@ -13,6 +13,7 @@ import type {
   DistributionDimension,
   DistributionResponse,
   EnterpriseEntityCatalog,
+  UsageQueryEntityCatalog,
   ExecutiveOverview,
   GatewayPublication,
   GatewayPublicationAccepted,
@@ -52,18 +53,12 @@ import type {
   ImageInvocationRequest,
   ImageInvocationResponse,
   ModelRegistry,
-  MultiTargetPublicationAccepted,
-  MultiTargetPublicationCreate,
-  MultiTargetRollout,
-  MultiTargetRolloutList,
-
-
-
-
-
-
-
-
+  PriceCatalogModel,
+  PriceCatalogModelsResponse,
+  PriceCatalogOptionsResponse,
+  PriceSyncResponse,
+  PricePreviewRequest,
+  PricePreviewResponse,
   OptimizationEvent,
   PeopleBudgetFilter,
   RunDetail,
@@ -87,9 +82,10 @@ import type {
   UsageRequestDetail,
   UsageRequestPage,
   UsageRequestSummary,
-  PriceCatalogModelsResponse,
-  PriceCatalogOptionsResponse,
-  PriceSyncResponse,
+  MultiTargetPublicationCreate,
+  MultiTargetPublicationAccepted,
+  MultiTargetRollout,
+  MultiTargetRolloutList,
 } from "./types"
 import { getIntlLocale } from "../../locales/index"
 import { ApiError, request, requestSensitiveJson, writeJson } from "../../api/client"
@@ -340,6 +336,8 @@ export const dataSource = {
   mode: "api" as const,
   defaultFilters: () => usageWindow(30),
   entities: () => request<EnterpriseEntityCatalog>("/api/v1/enterprise/entities").then(normalizeEnterpriseUsers),
+  queryEntities: (filters: UsageFilters) =>
+    request<UsageQueryEntityCatalog>(`/api/v1/enterprise/query-entities?${params(filters)}`),
   executiveOverview: (filters: UsageFilters) => request<ExecutiveOverview>(
     `/api/v1/observability/executive-overview?${params(filters)}`,
   ),
@@ -526,15 +524,30 @@ export const dataSource = {
     { method: "DELETE" },
   ).then(normalizeRegistry),
   saveModel: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/models", value, id),
-  modelAvailability: () => request<ModelAvailabilityList>(
-    "/api/v1/model-management/model-availability", { cache: "no-store" },
+  priceCatalogModels: (query: string, source: PriceCatalogModel["source"]) => request<PriceCatalogModelsResponse>(
+    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}`,
+  ),
+  priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
+    `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,
   ),
   changeModelAvailability: (id: string, value: ModelAvailabilityCommand) => writeJson<ModelAvailabilityAccepted>(
     `/api/v1/model-management/models/${encodeURIComponent(id)}/availability`, value, "PUT",
   ),
+  modelAvailability: () => request<ModelAvailabilityList>(
+    "/api/v1/model-management/model-availability", { cache: "no-store" },
+  ),
   retryModelAvailability: (operationId: string, revision: number) => writeJson<ModelAvailabilityAccepted>(
     `/api/v1/model-management/model-availability/operations/${encodeURIComponent(operationId)}/retry`,
     { expected_revision: revision },
+  ),
+  // Omitting the ids syncs everything that follows a list price. Passing them is how the
+  // price table's row selection turns into "sync just these".
+  syncPrices: (modelIds?: string[]) => writeJson<PriceSyncResponse>(
+    "/api/v1/model-management/price-sync",
+    { model_ids: modelIds ?? null },
+  ).then((result) => ({ ...result, registry: normalizeRegistry(result.registry) })),
+  pricePreview: (value: PricePreviewRequest) => writeJson<PricePreviewResponse>(
+    "/api/v1/model-management/price-preview", value,
   ),
   deleteModel: (id: string) => request<GatewayPublicationAccepted>(
     `/api/v1/model-management/models/${encodeURIComponent(id)}`,
@@ -807,14 +820,4 @@ export const dataSource = {
   executeTraffic: (value: TrafficGenerationRequest) => writeJson<TrafficGenerationResult>(
     "/api/v1/traffic/execute", value,
   ),
-  priceCatalogModels: (query: string) => request<PriceCatalogModelsResponse>(
-    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}`,
-  ),
-  priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
-    `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,
-  ),
-  syncPrices: (modelIds?: string[]) => writeJson<PriceSyncResponse>(
-    "/api/v1/model-management/price-sync",
-    { model_ids: modelIds ?? null },
-  ).then((result) => ({ ...result, registry: normalizeRegistry(result.registry) }))
 }

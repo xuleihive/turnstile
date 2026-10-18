@@ -465,6 +465,13 @@ schemas:
         items:
           $ref: ../../openapi.yaml#/components/schemas/DepartmentEnforcement
         type: array
+      coverage:
+        type: string
+        enum:
+        - global
+        - department
+        default: global
+        description: Department-scoped organization rows are visible subtotals, not global limits or usage.
     additionalProperties: false
     type: object
     required:

@@ -42,7 +42,6 @@ from uuid import UUID, uuid4
 import httpx
 
 from ..domain.application_access import GatewayApplicationLedgerState, application_organization
-from ..domain.enterprise import enterprise_catalog
 from ..domain.ledger import (
     BudgetReservationAdmission,
     BudgetReservationFinalization,
@@ -972,12 +971,17 @@ class LedgerSyncService:
         return written
 
     def project_application_mappings(self, application_id: UUID | None = None) -> int:
+        from ..persistence.directory_catalog import catalog_for
+
         written = 0
-        departments = {item.id: item.name for item in enterprise_catalog().departments}
+        catalog = catalog_for(self._repository, include_inactive=True)
+        departments = {item.id: item.name for item in catalog.departments}
         for mapping in self._repository.gateway_application_ledger_mappings():
             if application_id is not None and str(mapping["application_id"]) != str(application_id):
                 continue
-            organization = application_organization(dict(mapping.get("tags") or {}))
+            organization = application_organization(
+                dict(mapping.get("tags") or {}), catalog=catalog,
+            )
             self._store.upsert(
                 application_map_partition_key(mapping["gateway_profile_id"]),
                 str(mapping["apim_subscription_id"]),

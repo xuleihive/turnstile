@@ -13,7 +13,8 @@ schemas:
         - 'null'
         maxLength: 120
         minLength: 1
-        description: 'Required only when starting a new report. An existing report already has a
+        description: 'Required only when starting a new report. An existing report
+          already has a
 
           name, and letting this field rename it would make adding a chart destructive.
 
@@ -37,11 +38,14 @@ schemas:
     description: 'Pin one chart.
 
 
-      `report_id` decides between the two cases the dialog offers: absent means "start a
+      `report_id` decides between the two cases the dialog offers: absent means "start
+      a
 
-      new report", present means "add to that one". `title` is therefore only required in
+      new report", present means "add to that one". `title` is therefore only required
+      in
 
-      the first case — an existing report already has a name, and letting this field rename
+      the first case — an existing report already has a name, and letting this field
+      rename
 
       it would make adding a chart a destructive act.'
   PinnedChartRename:
@@ -84,9 +88,11 @@ schemas:
     required:
     - chart_ids
     title: PinnedChartOrder
-    description: 'The report''s charts in their new order. The whole list is sent rather than a moved
+    description: 'The report''s charts in their new order. The whole list is sent
+      rather than a moved
 
-      id and an index, so the request states the outcome instead of describing an edit.
+      id and an index, so the request states the outcome instead of describing an
+      edit.
 
       '
   PinnedReportLayout:
@@ -212,7 +218,8 @@ schemas:
         - string
         - 'null'
         format: uuid
-        description: 'The model the assistant calls. Null means automatic selection, which is the
+        description: 'The model the assistant calls. Null means automatic selection,
+          which is the
 
           registry''s own order: the default model first, then alphabetically.
 
@@ -220,11 +227,24 @@ schemas:
       auto_title:
         type: boolean
         default: true
-        description: 'Whether a new conversation is named by the model. One small extra call per
+        description: 'Whether a new conversation is named by the model. One small
+          extra call per
 
           thread; switching it off leaves the first question as the title.
 
           '
+      api_format:
+        type:
+        - string
+        - 'null'
+        enum:
+        - openai_chat
+        - openai_responses
+        - anthropic_messages
+        - null
+        default: null
+        description: Optional API protocol. Null automatically matches the model and
+          gateway route.
     additionalProperties: false
     type: object
     title: AssistantSettingsWrite
@@ -278,22 +298,28 @@ schemas:
     description: 'The configuration plus what it actually resolves to right now.
 
 
-      `effective_*` exists because the two can legitimately differ: a pinned model that is
+      `effective_*` exists because the two can legitimately differ: a pinned model
+      that is
 
       later disabled, or moved to a runtime that cannot carry tool calls, stops qualifying
 
-      and the assistant falls back to automatic selection rather than refusing to answer.
+      and the assistant falls back to automatic selection rather than refusing to
+      answer.
 
-      That fallback has to be visible somewhere or it is just a setting that quietly does
+      That fallback has to be visible somewhere or it is just a setting that quietly
+      does
 
       nothing -- `model_available` is what the settings page reads to say so.
 
 
-      `available_models` is served rather than derived in the browser on purpose. Deciding
+      `available_models` is served rather than derived in the browser on purpose.
+      Deciding
 
-      which models qualify is a server rule with three parts, one of which is the runtime''s
+      which models qualify is a server rule with three parts, one of which is the
+      runtime''s
 
-      tool protocol; reimplementing it client-side would let the picker offer a model the
+      tool protocol; reimplementing it client-side would let the picker offer a model
+      the
 
       server then rejects, and the two copies would drift on the next adapter added.'
     allOf:
@@ -313,14 +339,43 @@ schemas:
           - 'null'
         model_available:
           type: boolean
-          description: 'False when a model is pinned but no longer qualifies, so the assistant has
+          description: 'False when a model is pinned but no longer qualifies, so the
+            assistant has
 
             fallen back to automatic selection. True whenever nothing is pinned.
 
             '
+        api_available:
+          type: boolean
+          default: true
+          description: False when a saved protocol no longer matches the effective
+            model route.
+        effective_api_format:
+          type:
+          - string
+          - 'null'
+          enum:
+          - openai_chat
+          - openai_responses
+          - anthropic_messages
+          - null
+        effective_api_path:
+          type:
+          - string
+          - 'null'
+          description: The public gateway path used by the effective API protocol.
+        available_api_formats:
+          type: array
+          items:
+            type: string
+            enum:
+            - openai_chat
+            - openai_responses
+            - anthropic_messages
         available_models:
           type: array
-          description: 'The models the assistant may be pointed at. Served rather than derived by
+          description: 'The models the assistant may be pointed at. Served rather
+            than derived by
 
             the client because eligibility is a server rule that includes the
 
@@ -359,6 +414,14 @@ schemas:
         type:
         - number
         - 'null'
+      api_formats:
+        type: array
+        items:
+          type: string
+          enum:
+          - openai_chat
+          - openai_responses
+          - anthropic_messages
     additionalProperties: false
     type: object
     required:
@@ -367,11 +430,21 @@ schemas:
     - model_key
     - runtime_name
     title: AssistantModelChoice
-    description: 'A model the assistant is allowed to use, with what it costs to use it.
+    description: 'A model the assistant is allowed to use, with what it costs to use
+      it.
 
 
-      The prices are here because choosing a model is a cost decision -- the registry spans
+      The prices are here because choosing a model is a cost decision -- the registry
+      spans
 
-      $1.00 to $30.00 per million output tokens -- and a picker that hides them makes the
+      $1.00 to $30.00 per million output tokens -- and a picker that hides them makes
+      the
 
       expensive choice as easy as the cheap one.'
+  InvocationApiFormat:
+    type: string
+    enum:
+    - openai_chat
+    - openai_responses
+    - anthropic_messages
+    title: InvocationApiFormat

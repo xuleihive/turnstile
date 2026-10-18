@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
 from typing import Any, NoReturn, cast, overload
 from urllib.parse import unquote, urlsplit
@@ -19,6 +20,7 @@ from pydantic import SecretStr
 
 from turnstile_core.config import Settings
 from turnstile_core.domain.application_access import application_id_for
+from turnstile_core.domain.billable_requests import BillableBudgetExceeded, BillableRequestPlan
 from turnstile_core.domain.budget_delegation import (
     BudgetDelegationCheck,
     BudgetDelegationReadiness,
@@ -37,6 +39,7 @@ from turnstile_core.domain.ledger import (
 )
 from turnstile_core.domain.model_availability import ModelAvailabilityConflict
 from turnstile_core.domain.models import ModelPrice, TokenUsageRecord
+from turnstile_core.domain.pricing import PriceConfigurationChanged
 from turnstile_core.domain.runtime_models import (
     FOUNDRY_INFERENCE_RESOURCE,
     FOUNDRY_INFERENCE_ROLE_ID,
@@ -64,6 +67,8 @@ from turnstile_core.domain.runtime_models import (
     PriceCatalogModelsResponse,
     PriceCatalogOption,
     PriceCatalogOptionsResponse,
+    PricePreviewRequest,
+    PricePreviewResponse,
     PriceSource,
     PriceSyncDetail,
     PriceSyncResponse,
@@ -94,23 +99,23 @@ from turnstile_core.integrations.gateway import (
     OpenAICompatibleGatewayAdapter,
     elapsed_ms,
 )
+from turnstile_core.integrations.gateway_protocol import model_protocol_route
 from turnstile_core.integrations.reconciliation import ManagedIdentityTokenProvider
 from turnstile_core.persistence.repository import QueryRepository
 from turnstile_core.pricing.catalog import (
+    CATALOG_DEADLINE,
+    CatalogEntry,
     CompositeCatalog,
     build_default_catalog,
-    parse_context_tier,
 )
-from turnstile_core.pricing.context import (
-    context_price_reference,
-    model_price_from_values,
-    resolve_context_prices,
-)
-from turnstile_core.pricing.sync import plan_price_sync
+from turnstile_core.pricing.context import context_price_reference, resolve_context_prices
+from turnstile_core.pricing.sync import ModelPriceUpdate, plan_price_sync
 from turnstile_core.security import CredentialCipher, credential_hint
 from turnstile_core.services.application_access import ApplicationAccessService
 from turnstile_core.services.budget_settlement import BudgetScopeRepository, BudgetStatusRepository
+from turnstile_core.services.directory_catalog import catalog_for, directory_store
 
+from .model_pricing import ModelPricingService
 from .runtime_diagnostics import RuntimeDiagnostics
 
 logger = logging.getLogger(__name__)
@@ -181,11 +186,7 @@ class ModelRuntimeService:
         authorization: str | None,
     ) -> None:
         current = next(
-            (
-                model
-                for model in self._repository.registry()["models"]
-                if model["id"] == item_id
-            ),
+            (model for model in self._repository.registry()["models"] if model["id"] == item_id),
             None,
         )
         if current is None:
@@ -197,16 +198,346 @@ class ModelRuntimeService:
         )
         self.authorize(role, authorization, manage=changes_routing_identity)
 
+    def price_catalog_models(
+        self,
+        query: str,
+        *,
+        limit: int = 60,
+        source: PriceSource | None = None,
+    ) -> PriceCatalogModelsResponse:
+        """The models a person can point a registry model at, one row each.
+
+        Deliberately a search over names rather than an automatic match: the caller picks, and
+        the pick is stored. Matching on the registry alias would be wrong about as often as
+        names are ambiguous, and nothing downstream would notice.
+        """
+        try:
+            found = self._price_catalog.search_models(query, limit=limit, source=source)
+        except Exception as error:  # noqa: BLE001 - an unreachable vendor is not a server fault
+            raise HTTPException(
+                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
+            ) from error
+        return PriceCatalogModelsResponse(
+            models=[
+                PriceCatalogModel(
+                    key=model.key,
+                    label=model.label,
+                    product=model.product,
+                    source=model.source,
+                    context_tier=model.resolved_context_tier,
+                    text_to_image=model.text_to_image,
+                )
+                for model in found.models
+            ],
+            unavailable=list(found.unavailable),
+        )
+
+    def price_catalog_options(self, model_key: str) -> PriceCatalogOptionsResponse:
+        try:
+            found = self._price_catalog.options(model_key)
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
+            ) from error
+        if found is None:
+            raise HTTPException(status_code=404, detail="价目表中没有这个模型")
+        return PriceCatalogOptionsResponse(
+            model_entry=PriceCatalogModel(
+                key=found.model.key,
+                label=found.model.label,
+                product=found.model.product,
+                source=found.model.source,
+                context_tier=found.model.resolved_context_tier,
+                text_to_image=found.model.text_to_image,
+            ),
+            options=[
+                PriceCatalogOption(
+                    reference=option.reference,
+                    deployment=option.deployment,
+                    regions=list(option.regions),
+                    references_by_region=dict(option.references_by_region),
+                    region_required=option.region_required,
+                    input_per_million=option.entry.input_per_million,
+                    output_per_million=option.entry.output_per_million,
+                    cached_per_million=option.entry.cached_per_million,
+                    cache_write_per_million=option.entry.cache_write_per_million,
+                    context_window=option.entry.context_window,
+                )
+                for option in found.options
+            ],
+            unreadable=list(found.unreadable),
+            other_meters=list(found.other_meters),
+            note=found.note,
+            complete=found.complete,
+        )
+
+    def price_preview(
+        self,
+        request: PricePreviewRequest,
+        *,
+        user_id: str,
+    ) -> PricePreviewResponse:
+        user_id = self._pricing_identity(user_id)
+        return ModelPricingService(
+            self.registry(),
+            self._price_catalog,
+            self.invoke,
+            user_id=user_id,
+            enterprise_directory=lambda: catalog_for(self._repository, self._settings),
+            require_directory_identity=self._settings.directory_source == "database",
+        ).preview(request)
+
+    def _pricing_identity(self, user_id: str) -> str:
+        if self._settings.directory_source != "database":
+            return user_id
+        assert self._settings.database_url is not None
+        store = directory_store(self._settings.database_url)
+        store.require_ready()
+        with store.connection() as connection:
+            account = connection.execute(
+                "SELECT id FROM app_user WHERE lower(email)=lower(%s)",
+                (user_id,),
+            ).fetchone()
+            row = connection.execute(
+                """SELECT p.governance_user_id FROM directory_person p
+                   JOIN directory_account_link l ON l.person_id=p.id
+                   JOIN app_user a ON a.id=l.app_user_id AND a.enabled
+                   WHERE p.status='active' AND NOT p.manual_disabled
+                     AND NOT EXISTS(SELECT 1 FROM directory_external_binding e
+                       WHERE e.person_id=p.id AND e.source_disabled)
+                     AND ((%s::uuid IS NOT NULL AND a.id=%s)
+                       OR (%s::uuid IS NULL AND p.governance_user_id=%s))""",
+                (
+                    account["id"] if account else None,
+                    account["id"] if account else None,
+                    account["id"] if account else None,
+                    user_id,
+                ),
+            ).fetchone()
+        return str(row["governance_user_id"]) if row else "unattributed"
+
+    def sync_prices(
+        self,
+        only: Sequence[UUID] | None = None,
+        *,
+        refresh: bool = False,
+        dry_run: bool = False,
+        user_id: str = "system",
+    ) -> PriceSyncResponse:
+        token = CATALOG_DEADLINE.set(time.monotonic() + 55)
+        try:
+            return self._sync_prices(only, refresh=refresh, dry_run=dry_run, user_id=user_id)
+        finally:
+            CATALOG_DEADLINE.reset(token)
+
+    def _sync_prices(
+        self,
+        only: Sequence[UUID] | None = None,
+        *,
+        refresh: bool,
+        dry_run: bool,
+        user_id: str,
+    ) -> PriceSyncResponse:
+        registry = self.registry()
+        user_id = self._pricing_identity(user_id)
+        deadline = time.monotonic() + 55
+        selected = [model for model in registry.models if only is None or model.id in only]
+        if only and set(only) - {model.id for model in selected}:
+            raise HTTPException(status_code=404, detail="Unknown model in price sync")
+        sources: set[PriceSource] = {
+            model.price_source for model in selected if model.price_source is not PriceSource.MANUAL
+        }
+        failures = self._price_catalog.refresh(sources) if refresh else {}
+        pricing = ModelPricingService(
+            registry,
+            self._price_catalog,
+            self.invoke,
+            user_id=user_id,
+            allow_ai=not dry_run,
+            enterprise_directory=lambda: catalog_for(self._repository, self._settings),
+            require_directory_identity=self._settings.directory_source == "database",
+        )
+        updates: list[ModelPriceUpdate] = []
+        details: list[PriceSyncDetail] = []
+        partial_fields = 0
+        for model in selected:
+            if model.price_source is PriceSource.MANUAL:
+                details.append(
+                    PriceSyncDetail(
+                        model_id=model.id,
+                        model_key=model.model_key,
+                        outcome="skipped_manual",
+                        price_source=model.price_source,
+                    )
+                )
+                continue
+            error = failures.get(model.price_source)
+            status = PriceSyncStatus.STALE
+            candidate = model
+            preview = None
+            if time.monotonic() >= deadline:
+                error, status = "同步执行时间预算已耗尽，请重试", PriceSyncStatus.DEFERRED
+            elif model.price_source is PriceSource.MODELS_DEV and not error:
+                pricing.timeout_ms = max(
+                    1000, min(15000, int((deadline - time.monotonic()) * 1000))
+                )
+                preview = pricing.preview(
+                    PricePreviewRequest(
+                        model_id=model.id,
+                        price_reference=model.price_reference,
+                        price_discount_percent=model.price_discount_percent,
+                    )
+                )
+                if preview.status != "matched" or not preview.match:
+                    error = "；".join(preview.warnings)
+                    status = PriceSyncStatus(preview.status)
+                else:
+                    candidate = model.model_copy(
+                        update={"price_reference": preview.match.reference},
+                    )
+                    if any("保留已有" in warning for warning in preview.warnings):
+                        partial_fields += 1
+            if error:
+                update = ModelPriceUpdate(
+                    model_id=model.id,
+                    model_key=model.model_key,
+                    status=status,
+                    message=error,
+                    expected_source=model.price_source.value,
+                    expected_reference=model.price_reference,
+                    expected_discount_percent=model.effective_discount_percent,
+                    expected_configured=model.price_source_configured,
+                    expected_updated_at=model.updated_at,
+                    expected_price_updated_at=model.price_config_updated_at,
+                )
+            else:
+                resolved_entries = None
+                if preview and preview.list_prices and preview.match:
+                    resolved_entries = {
+                        candidate.id: CatalogEntry(
+                            reference=preview.match.reference,
+                            label=preview.match.name,
+                            source=PriceSource.MODELS_DEV,
+                            input_per_million=preview.list_prices.input,
+                            output_per_million=preview.list_prices.output,
+                            cached_per_million=preview.list_prices.cached,
+                            cache_write_per_million=preview.list_prices.cache_write,
+                            operation="image_generation"
+                            if "image_generation" in model.capabilities
+                            else "chat",
+                        )
+                    }
+                update = plan_price_sync(
+                    [candidate],
+                    self._price_catalog,
+                    resolved_entries=resolved_entries,
+                ).updates[0]
+                update = replace(
+                    update,
+                    expected_reference=model.price_reference,
+                    match_metadata=preview.match.model_dump(mode="json")
+                    if preview and preview.match
+                    else model.match_metadata,
+                    source_snapshot={
+                        "version": 1,
+                        "entry_digest": preview.entry_digest,
+                        "snapshot_id": preview.catalog_snapshot_id,
+                        "fetched_at": (
+                            preview.fetched_at.isoformat() if preview.fetched_at else None
+                        ),
+                        "source_updated_at": preview.source_updated_at,
+                    }
+                    if preview
+                    else model.source_snapshot,
+                )
+            updates.append(update)
+        if not dry_run:
+            self._repository.apply_model_price_sync([asdict(update) for update in updates])
+        refreshed = self.registry() if not dry_run else registry
+        by_id = {model.id: model for model in refreshed.models}
+        counts: dict[str, int] = {}
+        for update in updates:
+            before = next(model for model in selected if model.id == update.model_id)
+            after = by_id.get(update.model_id)
+            accepted = dry_run or bool(
+                after
+                and after.price_source == before.price_source
+                and after.price_reference == update.price_reference
+                and after.price_sync_status == update.status
+                and after.updated_at >= before.updated_at
+                and after.effective_discount_percent == before.effective_discount_percent
+            )
+            outcome = update.status.value
+            if update.writes:
+                if not accepted:
+                    outcome = "superseded"
+                else:
+                    if not dry_run:
+                        self._project_accepted_model_price(update.model_id)
+                    changed = any(
+                        getattr(before, field) != getattr(update, field)
+                        for field in (
+                            "input_cost_per_million",
+                            "output_cost_per_million",
+                            "cached_cost_per_million",
+                            "cache_write_cost_per_million",
+                        )
+                    ) or (
+                        update.context_price_tiers is not None
+                        and [tier.model_dump(mode="json") for tier in before.context_price_tiers]
+                        != update.context_price_tiers
+                    )
+                    outcome = "updated" if changed else "unchanged"
+            elif not dry_run and (
+                after is None
+                or after.price_source != before.price_source
+                or after.price_reference != before.price_reference
+                or after.effective_discount_percent != before.effective_discount_percent
+                or after.updated_at != before.updated_at
+            ):
+                outcome = "superseded"
+            counts[outcome] = counts.get(outcome, 0) + 1
+            details.append(
+                PriceSyncDetail(
+                    model_id=update.model_id,
+                    model_key=update.model_key,
+                    status=PriceSyncStatus.SUPERSEDED if outcome == "superseded" else update.status,
+                    outcome=outcome,
+                    message=update.message,
+                    price_source=before.price_source,
+                    price_reference=update.price_reference or before.price_reference,
+                )
+            )
+        return PriceSyncResponse(
+            total=len(selected),
+            considered=len(updates),
+            details=details,
+            registry=refreshed,
+            skipped_manual=len(selected) - len(updates),
+            partial_fields=partial_fields,
+            dry_run=dry_run,
+            **{
+                key: counts.get(key, 0)
+                for key in (
+                    "updated",
+                    "unchanged",
+                    "unmapped",
+                    "review_needed",
+                    "stale",
+                    "superseded",
+                    "ambiguous",
+                    "unsupported",
+                    "deferred",
+                )
+            },
+        )
+
     def registry(self) -> RegistryResponse:
         rows = self._repository.registry()
         github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(rows)
-        providers = [
-            row for row in rows["providers"] if row["id"] not in github_provider_ids
-        ]
+        providers = [row for row in rows["providers"] if row["id"] not in github_provider_ids]
         provider_ids = {row["id"] for row in providers}
-        runtimes = [
-            row for row in rows["runtimes"] if row["id"] not in copilot_runtime_ids
-        ]
+        runtimes = [row for row in rows["runtimes"] if row["id"] not in copilot_runtime_ids]
         runtime_ids = {row["id"] for row in runtimes}
         diagnostics = RuntimeDiagnostics(self._repository, self._settings).project_results(runtimes)
         return RegistryResponse(
@@ -218,7 +549,7 @@ class ModelRuntimeService:
             databricks_connections_supported=True,
             databricks_oauth_supported=self._settings.databricks_oauth_enabled,
             decision_supported=True,
-            image_generation_supported=True,
+            image_generation_supported=self._settings.image_generation_enabled,
             image_configuration_defaults=self._settings.image_generation_defaults,
             apim_target_topology_available=(
                 self._settings.apim_target_registry_enabled
@@ -304,10 +635,7 @@ class ModelRuntimeService:
                 status_code=409,
                 detail="Select another default gateway before deleting this one",
             )
-        if any(
-            runtime.get("gateway_profile_id") == gateway_id
-            for runtime in registry["runtimes"]
-        ):
+        if any(runtime.get("gateway_profile_id") == gateway_id for runtime in registry["runtimes"]):
             raise HTTPException(
                 status_code=409,
                 detail="Remove every connection from this gateway before deleting it",
@@ -324,9 +652,7 @@ class ModelRuntimeService:
             )
         return self.registry()
 
-    def save_provider(
-        self, write: ProviderWrite, item_id: UUID | None = None
-    ) -> RegistryResponse:
+    def save_provider(self, write: ProviderWrite, item_id: UUID | None = None) -> RegistryResponse:
         registry = self._repository.registry()
         github_provider_ids, _ = self._copilot_registry_ids(registry)
         if (
@@ -369,11 +695,7 @@ class ModelRuntimeService:
     def save_connection(self, write: ModelConnectionCreate) -> RegistryResponse:
         registry = self._repository.registry()
         gateway = next(
-            (
-                row
-                for row in registry["gateways"]
-                if row["id"] == write.gateway_profile_id
-            ),
+            (row for row in registry["gateways"] if row["id"] == write.gateway_profile_id),
             None,
         )
         if gateway is None or not gateway["enabled"] or gateway["implementation"] != "apim":
@@ -382,11 +704,7 @@ class ModelRuntimeService:
         openai_vendor = write.model_vendor or ModelVendorKey.GENERIC
         if write.provider.existing_id is not None:
             provider = next(
-                (
-                    row
-                    for row in registry["providers"]
-                    if row["id"] == write.provider.existing_id
-                ),
+                (row for row in registry["providers"] if row["id"] == write.provider.existing_id),
                 None,
             )
             if provider is None or not provider["enabled"]:
@@ -483,13 +801,13 @@ class ModelRuntimeService:
                 provider_id,
                 provider_values,
                 {
-                "gateway_profile_id": gateway["id"],
-                "enabled": True,
-                "is_default": False,
-                "brand_key": runtime_brand,
-                "allowed_roles": ["owner", "admin", "member"],
-                **values,
-            },
+                    "gateway_profile_id": gateway["id"],
+                    "enabled": True,
+                    "is_default": False,
+                    "brand_key": runtime_brand,
+                    "allowed_roles": ["owner", "admin", "member"],
+                    **values,
+                },
             )
         except UniqueViolation as error:
             constraint = error.diag.constraint_name
@@ -513,9 +831,7 @@ class ModelRuntimeService:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return self.registry()
 
-    def update_connection(
-        self, runtime_id: UUID, write: ModelConnectionUpdate
-    ) -> RegistryResponse:
+    def update_connection(self, runtime_id: UUID, write: ModelConnectionUpdate) -> RegistryResponse:
         current = next(
             (
                 runtime
@@ -747,8 +1063,7 @@ class ModelRuntimeService:
                 "backend_path": "/model/{upstream_model_id}/invoke",
                 "auth_strategy": "named_value_bearer",
                 "named_value_name": (
-                    "turnstile-bedrock-"
-                    + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+                    "finops-bedrock-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
                 ),
                 "credential_kind": "api_key",
                 "credential_provisioned": False,
@@ -779,11 +1094,13 @@ class ModelRuntimeService:
                     detail="Databricks OAuth M2M is not enabled in this environment",
                 )
             assert write.oauth_client_id is not None
-            oauth = OAuthClientCredentialsConfig.model_validate({
-                "provider_id": f"turnstile-oauth-{uuid4().hex}",
-                "client_id": write.oauth_client_id,
-                "token_url": f"{workspace}/oidc/v1/token",
-            })
+            oauth = OAuthClientCredentialsConfig.model_validate(
+                {
+                    "provider_id": f"turnstile-oauth-{uuid4().hex}",
+                    "client_id": write.oauth_client_id,
+                    "token_url": f"{workspace}/oidc/v1/token",
+                }
+            )
             config.update(
                 auth_strategy="oauth_client_credentials",
                 managed_identity_resource=None,
@@ -798,7 +1115,10 @@ class ModelRuntimeService:
                 },
             )
         self._ensure_unique_connection(
-            runtimes, write.gateway_profile_id, "workspace_url", workspace,
+            runtimes,
+            write.gateway_profile_id,
+            "workspace_url",
+            workspace,
         )
         return {
             "name": databricks_runtime_name(workspace),
@@ -871,9 +1191,7 @@ class ModelRuntimeService:
         ):
             raise HTTPException(status_code=409, detail="This connection already exists")
 
-    def save_model(
-        self, write: ManagedModelWrite, item_id: UUID | None = None
-    ) -> RegistryResponse:
+    def save_model(self, write: ManagedModelWrite, item_id: UUID | None = None) -> RegistryResponse:
         if "decision" in write.capabilities and item_id is None:
             raise HTTPException(
                 status_code=409, detail="Publish Decision models through the control plane",
@@ -931,116 +1249,149 @@ class ModelRuntimeService:
                 detail="Change model availability through the versioned availability command",
             )
         price_fields = (
-            "runtime_id", "price_source", "price_discount_percent", "context_price_references",
-            "context_price_rule",
-            "input_cost_per_million", "output_cost_per_million",
-            "cached_cost_per_million", "cache_write_cost_per_million",
+            "runtime_id",
+            "price_source",
+            "price_reference",
+            "price_discount_percent",
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "cached_cost_per_million",
+            "cache_write_cost_per_million",
         )
         current_model = ManagedModel.model_validate(current) if current is not None else None
-        pricing_changed = (
-            current_model is None
-            or write.context_price_refresh
-            or any(getattr(current_model, field) != getattr(write, field) for field in price_fields)
-            or (not write.context_price_references
-                and current_model.price_reference != write.price_reference)
-        )
+        source_explicit = "price_source" in write.model_fields_set
         values = write.model_dump(mode="python")
         if item_id is not None and "enabled" not in write.model_fields_set:
             values.pop("enabled", None)
+        values.pop("price_entry_digest", None)
+        values.pop("allow_unpriced", None)
         values.pop("context_price_references", None)
         values.pop("context_price_refresh", None)
         values.pop("context_price_rule", None)
-        discount = write.price_discount_percent
-        if write.price_source is not PriceSource.MANUAL:
+        if not source_explicit and current_model is not None:
+            values["price_source"] = current_model.price_source
+            values["price_reference"] = current_model.price_reference
+            values["price_discount_percent"] = current_model.price_discount_percent
+            write = write.model_copy(
+                update={
+                    field: values[field]
+                    for field in (
+                        "price_source",
+                        "price_reference",
+                        "price_discount_percent",
+                    )
+                }
+            )
+        if write.context_price_references:
             runtime = next(
                 (row for row in registry["runtimes"] if row["id"] == write.runtime_id), None,
             )
             if runtime is None:
                 raise HTTPException(status_code=422, detail="Unknown pricing connection")
+            discount = write.price_discount_percent
             if discount is None:
                 discount = runtime.get("price_discount_percent")
-            if discount is not None:
-                discount = float(discount)
-        if write.context_price_references:
+            pricing_changed = (
+                current_model is None or write.context_price_refresh
+                or any(getattr(current_model, field) != getattr(write, field) for field in (
+                    *price_fields, "context_price_references", "context_price_rule",
+                ) if field != "price_reference")
+            )
             try:
-                if pricing_changed:
-                    tiers = resolve_context_prices(
-                        self._price_catalog, write.price_source,
-                        write.context_price_references, discount,
-                        rule=write.context_price_rule,
-                        previous_tiers=current_model.context_price_tiers if current_model else (),
-                    )
-                else:
-                    tiers = current_model.context_price_tiers if current_model else []
+                tiers = resolve_context_prices(
+                    self._price_catalog, write.price_source, write.context_price_references,
+                    discount, rule=write.context_price_rule,
+                    previous_tiers=current_model.context_price_tiers if current_model else (),
+                ) if pricing_changed else current_model.context_price_tiers if current_model else []
             except ValueError as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
             except Exception as error:
                 raise HTTPException(
                     status_code=503, detail="The selected price source is unavailable",
                 ) from error
-            values["context_price_tiers"] = [tier.model_dump(mode="json") for tier in tiers]
-            values["price_reference"] = context_price_reference(
-                write.price_source, [tier.reference for tier in tiers],
+            values.update(
+                context_price_tiers=[tier.model_dump(mode="json") for tier in tiers],
+                price_reference=context_price_reference(
+                    write.price_source, [tier.reference for tier in tiers],
+                ),
+                input_cost_per_million=None, output_cost_per_million=None,
+                cached_cost_per_million=None, cache_write_cost_per_million=None,
             )
-            for column in ("input_cost_per_million", "output_cost_per_million",
-                           "cached_cost_per_million", "cache_write_cost_per_million"):
-                values[column] = None
-        elif write.price_source is not PriceSource.MANUAL and pricing_changed:
-            try:
-                entry = self._price_catalog.lookup(write.price_reference or "")
-            except Exception as error:  # noqa: BLE001
+            if current_model is not None and pricing_changed:
+                values["pricing_expected_updated_at"] = current_model.updated_at
+            saved = self._save("model", values, item_id)
+            self._project_accepted_model_price(UUID(str(saved["id"])))
+            return self.registry()
+        values["context_price_tiers"] = []
+        if (
+            write.price_source is not PriceSource.MANUAL
+            and write.price_reference
+            and (
+                current_model is None
+                or any(
+                    getattr(current_model, field) != getattr(write, field) for field in price_fields
+                )
+                or write.price_entry_digest is not None
+            )
+        ):
+            preview = self.price_preview(
+                PricePreviewRequest(
+                    model_id=item_id,
+                    runtime_id=write.runtime_id,
+                    price_source=write.price_source,
+                    price_reference=write.price_reference,
+                    price_discount_percent=write.price_discount_percent,
+                ),
+                user_id="system",
+            )
+            if preview.status != "matched" or preview.effective_prices is None:
                 raise HTTPException(
-                    status_code=503, detail="The selected price source is unavailable"
-                ) from error
-            if (
-                entry is None
-                or not entry.complete
-                or entry.source is not write.price_source
-                or entry.reference != write.price_reference
-                or entry.input_per_million is None
-                or entry.output_per_million is None
-            ):
-                raise HTTPException(
-                    status_code=409,
+                    status_code=503 if preview.status == "stale" else 409,
                     detail=(
                         "The selected catalog price is incomplete; existing prices are unchanged"
                     ),
                 )
-            if entry.context_tier is not None or parse_context_tier(entry.label) is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Select the complete context price schedule, not one tier",
-                )
-            charged = entry.discounted(discount)
-            for column, bucket in (
-                ("input_cost_per_million", "input_per_million"),
-                ("output_cost_per_million", "output_per_million"),
-                ("cached_cost_per_million", "cached_per_million"),
-                ("cache_write_cost_per_million", "cache_write_per_million"),
-            ):
-                values[column] = getattr(charged, bucket)
-                values[f"list_{column}"] = getattr(entry, bucket)
-        if pricing_changed:
-            for column in (
-                "list_input_cost_per_million", "list_output_cost_per_million",
-                "list_cached_cost_per_million", "list_cache_write_cost_per_million",
-            ):
-                values.setdefault(column, None)
-            values.update(
-                pending_list_price=None, pending_context_price_tiers=None,
-                price_sync_status="ok" if write.price_source is not PriceSource.MANUAL else None,
-                price_sync_message=None,
-                price_synced_at=datetime.now(UTC)
-                if write.price_source is not PriceSource.MANUAL else None,
-            )
-        if not write.context_price_references:
-            values["context_price_tiers"] = []
+            if write.price_entry_digest and preview.entry_digest != write.price_entry_digest:
+                raise HTTPException(status_code=409, detail="目录价格已变化，请重新同步并确认")
+            values.update(self._accepted_price_values(preview))
+            if current_model:
+                values["pricing_expected_updated_at"] = current_model.updated_at
+        elif (
+            write.price_source is PriceSource.MODELS_DEV
+            and not write.price_reference
+            and source_explicit
+            and not write.allow_unpriced
+        ):
+            raise HTTPException(status_code=422, detail="请同步定价或明确确认暂不计价")
+        if not source_explicit and current_model and not current_model.price_source_configured:
+            for field in ("price_source", "price_reference", "price_discount_percent"):
+                values.pop(field, None)
         saved = self._save("model", values, item_id)
         self._project_accepted_model_price(UUID(str(saved["id"])))
         return self.registry()
 
-    def runtime_check_plan(self, runtime_id: UUID) -> RuntimeCheckPlan:
-        return RuntimeDiagnostics(self._repository, self._settings).plan(runtime_id)
+    @staticmethod
+    def _accepted_price_values(preview: PricePreviewResponse) -> dict[str, Any]:
+        assert preview.match and preview.effective_prices and preview.list_prices
+        values: dict[str, Any] = {}
+        for key, column in (
+            ("input", "input_cost_per_million"),
+            ("output", "output_cost_per_million"),
+            ("cached", "cached_cost_per_million"),
+            ("cache_write", "cache_write_cost_per_million"),
+        ):
+            values[column] = getattr(preview.effective_prices, key)
+            if getattr(preview.list_prices, key) is not None:
+                values[f"list_{column}"] = getattr(preview.list_prices, key)
+        values["match_metadata"] = preview.match.model_dump(mode="json")
+        values["source_snapshot"] = {
+            "version": 1,
+            "entry_digest": preview.entry_digest,
+            "snapshot_id": preview.catalog_snapshot_id,
+            "fetched_at": preview.fetched_at.isoformat() if preview.fetched_at else None,
+            "source_updated_at": preview.source_updated_at,
+        }
+        return values
 
     def check_runtime(
         self, runtime_id: UUID, selection: RuntimeCheckSelection, *, actor: str,
@@ -1797,91 +2148,27 @@ class ModelRuntimeService:
             headers={"x-request-id": request_id},
         )
 
-    def _invocation_route(
-        self, request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
-    ) -> dict[str, Any] | None:
-        if request.model_id is not None:
-            current = next((model for model in self._repository.registry()["models"]
-                            if model["id"] == request.model_id), None)
-            if current is not None and current["enabled"] is False:
-                raise HTTPException(status_code=403, detail={
-                    "code": "model_disabled", "message": "The requested model is disabled",
-                })
-        explicit = (
-            request.gateway_profile_id is not None or request.gateway_deployment_id is not None
-        )
-        if explicit and not self._settings.apim_target_registry_enabled:
-            raise HTTPException(
-                status_code=503, detail="Explicit APIM Gateway selection is not enabled"
-            )
-        if explicit:
-            route = self._repository.invocation_route(
-                request.runtime_id, request.model_id,
-                gateway_profile_id=request.gateway_profile_id,
-                gateway_deployment_id=request.gateway_deployment_id,
-            )
-        else:
-            route = self._repository.invocation_route(request.runtime_id, request.model_id)
-        if route is not None:
-            if explicit and (
-                str(route.get("gateway_id")) != str(request.gateway_profile_id)
-                or str(route.get("gateway_deployment_id")) != str(request.gateway_deployment_id)
-                or route.get("gateway_implementation") != GatewayKind.APIM
-            ):
-                raise HTTPException(
-                    status_code=409, detail="Resolved Gateway does not match selection"
-                )
-            if (
-                route.get("gateway_deployment_id") is not None
-                and route.get("native_gateway_id") != "managed"
-                and not self._settings.self_hosted_gateway_enabled
-            ):
-                raise HTTPException(status_code=503, detail="Self-hosted Gateway is not enabled")
-            self._validate_invocation_endpoint(route)
-        return route
-
-    def _validate_invocation_endpoint(self, route: Mapping[str, Any]) -> None:
-        if route.get("gateway_implementation") != GatewayKind.APIM:
+    def _seal_directory_admission(
+        self,
+        request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
+        request_id: str,
+    ) -> None:
+        if self._settings.directory_source != "database":
             return
-        try:
-            endpoint = urlsplit(str(route.get("gateway_base_url") or ""))
-            if (
-                endpoint.scheme != "https" or not endpoint.hostname
-                or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
-                or endpoint.port not in (None, 443)
-            ):
-                raise ValueError("Gateway endpoint is not trusted")
-            deployment_id = route.get("gateway_deployment_id")
-            if deployment_id is None:
-                if route.get("gateway_target") or route.get("native_gateway_id") not in (
-                    None,
-                    "managed",
-                ):
-                    raise ValueError("Registered Gateway deployment is missing")
-                return
-            target = route.get("gateway_target")
-            deployment = route.get("gateway_deployment")
-            if not isinstance(target, Mapping) or not isinstance(deployment, Mapping) or (
-                str(target.get("gateway_profile_id")) != str(route.get("gateway_id"))
-                or str(deployment.get("id")) != str(deployment_id)
-                or deployment.get("native_gateway_id") != route.get("native_gateway_id")
-                or str(deployment.get("endpoint_url")).rstrip("/")
-                != str(route.get("gateway_base_url")).rstrip("/")
-            ):
-                raise ValueError("Gateway route does not match its deployment")
-            if (
-                deployment.get("kind") == "self_hosted"
-                and not self._settings.self_hosted_gateway_enabled
-            ):
-                raise ValueError("Self-hosted Gateway is not enabled")
-            validate_gateway_endpoint(
-                target, deployment, route.get("gateway_inventory"),
-                trusted_endpoint=self._settings.self_hosted_gateway_trusted_endpoints.get(
-                    UUID(str(deployment_id)),
-                ),
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            raise HTTPException(status_code=503, detail="Gateway route is not verified") from error
+        if request.metadata.user_id == "system-runtime-health-check":
+            return
+        assert self._settings.database_url is not None
+        directory_store(self._settings.database_url).admit_invocation(
+            request_id=request_id,
+            governance_user_id=request.metadata.user_id,
+            organization_id=request.metadata.organization_id,
+            department_id=request.metadata.department_id,
+        )
+
+    def _finish_directory_admission(self, request_id: str) -> None:
+        if self._settings.directory_source == "database":
+            assert self._settings.database_url is not None
+            directory_store(self._settings.database_url).finish_invocation(request_id)
 
     def invoke(
         self,
@@ -1903,6 +2190,23 @@ class ModelRuntimeService:
             raise HTTPException(
                 status_code=409, detail="Use the image generation endpoint for this model"
             )
+        if (
+            route.get("gateway_implementation") == GatewayKind.APIM
+            and not route.get("gateway_base_url")
+            and self._settings.apim_gateway_url
+        ):
+            route["gateway_base_url"] = self._settings.apim_gateway_url
+        try:
+            route = model_protocol_route(
+                route,
+                request.api_format,
+                tools=bool(request.tools)
+                or any(
+                    message.tool_calls or message.role == "tool" for message in request.messages
+                ),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         if self._settings.production and route.get("gateway_implementation") != GatewayKind.APIM:
             raise HTTPException(
                 status_code=409,
@@ -2055,31 +2359,23 @@ class ModelRuntimeService:
             return DecisionInvocationResponse(
                 **values, answers=cast(dict[str, Any], result.answers),
             )
-        return ModelInvocationResponse(
+        response = ModelInvocationResponse(
             **values, content=result.content, tool_calls=list(result.tool_calls) or None,
         )
+        response._responses_output = result.responses_output
+        response._anthropic_content = result.anthropic_content
+        return response
 
-    def _finish_invocation(self, completion: PlatformInvocationCompletion) -> bool:
-        try:
-            self._repository.finish_platform_invocation(completion)
-        except Exception as error:
-            logger.error(
-                "Invocation outcome pending request_id=%s error_type=%s",
-                completion.request_id, type(error).__name__,
-            )
-            return False
-        return True
+
 
     def generate_image(
         self, request: ImageInvocationRequest, *, role: str
     ) -> ImageInvocationResponse:
+        if not self._settings.image_generation_enabled:
+            raise HTTPException(status_code=404, detail="Image generation is not enabled")
         import hashlib
         import json
 
-        from turnstile_core.domain.billable_requests import (
-            BillableBudgetExceeded,
-            BillableRequestPlan,
-        )
 
         request_id = str(uuid4())
         route = self._invocation_route(request)
@@ -2106,6 +2402,8 @@ class ModelRuntimeService:
         self._assert_budget_available(request, route, request_id)
         route = self._decrypt_route(route)
         now = datetime.now(UTC)
+        directory_admission_id = request_id
+        self._seal_directory_admission(request, request_id)
         try:
             attempt = self._repository.begin_billable_request(BillableRequestPlan(
                 operation_key="invocation:" + request_id,
@@ -2121,8 +2419,10 @@ class ModelRuntimeService:
                 if isinstance(route.get("budget_delegation_token"), SecretStr) else "postgresql",
             ))
         except BillableBudgetExceeded:
-            self._deny(request, route, "image_budget_insufficient", request_id,
-                       budget_admission="denied")
+            self._finish_directory_admission(directory_admission_id)
+            self._deny(
+                request, route, "image_budget_insufficient", request_id, budget_admission="denied"
+            )
         request_id = str(attempt.id)
         route["request_id"] = request_id
         started = time.monotonic()
@@ -2155,6 +2455,7 @@ class ModelRuntimeService:
             result.usage.input_tokens + result.usage.cached_tokens + result.usage.output_tokens
             if result.usage is not None else None
         )
+        self._finish_directory_admission(directory_admission_id)
         self._repository.finish_billable_request(
             attempt.id, actual_tokens=actual_tokens, correlation_id=result.correlation_id,
             evidence={"status_code": 200,
@@ -2176,10 +2477,8 @@ class ModelRuntimeService:
         )
 
     @staticmethod
-    def _estimated_cost(
-        route: dict[str, Any], usage: InvocationUsage | None
-    ) -> float | None:
-        price = model_price_from_values(route)
+    def _estimated_cost(route: dict[str, Any], usage: InvocationUsage | None) -> float | None:
+        price = ModelPrice.from_registry(route)
         if usage is None or price is None or price.context_tiers and usage.estimated:
             return None
         return price.cost(
@@ -2196,20 +2495,7 @@ class ModelRuntimeService:
                 **dict(route.get("runtime_config") or {}),
                 "path": "/providers/microsoft/v1/systemone", "api_format": "microsoft_decision",
             }}
-        if (
-            route.get("provider_kind") != ProviderKind.MICROSOFT_FOUNDRY
-            or route.get("model_family_key") != ModelFamilyKey.CLAUDE
-        ):
-            return route
-        return {
-            **route,
-            "runtime_config": {
-                **dict(route.get("runtime_config") or {}),
-                "path": "/v1/messages",
-                "api_format": "anthropic_messages",
-                "anthropic_version": "2023-06-01",
-            },
-        }
+        return model_protocol_route(route)
 
     def _save(self, kind: str, values: dict[str, Any], item_id: UUID | None) -> dict[str, Any]:
         try:
@@ -2219,6 +2505,8 @@ class ModelRuntimeService:
             if saved is None:
                 raise HTTPException(status_code=404, detail=f"Unknown {kind}: {item_id}")
             return saved
+        except PriceConfigurationChanged as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except ModelAvailabilityConflict as error:
             raise HTTPException(status_code=409, detail={
                 "code": "model_availability_conflict", "message": str(error),
@@ -2259,124 +2547,103 @@ class ModelRuntimeService:
         )
         return result
 
-    def price_catalog_models(self, query: str, *, limit: int = 60) -> PriceCatalogModelsResponse:
-        """The models a person can point a registry model at, one row each.
 
-        Deliberately a search over names rather than an automatic match: the caller picks, and
-        the pick is stored. Matching on the registry alias would be wrong about as often as
-        names are ambiguous, and nothing downstream would notice.
-        """
-        try:
-            found = self._price_catalog.search_models(query, limit=limit)
-        except Exception as error:  # noqa: BLE001 - an unreachable vendor is not a server fault
+    def runtime_check_plan(self, runtime_id: UUID) -> RuntimeCheckPlan:
+        return RuntimeDiagnostics(self._repository, self._settings).plan(runtime_id)
+
+    def _invocation_route(
+        self, request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
+    ) -> dict[str, Any] | None:
+        if request.model_id is not None:
+            current = next((model for model in self._repository.registry()["models"]
+                            if model["id"] == request.model_id), None)
+            if current is not None and current["enabled"] is False:
+                raise HTTPException(status_code=403, detail={
+                    "code": "model_disabled", "message": "The requested model is disabled",
+                })
+        explicit = (
+            request.gateway_profile_id is not None or request.gateway_deployment_id is not None
+        )
+        if explicit and not self._settings.apim_target_registry_enabled:
             raise HTTPException(
-                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
-            ) from error
-        return PriceCatalogModelsResponse(
-            models=[
-                PriceCatalogModel(
-                    key=model.key,
-                    label=model.label,
-                    product=model.product,
-                    source=model.source,
-                    context_tier=model.resolved_context_tier,
-                    text_to_image=model.text_to_image,
+                status_code=503, detail="Explicit APIM Gateway selection is not enabled"
+            )
+        if explicit:
+            route = self._repository.invocation_route(
+                request.runtime_id, request.model_id,
+                gateway_profile_id=request.gateway_profile_id,
+                gateway_deployment_id=request.gateway_deployment_id,
+            )
+        else:
+            route = self._repository.invocation_route(request.runtime_id, request.model_id)
+        if route is not None:
+            if explicit and (
+                str(route.get("gateway_id")) != str(request.gateway_profile_id)
+                or str(route.get("gateway_deployment_id")) != str(request.gateway_deployment_id)
+                or route.get("gateway_implementation") != GatewayKind.APIM
+            ):
+                raise HTTPException(
+                    status_code=409, detail="Resolved Gateway does not match selection"
                 )
-                for model in found.models
-            ],
-            unavailable=list(found.unavailable),
-        )
+            if (
+                route.get("gateway_deployment_id") is not None
+                and route.get("native_gateway_id") != "managed"
+                and not self._settings.self_hosted_gateway_enabled
+            ):
+                raise HTTPException(status_code=503, detail="Self-hosted Gateway is not enabled")
+            self._validate_invocation_endpoint(route)
+        return route
 
-    def price_catalog_options(self, model_key: str) -> PriceCatalogOptionsResponse:
+    def _validate_invocation_endpoint(self, route: Mapping[str, Any]) -> None:
+        if route.get("gateway_implementation") != GatewayKind.APIM:
+            return
         try:
-            found = self._price_catalog.options(model_key)
-        except Exception as error:  # noqa: BLE001
-            raise HTTPException(
-                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
-            ) from error
-        if found is None:
-            raise HTTPException(status_code=404, detail="价目表中没有这个模型")
-        return PriceCatalogOptionsResponse(
-            model_entry=PriceCatalogModel(
-                key=found.model.key,
-                label=found.model.label,
-                product=found.model.product,
-                source=found.model.source,
-                context_tier=found.model.resolved_context_tier,
-                text_to_image=found.model.text_to_image,
-            ),
-            options=[
-                PriceCatalogOption(
-                    reference=option.reference,
-                    deployment=option.deployment,
-                    regions=list(option.regions),
-                    references_by_region=dict(option.references_by_region),
-                    region_required=option.region_required,
-                    input_per_million=option.entry.input_per_million,
-                    output_per_million=option.entry.output_per_million,
-                    cached_per_million=option.entry.cached_per_million,
-                    cache_write_per_million=option.entry.cache_write_per_million,
-                )
-                for option in found.options
-            ],
-            unreadable=list(found.unreadable),
-            other_meters=list(found.other_meters),
-            note=found.note,
-            complete=found.complete,
-        )
+            endpoint = urlsplit(str(route.get("gateway_base_url") or ""))
+            if (
+                endpoint.scheme != "https" or not endpoint.hostname
+                or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
+                or endpoint.port not in (None, 443)
+            ):
+                raise ValueError("Gateway endpoint is not trusted")
+            deployment_id = route.get("gateway_deployment_id")
+            if deployment_id is None:
+                if route.get("gateway_target") or route.get("native_gateway_id") not in (
+                    None,
+                    "managed",
+                ):
+                    raise ValueError("Registered Gateway deployment is missing")
+                return
+            target = route.get("gateway_target")
+            deployment = route.get("gateway_deployment")
+            if not isinstance(target, Mapping) or not isinstance(deployment, Mapping) or (
+                str(target.get("gateway_profile_id")) != str(route.get("gateway_id"))
+                or str(deployment.get("id")) != str(deployment_id)
+                or deployment.get("native_gateway_id") != route.get("native_gateway_id")
+                or str(deployment.get("endpoint_url")).rstrip("/")
+                != str(route.get("gateway_base_url")).rstrip("/")
+            ):
+                raise ValueError("Gateway route does not match its deployment")
+            if (
+                deployment.get("kind") == "self_hosted"
+                and not self._settings.self_hosted_gateway_enabled
+            ):
+                raise ValueError("Self-hosted Gateway is not enabled")
+            validate_gateway_endpoint(
+                target, deployment, route.get("gateway_inventory"),
+                trusted_endpoint=self._settings.self_hosted_gateway_trusted_endpoints.get(
+                    UUID(str(deployment_id)),
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail="Gateway route is not verified") from error
 
-    def sync_prices(self, only: Sequence[UUID] | None = None) -> PriceSyncResponse:
-        registry = self.registry()
-        summary = plan_price_sync(registry.models, self._price_catalog, only=only)
-        written = self._repository.apply_model_price_sync(
-            [
-                {
-                    "model_id": update.model_id,
-                    "writes": update.writes,
-                    "status": update.status.value,
-                    "message": update.message,
-                    "input_cost_per_million": update.input_cost_per_million,
-                    "output_cost_per_million": update.output_cost_per_million,
-                    "cached_cost_per_million": update.cached_cost_per_million,
-                    "cache_write_cost_per_million": update.cache_write_cost_per_million,
-                    "list_input_cost_per_million": update.list_input_cost_per_million,
-                    "list_output_cost_per_million": update.list_output_cost_per_million,
-                    "list_cached_cost_per_million": update.list_cached_cost_per_million,
-                    "list_cache_write_cost_per_million": (
-                        update.list_cache_write_cost_per_million
-                    ),
-                    "pending_list_price": update.pending_list_price,
-                    "context_price_tiers": update.context_price_tiers,
-                    "pending_context_price_tiers": update.pending_context_price_tiers,
-                    "expected_context_price_tiers": update.expected_context_price_tiers,
-                    "expected_source": update.expected_source,
-                    "expected_reference": update.expected_reference,
-                    "expected_discount_percent": update.expected_discount_percent,
-                    "expected_list_prices": update.expected_list_prices,
-                }
-                for update in summary.updates
-            ]
-        )
-        refreshed = self.registry()
-        current_models = {model.id: model for model in refreshed.models}
-        outcomes = []
-        for update in summary.updates:
-            current = current_models.get(update.model_id)
-            superseded = current is None or current.price_sync_status is PriceSyncStatus.SUPERSEDED
-            if update.writes and not superseded:
-                self._project_accepted_model_price(update.model_id)
-            outcomes.append(PriceSyncDetail(
-                model_id=update.model_id, model_key=update.model_key,
-                status=PriceSyncStatus.SUPERSEDED if superseded else update.status,
-                message=current.price_sync_message if superseded and current else update.message,
-            ))
-        return PriceSyncResponse(
-            considered=len(summary.updates),
-            updated=written,
-            unmapped=sum(item.status is PriceSyncStatus.UNMAPPED for item in outcomes),
-            review_needed=sum(item.status is PriceSyncStatus.REVIEW_NEEDED for item in outcomes),
-            stale=sum(item.status is PriceSyncStatus.STALE for item in outcomes),
-            superseded=sum(item.status is PriceSyncStatus.SUPERSEDED for item in outcomes),
-            details=[item for item in outcomes if item.status is not PriceSyncStatus.OK],
-            registry=refreshed,
-        )
+    def _finish_invocation(self, completion: PlatformInvocationCompletion) -> bool:
+        try:
+            self._repository.finish_platform_invocation(completion)
+        except Exception as error:
+            logger.error(
+                "Invocation outcome pending request_id=%s error_type=%s",
+                completion.request_id, type(error).__name__,
+            )
+            return False
+        return True

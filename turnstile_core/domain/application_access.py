@@ -371,7 +371,6 @@ class GatewayApplicationSubscriptionCreate(StrictModel):
         if any(not key.strip() or len(key) > 128 or len(tag) > 256
                for key, tag in value.items()):
             raise ValueError("Tags require nonblank keys up to 128 and values up to 256 characters")
-        application_organization(value)
         return value
 
     @model_validator(mode="after")

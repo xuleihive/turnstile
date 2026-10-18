@@ -700,6 +700,7 @@ def test_postgres_usd_bulk_write_binds_only_usd_child_limits() -> None:
     context = MagicMock()
     context.__enter__.return_value = connection
     connection.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value={"present": None})),
         MagicMock(fetchone=MagicMock(return_value=None)),
         MagicMock(fetchone=MagicMock(return_value=None)),
         MagicMock(

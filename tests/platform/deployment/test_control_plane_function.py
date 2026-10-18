@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -233,38 +233,131 @@ def test_disabled_publication_timer_does_not_build_dependencies(monkeypatch: Any
     function_app.publish_gateway_changes(None)
 
 
-def test_target_mode_does_not_construct_a_global_publisher(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+def test_disabled_directory_timers_do_not_build_dependencies(monkeypatch: Any) -> None:
+    settings = SimpleNamespace(
+        directory_sync_enabled=False, directory_identity_projection_enabled=False
+    )
+    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
+    function_app.synchronize_directory(None)
+    function_app.project_directory_identities(None)
+
+
+@pytest.mark.parametrize("provisioning_enabled", (False, True))
+@pytest.mark.parametrize("fails", (False, True))
+@pytest.mark.parametrize("gateway_creation_enabled", (False, True))
+def test_release_timer_never_constructs_publication_worker(
+    monkeypatch: Any, provisioning_enabled: bool, fails: bool, gateway_creation_enabled: bool,
 ) -> None:
     settings = Settings.model_construct(
-        apim_target_registry_enabled=True, control_plane_enabled=True,
-        gateway_publication_worker_enabled=True,
+        control_plane_enabled=True,
+        gateway_release_worker_enabled=True,
+        gateway_application_provisioning_enabled=provisioning_enabled,
+        self_hosted_gateway_provisioning_enabled=gateway_creation_enabled,
+        ledger_table_endpoint="https://ledger.example.test",
+        ledger_table_name="TurnstileLedger",
+        gateway_release_retention_count=20,
+        gateway_release_retention_days=180,
+        gateway_failed_release_retention_days=30,
+        gateway_release_protected_labels=["milestone", "rollback"],
+        gateway_application_default_monthly_token_limit=100_000,
+        gateway_application_default_tokens_per_minute=100_000,
+        control_plane_lease_seconds=180,
+        control_plane_max_attempts=30,
     )
-    repository, configs, resolver = MagicMock(), MagicMock(), MagicMock()
-    config_factory = MagicMock(return_value=configs)
-    resolver_factory = MagicMock(return_value=resolver)
-    worker = MagicMock()
-    worker.run_once.return_value = None
-    worker_factory = MagicMock(return_value=worker)
-    policy = tmp_path / "policy.xml"
-    policy.write_text("<policies />")
-    monkeypatch.setenv("CONTROL_PLANE_PARENT_POLICY_PATH", str(policy))
-    global_factory = MagicMock(side_effect=AssertionError("global client is forbidden"))
+    repository = MagicMock()
+    repository.get_effective_gateway_application_budget.return_value = None
+    publisher = object()
+    cipher = object()
+    calls: list[tuple[str, int, int]] = []
+    ledger_calls: list[tuple[object, ...]] = []
+
+    class Ledger:
+        def __init__(self, endpoint: str, table: str) -> None:
+            ledger_calls.append((endpoint, table))
+
+        def __enter__(self) -> Ledger:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            ledger_calls.append(("closed",))
+
+    def prepare(*args: object) -> None:
+        assert args[0] is repository
+        assert isinstance(args[1], Ledger)
+        ledger_calls.append(args[2:])
+
+    class ReleaseWorker:
+        def __init__(
+            self,
+            actual_repository: object,
+            actual_publisher: object,
+            _: object,
+            **kwargs: object,
+        ):
+            assert actual_repository is repository
+            assert actual_publisher is publisher
+            assert callable(kwargs.pop("availability_projector"))
+            projector = kwargs.pop("application_projector")
+            if provisioning_enabled:
+                assert callable(projector)
+                projector(UUID(int=1), UUID(int=2))
+            else:
+                assert projector is None
+            assert callable(kwargs.pop("application_rate_limit_projector"))
+            assert callable(kwargs.pop("route_integrity_verifier"))
+            assert kwargs.pop("parent_policy_overrides") == {}
+            assert kwargs.pop("probe_request_limits") == {}
+            assert kwargs.pop("onboarding_handler") is None
+            assert kwargs.pop("gateway_protocol_enrollment") is None
+            management = kwargs.pop("gateway_management_client_resolver")
+            assert (management is not None) is gateway_creation_enabled
+            assert kwargs == {
+                "application_default_token_limit": 100_000,
+                "application_default_tokens_per_minute": 100_000,
+                "cipher": cipher,
+                "parent_policy": None,
+                "self_hosted_gateway_provisioning_enabled": gateway_creation_enabled,
+            }
+
+        def run_once(
+            self, worker_id: str, lease_seconds: int, max_attempts: int
+        ) -> None:
+            calls.append((worker_id, lease_seconds, max_attempts))
+            if fails:
+                raise RuntimeError("worker failure")
+
+    class PublicationWorker:
+        def __init__(self, *_: object, **__: object) -> None:
+            raise AssertionError("release timer constructed publication worker")
+
     monkeypatch.setattr(function_app, "get_settings", lambda: settings)
-    monkeypatch.setattr(function_app, "create_repository", lambda *_, **__: repository)
-    monkeypatch.setattr(CredentialCipher, "from_settings", lambda _: None)
-    monkeypatch.setattr(function_app, "initialized_apim_targets", lambda _: {})
-    monkeypatch.setattr(function_app, "apim_target_client_config_resolver", config_factory)
-    monkeypatch.setattr(function_app, "AzureApimPublisherClientResolver", resolver_factory)
+    monkeypatch.setattr(function_app, "create_repository", lambda _: repository)
+    monkeypatch.setattr(function_app, "apim_target_client_config_resolver", MagicMock())
+    monkeypatch.setattr(function_app, "AzureApimPublisherClientResolver", lambda _: publisher)
+    monkeypatch.setattr(function_app, "AzureApimGatewayManagementClientResolver", MagicMock())
     monkeypatch.setattr(function_app, "FixedRoutePublisherFactory", MagicMock())
-    monkeypatch.setattr(function_app, "GatewayPublicationWorker", worker_factory)
-    monkeypatch.setattr(function_app, "AzureApimPublisherClient", global_factory)
-    function_app.publish_gateway_changes(None)
-    config_factory.assert_called_once_with(repository, settings)
-    resolver_factory.assert_called_once_with(configs)
-    assert worker_factory.call_args.args[:2] == (repository, resolver)
-    repository.close.assert_called_once()
-    global_factory.assert_not_called()
+    monkeypatch.setattr(
+        CredentialCipher, "from_settings", lambda _: cipher
+    )
+    monkeypatch.setattr(function_app, "GatewayReleaseOperationWorker", ReleaseWorker)
+    monkeypatch.setattr(function_app, "GatewayPublicationWorker", PublicationWorker)
+    monkeypatch.setattr(function_app, "AtomicTableLedger", Ledger)
+    monkeypatch.setattr(function_app, "prepare_application_ledger", prepare)
+    monkeypatch.setenv("WEBSITE_INSTANCE_ID", "release-worker-instance")
+
+    if fails:
+        with pytest.raises(RuntimeError, match="worker failure"):
+            function_app.process_gateway_release_operations(None)
+    else:
+        function_app.process_gateway_release_operations(None)
+
+    repository.close.assert_called_once_with()
+    assert calls == [("release-worker-instance", 180, 30)]
+    assert ledger_calls == ([
+        ("https://ledger.example.test", "TurnstileLedger"),
+        (UUID(int=1), UUID(int=2)),
+        ("closed",),
+    ] if provisioning_enabled else [])
 
 
 def test_budget_fence_uses_resolved_target_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,153 +481,3 @@ def test_release_timer_wires_lazy_initialization_handler(monkeypatch: pytest.Mon
     builder.assert_called_once_with(repository, settings)
     assert worker_factory.call_args.kwargs["onboarding_handler"] == service.advance
     repository.close.assert_called_once()
-
-
-@pytest.mark.parametrize("provisioning_enabled", (False, True))
-@pytest.mark.parametrize("fails", (False, True))
-@pytest.mark.parametrize("gateway_creation_enabled", (False, True))
-def test_release_timer_never_constructs_publication_worker(
-    monkeypatch: Any, provisioning_enabled: bool, fails: bool, gateway_creation_enabled: bool,
-) -> None:
-    settings = Settings.model_construct(
-        control_plane_enabled=True,
-        gateway_release_worker_enabled=True,
-        gateway_application_provisioning_enabled=provisioning_enabled,
-        self_hosted_gateway_provisioning_enabled=gateway_creation_enabled,
-        ledger_table_endpoint="https://ledger.example.test",
-        ledger_table_name="TurnstileLedger",
-        gateway_release_retention_count=20,
-        gateway_release_retention_days=180,
-        gateway_failed_release_retention_days=30,
-        gateway_release_protected_labels=["milestone", "rollback"],
-        gateway_application_default_monthly_token_limit=100_000,
-        gateway_application_default_tokens_per_minute=100_000,
-        control_plane_lease_seconds=180,
-        control_plane_max_attempts=30,
-    )
-    repository = MagicMock()
-    repository.get_effective_gateway_application_budget.return_value = None
-    publisher = object()
-    cipher = object()
-    calls: list[tuple[str, int, int]] = []
-    ledger_calls: list[tuple[object, ...]] = []
-
-    class Ledger:
-        def __init__(self, endpoint: str, table: str) -> None:
-            ledger_calls.append((endpoint, table))
-
-        def __enter__(self) -> Ledger:
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            ledger_calls.append(("closed",))
-
-    def prepare(*args: object) -> None:
-        assert args[0] is repository
-        assert isinstance(args[1], Ledger)
-        ledger_calls.append(args[2:])
-
-    class ReleaseWorker:
-        def __init__(
-            self,
-            actual_repository: object,
-            actual_publisher: object,
-            _: object,
-            **kwargs: object,
-        ):
-            assert actual_repository is repository
-            assert actual_publisher is publisher
-            assert callable(kwargs.pop("availability_projector"))
-            projector = kwargs.pop("application_projector")
-            if provisioning_enabled:
-                assert callable(projector)
-                projector(UUID(int=1), UUID(int=2))
-            else:
-                assert projector is None
-            assert callable(kwargs.pop("application_rate_limit_projector"))
-            assert callable(kwargs.pop("route_integrity_verifier"))
-            assert kwargs.pop("parent_policy_overrides") == {}
-            assert kwargs.pop("probe_request_limits") == {}
-            assert kwargs.pop("onboarding_handler") is None
-            assert kwargs.pop("gateway_protocol_enrollment") is None
-            management = kwargs.pop("gateway_management_client_resolver")
-            assert (management is not None) is gateway_creation_enabled
-            assert kwargs == {
-                "application_default_token_limit": 100_000,
-                "application_default_tokens_per_minute": 100_000,
-                "cipher": cipher,
-                "parent_policy": None,
-                "self_hosted_gateway_provisioning_enabled": gateway_creation_enabled,
-            }
-
-        def run_once(
-            self, worker_id: str, lease_seconds: int, max_attempts: int
-        ) -> None:
-            calls.append((worker_id, lease_seconds, max_attempts))
-            if fails:
-                raise RuntimeError("worker failure")
-
-    class PublicationWorker:
-        def __init__(self, *_: object, **__: object) -> None:
-            raise AssertionError("release timer constructed publication worker")
-
-    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
-    monkeypatch.setattr(function_app, "create_repository", lambda _: repository)
-    monkeypatch.setattr(function_app, "apim_target_client_config_resolver", MagicMock())
-    monkeypatch.setattr(function_app, "AzureApimPublisherClientResolver", lambda _: publisher)
-    monkeypatch.setattr(function_app, "AzureApimGatewayManagementClientResolver", MagicMock())
-    monkeypatch.setattr(function_app, "FixedRoutePublisherFactory", MagicMock())
-    monkeypatch.setattr(
-        CredentialCipher, "from_settings", lambda _: cipher
-    )
-    monkeypatch.setattr(function_app, "GatewayReleaseOperationWorker", ReleaseWorker)
-    monkeypatch.setattr(function_app, "GatewayPublicationWorker", PublicationWorker)
-    monkeypatch.setattr(function_app, "AtomicTableLedger", Ledger)
-    monkeypatch.setattr(function_app, "prepare_application_ledger", prepare)
-    monkeypatch.setenv("WEBSITE_INSTANCE_ID", "release-worker-instance")
-
-    if fails:
-        with pytest.raises(RuntimeError, match="worker failure"):
-            function_app.process_gateway_release_operations(None)
-    else:
-        function_app.process_gateway_release_operations(None)
-
-    repository.close.assert_called_once_with()
-    assert calls == [("release-worker-instance", 180, 30)]
-    assert ledger_calls == ([
-        ("https://ledger.example.test", "TurnstileLedger"),
-        (UUID(int=1), UUID(int=2)),
-        ("closed",),
-    ] if provisioning_enabled else [])
-
-
-@pytest.mark.parametrize("fails", (False, True))
-def test_publication_timer_closes_its_repository(
-    monkeypatch: Any, tmp_path: Path, fails: bool,
-) -> None:
-    settings = Settings.model_construct(
-        control_plane_enabled=True, gateway_publication_worker_enabled=True,
-    )
-    repository = MagicMock()
-    worker = MagicMock()
-    worker.run_once.return_value = None
-    if fails:
-        worker.run_once.side_effect = RuntimeError("worker failure")
-    policy = tmp_path / "policy.xml"
-    policy.write_text("<policies />")
-    monkeypatch.setenv("CONTROL_PLANE_PARENT_POLICY_PATH", str(policy))
-    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
-    repository_factory = MagicMock(return_value=repository)
-    monkeypatch.setattr(function_app, "create_repository", repository_factory)
-    monkeypatch.setattr(function_app, "AzureApimPublisherClient", lambda _: object())
-    monkeypatch.setattr(CredentialCipher, "from_settings", lambda _: object())
-    monkeypatch.setattr(function_app, "GatewayPublicationWorker", lambda *_, **__: worker)
-
-    if fails:
-        with pytest.raises(RuntimeError, match="worker failure"):
-            function_app.publish_gateway_changes(None)
-    else:
-        function_app.publish_gateway_changes(None)
-
-    repository.close.assert_called_once_with()
-    repository_factory.assert_called_once_with(settings, autocommit=True)

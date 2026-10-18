@@ -26,16 +26,23 @@ recognises 1037 of the same 1625 and, more importantly, *reports* what it could 
 of hiding it.
 """
 
+
+
+
+
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from importlib.resources import files
-from typing import Any, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol
 
 import httpx
 
@@ -49,9 +56,20 @@ from turnstile_core.domain.runtime_models import (
 AZURE_RETAIL_ENDPOINT = "https://prices.azure.com/api/retail/prices"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 CATALOG_TTL_SECONDS = 6 * 60 * 60
+CATALOG_DEADLINE: ContextVar[float | None] = ContextVar("catalog_deadline", default=None)
+
+
 _CONTEXT_RULES: dict[str, Any] = json.loads(
     files("turnstile_core.pricing").joinpath("context-rules.json").read_text(encoding="utf-8")
 )
+
+
+def price_request_timeout(maximum: float) -> float:
+    deadline = CATALOG_DEADLINE.get()
+    remaining = maximum if deadline is None else deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Pricing operation deadline exceeded")
+    return min(maximum, remaining)
 
 # The index is read from one region because a model's Global rate is identical in every region --
 # measured across 24 to 28 regions per model, always one figure. This region is chosen for
@@ -185,15 +203,27 @@ class CatalogEntry:
 
     @property
     def priced(self) -> bool:
-        return self.input_per_million is not None and self.output_per_million is not None
+        return (
+            self.input_per_million is not None and self.output_per_million is not None
+            and all(
+                value is None or not isinstance(value, bool)
+                and math.isfinite(value) and 0 <= value < 10**10
+                for value in (
+                    self.input_per_million, self.output_per_million,
+                    self.cached_per_million, self.cache_write_per_million,
+                )
+            )
+        )
 
     def discounted(self, percent: float | None) -> CatalogEntry:
         if percent is None or percent == 100:
             return self
-        factor = percent / 100
+        factor = Decimal(str(percent)) / Decimal(100)
 
         def apply(value: float | None) -> float | None:
-            return None if value is None else round(value * factor, 8)
+            return None if value is None else float(
+                (Decimal(str(value)) * factor).quantize(Decimal("0.00000001"))
+            )
 
         return replace(
             self,
@@ -202,6 +232,20 @@ class CatalogEntry:
             cached_per_million=apply(self.cached_per_million),
             cache_write_per_million=apply(self.cache_write_per_million),
         )
+
+    context_window: int | None = None
+
+    provider_id: str | None = None
+
+    model_id: str | None = None
+
+    canonical_model_id: str | None = None
+
+    unsupported: str | None = None
+
+    operation: Literal["chat", "image_generation"] = "chat"
+
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -269,7 +313,7 @@ class PriceCatalog(Protocol):
 
 
 def _http_get_json(url: str, *, timeout: float = 40.0) -> dict[str, Any]:
-    response = httpx.get(url, timeout=timeout, follow_redirects=True)
+    response = httpx.get(url, timeout=price_request_timeout(timeout), follow_redirects=True)
     response.raise_for_status()
     payload = response.json()
     return payload if isinstance(payload, dict) else {}
@@ -771,7 +815,7 @@ class AnthropicCatalog:
     def _build(self) -> Iterable[CatalogEntry]:
         response = httpx.get(
             ANTHROPIC_PRICING_URL,
-            timeout=40.0,
+            timeout=price_request_timeout(40.0),
             follow_redirects=True,
             headers={"User-Agent": "turnstile-price-sync"},
         )
@@ -871,11 +915,15 @@ class CompositeCatalog:
     def __init__(self, catalogs: Sequence[PriceCatalog]) -> None:
         self._catalogs = list(catalogs)
 
-    def search_models(self, query: str, *, limit: int = 60) -> ModelSearch:
+    def search_models(
+        self, query: str, *, limit: int = 60, source: PriceSource | None = None,
+    ) -> ModelSearch:
         terms = [term for term in re.split(r"[^a-z0-9.]+", query.lower()) if term]
         scored: list[tuple[int, int, str, CatalogModel]] = []
         unavailable: list[str] = []
         for catalog in self._catalogs:
+            if source is not None and catalog.source is not source:
+                continue
             try:
                 candidates = catalog.models()
             except (httpx.HTTPError, ValueError):
@@ -898,6 +946,8 @@ class CompositeCatalog:
 
     def options(self, model_key: str) -> CatalogOptions | None:
         for catalog in self._catalogs:
+            if model_key.partition(":")[0] != str(catalog.source):
+                continue
             try:
                 models = catalog.models()
             except (httpx.HTTPError, ValueError):
@@ -909,13 +959,33 @@ class CompositeCatalog:
 
     def lookup(self, reference: str) -> CatalogEntry | None:
         for catalog in self._catalogs:
-            try:
-                found = catalog.entry(reference)
-            except (httpx.HTTPError, ValueError):
+            if reference.partition(":")[0] != str(catalog.source):
                 continue
-            if found is not None:
-                return found
+            return catalog.entry(reference)
         return None
+
+    def public_catalog(self) -> Any:
+        return next(
+            (catalog for catalog in self._catalogs if catalog.source is PriceSource.MODELS_DEV),
+            None,
+        )
+
+    def refresh(self, sources: set[PriceSource]) -> dict[PriceSource, str]:
+        failures: dict[PriceSource, str] = {}
+        for catalog in self._catalogs:
+            if catalog.source not in sources:
+                continue
+            try:
+                if refresh := getattr(catalog, "refresh", None):
+                    refresh()
+                elif isinstance(catalog, AzureRetailCatalog):
+                    catalog._options.clear()
+                    catalog._models = None
+                elif isinstance(catalog, AnthropicCatalog):
+                    catalog._cache = None
+            except (httpx.HTTPError, ValueError, OSError):
+                failures[catalog.source] = "价格来源刷新失败，保留现有单价"
+        return failures
 
 
 def _term_score(term: str, tokens: Sequence[str]) -> int:
@@ -930,4 +1000,6 @@ def _term_score(term: str, tokens: Sequence[str]) -> int:
 
 
 def build_default_catalog() -> CompositeCatalog:
-    return CompositeCatalog([AzureRetailCatalog(), AnthropicCatalog()])
+    from turnstile_core.pricing.models_dev import ModelsDevCatalog
+
+    return CompositeCatalog([ModelsDevCatalog(), AzureRetailCatalog(), AnthropicCatalog()])

@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -361,6 +361,9 @@ class InMemoryApplicationRepositoryMixin:
         *, department_id: str | None = None, update_department: bool = False,
         owner_id: str | None = None, update_owner: bool = False,
     ) -> dict[str, Any] | None:
+        from .directory_catalog import catalog_for
+        from .repository_contract import QueryRepository
+
         application = self.get_gateway_application(application_id)
         if application is None:
             return None
@@ -377,6 +380,7 @@ class InMemoryApplicationRepositoryMixin:
             )
         application_organization(
             {"organization_id": organization_id} if organization_id else {}, department_id,
+            catalog=catalog_for(cast(QueryRepository, self)),
         )
         if (previous != organization_id or previous_department != department_id
             or previous_owner != owner_id):

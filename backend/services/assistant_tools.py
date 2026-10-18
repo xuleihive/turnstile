@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import calendar
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -35,6 +35,7 @@ from turnstile_core.domain.assistant_models import (
     UsageDimension,
     UsageMetric,
 )
+from turnstile_core.domain.data_access import DataAccessScope
 from turnstile_core.domain.runtime_models import ToolDefinition, ToolFunctionDefinition
 from turnstile_core.persistence.repository import QueryRepository, UsageFilters
 
@@ -358,10 +359,21 @@ class ToolInputError(ValueError):
 
 class AssistantTools:
     def __init__(
-        self, repository: QueryRepository, entity_catalog: Callable[[], Mapping[str, Any]]
+        self, repository: QueryRepository, entity_catalog: Callable[[], Mapping[str, Any]],
+        department_ids: tuple[str, ...] | None = None,
+        data_scope: DataAccessScope | None = None,
     ):
         self._repository = repository
         self._entity_catalog = entity_catalog
+        self._department_ids = department_ids
+        self._data_scope = data_scope
+
+    def _filters(self, arguments: TimeScopedArguments) -> UsageFilters:
+        return replace(
+            _filters(arguments),
+            allowed_department_ids=None if self._data_scope is not None else self._department_ids,
+            data_scope=self._data_scope,
+        )
 
     # -- catalog ---------------------------------------------------------------
 
@@ -404,7 +416,7 @@ class AssistantTools:
             window.start,
             window.end,
             arguments.dimension,
-            _filters(arguments),
+            self._filters(arguments),
             arguments.limit,
         )
         metric = arguments.metric
@@ -482,7 +494,7 @@ class AssistantTools:
             arguments.interval,
             arguments.dimension,
             timezone,
-            _filters(arguments),
+            self._filters(arguments),
         )
         source = "calls" if arguments.metric == "total_requests" else "total_tokens"
         totals: dict[str, float] = {}
@@ -560,7 +572,7 @@ class AssistantTools:
     ) -> ToolOutcome:
         window = resolve_range(arguments, timezone, locale)
         overview = self._repository.executive_overview(
-            window.start, window.end, _filters(arguments)
+            window.start, window.end, self._filters(arguments)
         )
         totals = dict(overview["totals"])
         rows = [

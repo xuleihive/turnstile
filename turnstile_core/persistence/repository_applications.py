@@ -16,6 +16,7 @@ from ..domain.application_access import (
     application_organization,
 )
 from ..domain.ledger import validate_application_snapshot
+from .repository_budgets import _lock_directory_state
 
 
 def _json_value(value: object) -> object:
@@ -402,6 +403,7 @@ class PostgreSqlApplicationRepositoryMixin:
         owner_id: str | None = None, update_owner: bool = False,
     ) -> dict[str, Any] | None:
         with self._connection() as connection, connection.transaction():
+            directory_active = _lock_directory_state(connection)
             application = connection.execute(
                 "SELECT id, department_id, owner_id FROM gateway_application WHERE id = %s FOR UPDATE",
                 (application_id,),
@@ -420,9 +422,30 @@ class PostgreSqlApplicationRepositoryMixin:
             previous_owner = application.get("owner_id")
             if not update_owner:
                 owner_id = previous_owner if previous == organization_id and previous_department == department_id else None
-            application_organization(
-                {"organization_id": organization_id} if organization_id else {}, department_id,
-            )
+            if directory_active:
+                if organization_id is None and department_id is not None:
+                    raise ValueError("Application department requires an organization")
+                if organization_id is not None:
+                    organization = connection.execute(
+                        "SELECT id FROM directory_organization WHERE id=%s AND status='active' FOR SHARE",
+                        (organization_id,),
+                    ).fetchone()
+                    if organization is None:
+                        raise ValueError("Unknown application organization")
+                if department_id is not None:
+                    department = connection.execute(
+                        "SELECT organization_id,kind,status FROM directory_unit WHERE id=%s FOR SHARE",
+                        (department_id,),
+                    ).fetchone()
+                    if (department is None or department["kind"] != "department"
+                            or department["status"] != "active"):
+                        raise ValueError("Unknown application department")
+                    if department["organization_id"] != organization_id:
+                        raise ValueError("Application department does not belong to the selected organization")
+            else:
+                application_organization(
+                    {"organization_id": organization_id} if organization_id else {}, department_id,
+                )
             if previous != organization_id or previous_department != department_id or previous_owner != owner_id:
                 if organization_id is None:
                     tags.pop("organization_id", None)

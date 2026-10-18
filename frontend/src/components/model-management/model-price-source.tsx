@@ -9,6 +9,7 @@ import type {
   PriceCatalogOptionsResponse,
   PriceSource,
   PriceSyncStatus,
+  PricePreviewRequest,
 } from "../../data-sources/apim/types"
 import { ModelBrandLogo } from "../brand-logos"
 import { Button } from "../ui/button"
@@ -17,6 +18,7 @@ import { Input } from "../ui/input"
 import { ResizableTable } from "../ui/resizable-table"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "../ui/select"
 import { FieldHelp } from "./field-help"
+import { PublicModelPricing } from "./public-model-pricing"
 import {
   applyCatalogOption,
   contextPriceRulePayload,
@@ -36,6 +38,7 @@ import {
 } from "./model-edit-form"
 
 const SOURCE_LABEL: Record<string, string> = {
+  models_dev: "从公网同步定价",
   manual: "手工填写",
   azure_retail: "Azure 零售价",
   anthropic: "Anthropic 列表价",
@@ -47,6 +50,9 @@ const SYNC_STATUS_LABEL: Record<PriceSyncStatus, string> = {
   stale: "来源读取失败，保留上次单价",
   review_needed: "官方价变动较大，待复核",
   superseded: "配置已更新，保留当前单价",
+  ambiguous: "待确认",
+  unsupported: "不支持",
+  deferred: "未执行",
 }
 
 function money(value: number | null | undefined): string {
@@ -77,7 +83,7 @@ async function loadModelPrices(candidate: ModelPriceCandidate): Promise<ModelPri
  * 24 to 28 regions it is sold in -- is a single choice with no region to pick, and a region is
  * asked for only where two regions genuinely disagree.
  */
-export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false }: {
+export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, publicRequest }: {
   model?: ManagedModel
   modelName?: string
   draft: Draft
@@ -86,6 +92,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   connectionDiscount: number | null
   showAnthropic?: boolean
   imageGeneration?: boolean
+  publicRequest?: PricePreviewRequest
 }) {
   const restored = model ? restoreContextPrices(model) : null
   const [query, setQuery] = useState<string | null>(() => restored?.model_entry.label ?? null)
@@ -100,7 +107,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   const requestVersion = useRef(0)
   const lastDiscount = useRef({ own: draft.discountPercent, connection: connectionDiscount })
 
-  const following = draft.priceSource !== "manual"
+  const following = draft.priceSource !== "manual" && draft.priceSource !== "models_dev"
   const discount = resolveDiscount(draft, connectionDiscount)
   const storedModelKey = draft.priceReference ? modelKeyFromReference(draft.priceReference) : null
   const searchQuery = query ?? (model?.display_name ?? modelName).split("·")[0].trim()
@@ -181,12 +188,13 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   }
 
   const search = async (text = searchQuery, source: PriceSource = draft.priceSource) => {
+    if (source === "manual") return
     const version = ++requestVersion.current
     setSearching(true)
     setCatalogOpen(true)
     setError(null)
     try {
-      const response = await dataSource.priceCatalogModels(text)
+      const response = await dataSource.priceCatalogModels(text, source)
       if (version !== requestVersion.current) return
       setMatches(groupContextPriceModels(response.models.filter(candidate => candidate.source === source
         && (!imageGeneration || candidate.text_to_image === true))))
@@ -221,6 +229,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     try {
       const response = await loadModelPrices(candidate)
       if (version !== requestVersion.current) return
+      if (response.model_entry.source !== candidate.source) return
       setDetails(response)
       const selected = preserveSelection ? response.options.map(option => {
         const region = Object.entries(option.contextPricing?.regionalReferences ?? {})
@@ -267,7 +276,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     </div>
     <ButtonGroup className="model-tabs usage-metric-segment model-price-source-choice" aria-label="价格来源"
       data-value={draft.priceSource}>
-      {(["manual", "azure_retail", "anthropic"] as const).filter(source => showAnthropic || source !== "anthropic").map((source) => (
+      {(["models_dev", "manual", "azure_retail", "anthropic"] as const).filter(source => showAnthropic || source !== "anthropic").map((source) => (
         <button key={source} type="button" disabled={busy} aria-label={SOURCE_LABEL[source]}
           className={draft.priceSource === source ? "active" : ""}
           title={SOURCE_LABEL[source]} aria-pressed={draft.priceSource === source}
@@ -275,17 +284,28 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
             if (source === draft.priceSource) return
             clearSelection()
             setDraft(current => ({ ...current, priceSource: source }))
-            if (source !== "manual") {
+            if (source !== "manual" && source !== "models_dev") {
               const text = !model && modelName.trim() ? modelName.trim() : searchQuery
               setQuery(text)
               if (text) void search(text, source)
             }
           }}>
-          {source === "manual" ? SOURCE_LABEL[source] : source === "azure_retail" ? "Azure" : "Anthropic"}
+          {source === "models_dev" || source === "manual" ? SOURCE_LABEL[source] : source === "azure_retail" ? "Azure" : "Anthropic"}
         </button>
       ))}
     </ButtonGroup>
     </div>
+
+    {draft.priceSource === "models_dev" && <>
+      <PublicModelPricing
+        request={publicRequest ?? { model_id: model?.id, operation: imageGeneration ? "image_generation" : "chat" }}
+        draft={{ ...draft, contextWindow: draft.contextWindow ?? "" }}
+        onChange={updater => setDraft(current => ({
+          ...current, ...updater({ ...current, contextWindow: current.contextWindow ?? "" }),
+        }))}
+        busy={busy} />
+      <DiscountField draft={draft} setDraft={setDraft} busy={busy} connectionDiscount={connectionDiscount} />
+    </>}
 
     {following && <div className="model-price-follow">
       <div className="model-price-catalog-fields">

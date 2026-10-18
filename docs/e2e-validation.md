@@ -12,8 +12,9 @@ Use this checklist for each release. Record resource identifiers and request IDs
 
 ## Platform bootstrap
 
-- [ ] Apply `001_initial_schema`
-- [ ] Re-run the migration command and confirm zero pending migrations
+- [ ] Apply the complete candidate chain with `uv run python -m backend.migrate`
+- [ ] Verify one ledger row and matching checksum per full version in the [migration inventory](testing.md#migration-inventory)
+- [ ] Re-run the migration command and confirm zero pending migrations, unchanged checksums and applied timestamps
 - [ ] Start the API and frontend
 - [ ] Create the first password account with `python -m backend.accounts <email> --role owner`
 - [ ] Sign in through the real web page with that email and password
@@ -62,3 +63,29 @@ Use this checklist for each release. Record resource identifiers and request IDs
 | Known limitations | See root README |
 
 Do not mark a row passed without evidence from the real configured environment. Local unit tests and mocks are not E2E evidence.
+
+## Organization Directory Candidates
+
+Record empty installation, existing-instance upgrade and Entra identity candidates separately.
+The implementation-specific results are in
+[Organization Management Implementation](../plan/organization-management/implementation.md);
+this historical platform result record is not an organization-release result.
+
+- [ ] Empty PostgreSQL initialization, real Owner login, first hierarchy and explicit account
+  association; restart without reinserting examples or resetting credentials
+- [ ] Existing-instance actual three-package/settings/database backup and isolated restore
+- [ ] Additive migration rerun, unchanged checksums, concurrent runners and staged recovery
+- [ ] Approved backfill, preserved billing baseline and three-package readback before CAS activation
+- [ ] Real Owner and department Member workflows, cross-scope denials and query-only history
+- [ ] Desktop/mobile directory plus Copilot source normalization, hidden menu and no polling
+- [ ] Compatible runtime update, rollback and republish with retained directory/disable state,
+  complete settings readback, Function indexing and unchanged billing/model/ledger evidence
+- [ ] Selected real Graph tenant/Groups, minimal application permissions and administrator consent
+- [ ] Full/delta synchronization, reviewed preview, source lifecycle, paging failure and recovery
+- [ ] Real signed employee-token candidate probes, Table projection readback, spoofing denial,
+  disabled/expired mapping, propagation deadline, promotion and safe policy rollback
+
+Package upload, Azure policy compilation, a successful health check and unit mocks satisfy
+none of the signed-token or real Graph checks on their own. Keep sync/projection disabled
+when their separately approved configuration and evidence are absent. Directory synchronization
+does not configure or verify console SSO.

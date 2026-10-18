@@ -1,0 +1,49 @@
+paths:
+  /api/v1/permission-management:
+    get:
+      tags: [Permission Management]
+      operationId: getPermissionConfiguration
+      summary: Read the Owner-only menu permission configuration
+      responses:
+        '200':
+          description: Current policy, revision and feature catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, groups, catalog]
+                properties:
+                  revision: {type: integer, minimum: 1}
+                  groups: {type: object, additionalProperties: {type: array, items: {type: string}}}
+                  catalog: {type: array, items: {type: object}}
+        '401': {description: Session required}
+        '403': {description: Owner required}
+    put:
+      tags: [Permission Management]
+      operationId: savePermissionConfiguration
+      summary: Atomically save all four role menu grants
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision, groups]
+              properties:
+                expected_revision: {type: integer, minimum: 1}
+                groups:
+                  type: object
+                  additionalProperties: false
+                  required: [organization_admin, department_admin, team_admin, user]
+                  properties:
+                    organization_admin: {type: array, uniqueItems: true, items: {type: string}}
+                    department_admin: {type: array, uniqueItems: true, items: {type: string}}
+                    team_admin: {type: array, uniqueItems: true, items: {type: string}}
+                    user: {type: array, uniqueItems: true, items: {type: string}}
+      responses:
+        '200': {description: Saved policy and revision}
+        '401': {description: Session required}
+        '403': {description: Owner required}
+        '409': {description: Revision conflict}
+        '422': {description: Invalid or Owner-only menu assignment}

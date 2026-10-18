@@ -381,6 +381,47 @@
 .assistant-pin-option-meta { margin-left: auto; padding-left: 12px; color: var(--muted-foreground); font-size: 11px; }
 .assistant-pin-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted-foreground); }
 
+/* Report center follows the organization directory's master/detail geometry. */
+.report-center-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); overflow: hidden; }
+.report-directory { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 10px; border-inline-end: 1px solid var(--border); background: var(--background); }
+.report-directory-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-inline: 4px; }
+.report-directory-head h2 { margin: 0; font-size: 12px; font-weight: 600; }
+.report-directory [data-slot="input"] { width: 100%; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: 12px; }
+.report-directory [data-slot="input"]::placeholder { color: var(--muted-foreground); }
+.report-directory-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.report-directory-loading { display: flex; align-items: center; gap: 8px; padding: 10px 4px; color: var(--muted-foreground); font-size: 12px; }
+.report-directory-row { display: flex; align-items: center; min-width: 0; min-height: 36px; border-radius: 6px; }
+.report-directory-row:hover, .report-directory-row[data-current] { background: var(--muted); }
+.report-directory-select { flex: 1; min-width: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--foreground); text-align: start; font: inherit; font-size: 12px; cursor: pointer; }
+.report-directory-select > svg { flex: 0 0 auto; color: var(--muted-foreground); }
+.report-directory-select > span:not([data-slot="badge"]) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-directory-select [data-slot="badge"] { flex: 0 0 auto; }
+.report-directory-delete[data-slot="button"] { flex: 0 0 28px; margin-inline-end: 4px; }
+.report-center-workspace [data-slot="button"] > svg, .report-delete-dialog [data-slot="button"] > svg { width: 14px; height: 14px; }
+.report-center-workspace [data-slot="button"][data-variant="ghost"] { background: transparent; color: var(--muted-foreground); }
+.report-center-workspace [data-slot="button"][data-variant="ghost"]:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+.report-center-workspace [data-slot="button"][data-variant="outline"], .report-delete-dialog [data-slot="alert-dialog-cancel"] { background: var(--background); color: var(--foreground); border-color: var(--border); min-height: 30px; padding-inline: 10px; }
+.report-delete-dialog [data-slot="alert-dialog-action"] { background: var(--destructive); color: var(--primary-foreground); padding-inline: 10px; }
+.report-delete-dialog [data-slot="alert-dialog-action"]:hover:not(:disabled) { opacity: .85; }
+.report-directory-select:focus-visible, .report-directory [data-slot="input"]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.report-center-detail { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.report-center-detail > .ui-alert { margin: 12px 16px; }
+.report-center-detail > .ui-empty { flex: 1; }
+.report-center-detail > .pinned-report-workspace { flex: 1; min-height: 0; }
+.pinned-report-workspace[data-embedded] > .finops-header { flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
+.pinned-report-workspace[data-embedded] > .finops-header > div:first-child { flex: 1; min-width: 120px; }
+.pinned-report-workspace[data-embedded] h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-report-workspace[data-embedded] .pinned-report-actions { flex: 0 0 auto; margin-inline-start: auto; flex-wrap: wrap; }
+.report-delete-dialog [data-slot="alert-dialog-description"] { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.report-delete-dialog [data-slot="alert-dialog-footer"] > button { min-height: 30px; }
+
+@media (max-width: 760px) {
+  .report-center-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(130px, 190px) minmax(0, 1fr); }
+  .report-directory { border-inline-end: 0; border-bottom: 1px solid var(--border); gap: 8px; padding-block: 10px; }
+  .report-directory-row, .report-directory-select { min-height: 40px; }
+  .pinned-report-workspace[data-embedded] > .finops-header > div:first-child { flex-basis: 100%; }
+}
+
 /* The grid sizes itself from THIS element's width, not the viewport's. The sidebar can
    collapse or be dragged to any width, so a viewport breakpoint answers the wrong
    question: the same 1440px window can leave 1180px or 1430px of room here. */

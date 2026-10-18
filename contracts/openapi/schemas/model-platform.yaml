@@ -2230,11 +2230,14 @@ schemas:
         - azure_retail
         - anthropic
         default: manual
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+        - type: 'null'
       price_reference:
         type:
         - string
         - 'null'
-        maxLength: 1000
+        maxLength: 1500
         description: Selected flat-rate catalog entry; use context_price_references instead for tiered
           prices.
       context_price_references:
@@ -2260,6 +2263,14 @@ schemas:
         maximum: 100
         description: Percent of list price charged; 90 means a 10 percent discount. Null inherits the
           connection discount, or list price when none is set.
+      price_entry_digest:
+        type:
+        - string
+        - 'null'
+        maxLength: 64
+      allow_unpriced:
+        type: boolean
+        default: false
     allOf:
     - if:
         required:

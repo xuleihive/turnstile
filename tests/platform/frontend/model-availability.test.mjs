@@ -7,6 +7,7 @@ import { runInNewContext } from "node:vm"
 import { availabilityPresentation, availabilityRefetchInterval } from "../../../frontend/src/lib/model-availability.ts"
 import { resolveInvocationModel } from "../../../frontend/src/lib/gateway-topology.ts"
 import * as runtimeHealth from "../../../frontend/src/lib/runtime-health.ts"
+import * as assistantSettings from "../../../frontend/src/components/assistant/settings-update.ts"
 
 const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
 const { rolldown } = await import(frontendRequire.resolve("rolldown"))
@@ -19,7 +20,7 @@ finally { await bundle.close() }
 const settingsEntry = fileURLToPath(new URL("../../../frontend/src/pages/settings-page.tsx", import.meta.url))
 const settingsBundle = await rolldown({ input: settingsEntry, external: path => path !== settingsEntry,
   transform: { jsx: { runtime: "automatic" } }, treeshake: false,
-  plugins: [{ name: "settings-test-export", transform(source, id) { return id === settingsEntry ? `${source}\nexport { AssistantSection }` : null } }],
+  plugins: [{ name: "settings-test-export", transform(source, id) { return id === settingsEntry ? `${source}\nexport { AssistantSection, useAssistantEditor }` : null } }],
 })
 let settingsComponent
 try { settingsComponent = (await settingsBundle.generate({ format: "cjs" })).output[0].code }
@@ -42,6 +43,7 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
   let error = null
   let completion = Promise.resolve()
   let sequence = 0
+  let activeAction
   let cached = { items: initial ? [initial] : [] }
   let retrySend = async operationId => ({ operation: {
     id: operationId, desired_enabled: initial.desired_enabled, desired_revision: initial.desired_revision,
@@ -49,6 +51,7 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
   } })
   const client = {
     isMutating: () => pending,
+    cancelQueries: async () => {},
     setQueryData(_key, update) { cached = update(cached) },
     invalidateQueries({ queryKey }) { invalidated.push(queryKey); return Promise.resolve() },
   }
@@ -58,13 +61,15 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
     "@tanstack/react-query": {
       useQueryClient: () => client,
       useIsMutating: () => pending,
+      useMutationState: () => pending ? [activeAction] : [],
       useMutation(options) {
         assert.equal(options.retry, false)
         return { error, mutate(action) {
           pending += 1
+          activeAction = action
           completion = Promise.resolve().then(() => options.mutationFn(action)).then(result => {
             error = null
-            options.onSuccess?.(result)
+            return options.onSuccess?.(result)
           }, failure => {
             error = failure
             options.onError?.(failure)
@@ -81,6 +86,7 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
     "../../lib/runtime-health": runtimeHealth,
     "../../locales": { getIntlLocale: () => "en-US" },
     "../../providers/timezone-provider": { useTimezone: () => ({ timezone: "Asia/Shanghai" }) },
+    "../../providers/auth-provider": { useAuth: () => ({ user: { role: "owner" } }) },
     "../assistant/queries": { assistantSettingsKey: ["assistant", "settings"] },
   }
   const exports = {}
@@ -182,7 +188,7 @@ test("the actual command hook deduplicates clicks and never promotes accepted st
   assert.equal(harness.state().effective_enabled, true)
   assert.equal(harness.state().effective_revision, 2)
   assert.equal(harness.action().canChange, false)
-  assert.equal(harness.invalidated.length, 3)
+  assert.deepEqual(harness.invalidated, [["reference", "model-registry"], ["model-platform", "model-availability"]])
 })
 
 test("an uncertain command reuses its idempotency key while a version conflict clears it", async () => {
@@ -300,27 +306,33 @@ test("a disabled default blocks automatic invocation selection but not an explic
   assert.equal(resolveInvocationModel(models, "other", false), models[1])
 })
 
-test("assistant settings preserve an unavailable pin when changing auto-title", async () => {
+test("assistant settings do not resave an unavailable pin when changing auto-title", async () => {
   const writes = []
   const value = { model_id: "disabled-model", model_available: false, effective_model_id: null,
     effective_model_name: null, auto_title: true, available_models: [{ id: "other", display_name: "Other", runtime_name: "Connection" }] }
   const imports = {
+    react: { useState: () => [draft, value => { draft = value }], useEffect() {} },
     "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
     "@tanstack/react-query": {
       useQueryClient: () => ({ setQueryData() {} }),
       useQuery: () => ({ data: value, isPending: false }),
-      useMutation: options => ({ isPending: false, mutate: payload => options.mutationFn(payload) }),
+      useMutation: options => ({ isPending: false, reset() {}, mutate: payload => options.mutationFn(payload) }),
     },
     "../components/assistant/api": { assistantApi: { saveSettings: async payload => { writes.push(payload); return value } } },
     "../components/assistant/queries": { assistantSettingsKey: ["assistant", "settings"], assistantSettingsQuery: () => ({}) },
+    "../components/assistant/settings-update": assistantSettings,
   }
+  let draft = null
   const exports = {}
   runInNewContext(settingsComponent, { exports, require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }) })
-  const nodes = componentHarness().nodes(exports.AssistantSection())
-  assert.equal(nodes.find(node => node.type === "Select").props.value, "disabled-model")
+  const render = () => exports.AssistantSection({ editor: exports.useAssistantEditor(true), canEdit: true })
+  const nodes = componentHarness().nodes(render())
+  assert.equal(nodes.find(node => node.type === "Select").props.value, "automatic")
   const option = nodes.find(node => node.type === "SelectItem" && node.props.value === "disabled-model")
   assert.equal(option.props.disabled, true)
   assert.equal(option.props.children, "指定模型不可用")
   await nodes.find(node => node.type === "Switch").props.onCheckedChange(false)
-  assert.deepEqual(JSON.parse(JSON.stringify(writes)), [{ model_id: "disabled-model", auto_title: false }])
+  assert.equal(writes.length, 0)
+  componentHarness().nodes(render()).find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+  assert.deepEqual(JSON.parse(JSON.stringify(writes)), [{ model_id: null, auto_title: false }])
 })

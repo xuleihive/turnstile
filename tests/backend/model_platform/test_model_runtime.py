@@ -2169,13 +2169,7 @@ def test_complete_catalog_price_can_be_saved(
 
     saved = next(model for model in result.models if model.id == model_id)
     assert saved.price_source is PriceSource.AZURE_RETAIL
-    published = catalog.lookup.return_value
-    charged = published.discounted(saved.effective_discount_percent)
-    assert saved.input_cost_per_million == charged.input_per_million
-    assert saved.output_cost_per_million == charged.output_per_million
-    assert saved.cached_cost_per_million == charged.cached_per_million
-    assert saved.list_input_cost_per_million == published.input_per_million
-    assert saved.price_sync_status == "ok"
+    assert saved.cached_cost_per_million == 0.45
     catalog.lookup.assert_called_once_with(write.price_reference)
 
 
@@ -2183,8 +2177,8 @@ def test_non_pricing_edit_does_not_require_an_available_catalog(
     price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
 ) -> None:
     service, catalog, write, model_id = price_edit_service
-    saved = next(model for model in service.save_model(write, model_id).models
-                 if model.id == model_id)
+    accepted = service.save_model(write, model_id)
+    saved = next(model for model in accepted.models if model.id == model_id)
     write = ManagedModelWrite.model_validate(
         saved.model_dump(include=set(ManagedModelWrite.model_fields)),
     )

@@ -102,6 +102,39 @@ def test_secret_state_is_private_stable_and_excludes_plaintext(tmp_path: Path) -
     assert stat.S_IMODE(inputs.state_path.stat().st_mode) == 0o600
 
 
+def test_existing_state_accepts_changed_owner_password_without_resetting_secrets(
+    tmp_path: Path,
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    first = load_or_create_secret_material(
+        inputs,
+        read_password=lambda _: "original-owner-password",
+        require_owner_password=True,
+    )
+    original_state = inputs.state_path.read_bytes()
+    prompts: list[str] = []
+
+    def current_password(prompt: str) -> str:
+        prompts.append(prompt)
+        return "changed-owner-password"
+
+    resumed = load_or_create_secret_material(
+        inputs,
+        read_password=current_password,
+        require_owner_password=True,
+    )
+
+    assert resumed.owner_password == "changed-owner-password"
+    assert resumed.values == first.values
+    assert inputs.state_path.read_bytes() == original_state
+    assert prompts == ["Owner password for verification: "]
+    assert "changed-owner-password" not in original_state.decode()
+
+
 def test_public_parameter_file_rejects_secure_values(tmp_path: Path) -> None:
     path = _parameters(tmp_path / "parameters.json")
     document = json.loads(path.read_text(encoding="utf-8"))
@@ -167,9 +200,7 @@ def test_flex_preflight_accepts_registered_supported_region(
     runner = CommandRunner()
     responses = iter(("Registered\n", "eastus2\nwestus3\n"))
 
-    def run(
-        command: Sequence[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 0, stdout=next(responses))
 
     monkeypatch.setattr(runner, "run", run)
@@ -188,9 +219,7 @@ def test_flex_preflight_rejects_unsupported_region(
     runner = CommandRunner()
     responses = iter(("Registered\n", "westus3\n"))
 
-    def run(
-        command: Sequence[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 0, stdout=next(responses))
 
     monkeypatch.setattr(runner, "run", run)
@@ -218,9 +247,7 @@ def test_postgres_preflight_accepts_requested_sku_and_zone(
             "editions": [
                 {
                     "name": "Burstable",
-                    "skus": [
-                        {"name": "Standard_B1ms", "zones": ["1", "2", "3"]}
-                    ],
+                    "skus": [{"name": "Standard_B1ms", "zones": ["1", "2", "3"]}],
                 }
             ],
         }
@@ -246,10 +273,7 @@ def test_owner_credentials_are_private_and_match_public_email(tmp_path: Path) ->
     )
     path.chmod(0o600)
 
-    assert (
-        owner_credentials_password(path, "owner@example.com")
-        == "a-secure-owner-password"
-    )
+    assert owner_credentials_password(path, "owner@example.com") == "a-secure-owner-password"
     with pytest.raises(DeploymentError, match="does not match"):
         owner_credentials_password(path, "other@example.com")
 
@@ -312,25 +336,18 @@ def test_external_apim_still_provisions_a_clean_platform(tmp_path: Path) -> None
         apim_gateway_url="https://apim-existing.azure-api.net",
     )
 
-    parameters = deployment_parameters(
-        inputs, material, existing_core=core
-    )["parameters"]
+    parameters = deployment_parameters(inputs, material, existing_core=core)["parameters"]
 
     assert parameters["provisionApimService"]["value"] is False
     assert parameters["provisionPostgres"]["value"] is True
     assert parameters["deployApimBootstrap"]["value"] is True
     assert parameters["existingApimName"]["value"] == core.apim_name
-    assert (
-        parameters["existingApimResourceGroupName"]["value"]
-        == core.apim_resource_group_name
-    )
+    assert parameters["existingApimResourceGroupName"]["value"] == core.apim_resource_group_name
     assert parameters["existingApimPrincipalId"]["value"] == core.apim_principal_id
     assert parameters["existingApimGatewayUrl"]["value"] == core.apim_gateway_url
     assert parameters["apimApiId"]["value"] == "turnstile-llm"
     assert parameters["gatewayApiRelativePath"]["value"] == "turnstile/llm"
-    assert parameters["observerAdapterKeyNamedValueName"]["value"] == (
-        "turnstile-observer-key"
-    )
+    assert parameters["observerAdapterKeyNamedValueName"]["value"] == ("turnstile-observer-key")
 
 
 def test_external_apim_adoption_rejects_partial_configuration(tmp_path: Path) -> None:
@@ -388,7 +405,7 @@ def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
     outputs_path.write_text(
         json.dumps(
             {
-                    "resourceGroupName": "turnstile-test",
+                "resourceGroupName": "turnstile-test",
                 "apimName": "apim-existing",
                 "apimPrincipalId": "00000000-0000-4000-8000-000000000010",
                 "apimGatewayUrl": "https://apim-existing.azure-api.net",
@@ -465,10 +482,7 @@ def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
     assert document["parameters"]["adapterKeyNamedValueName"]["value"] == (
         "turnstile-test-observer-key"
     )
-    assert (
-        document["parameters"]["appServicePlanName"]["value"]
-        == observer_plan_name(inputs)
-    )
+    assert document["parameters"]["appServicePlanName"]["value"] == observer_plan_name(inputs)
     assert document["parameters"]["appServicePlanName"]["value"] != "plan-turnstile-test"
     assert document["parameters"]["appServicePlanSkuName"]["value"] == "P0v3"
     assert document["parameters"]["appServicePlanWorkerCount"]["value"] == 1
@@ -549,19 +563,15 @@ def test_observer_version_is_scoped_to_its_source_tree(
     runner = CommandRunner()
     commands: list[Sequence[str]] = []
 
-    def run(
-        command: Sequence[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="ee355910a942\n")
 
     monkeypatch.setattr(runner, "run", run)
 
     assert observer_source_version(runner) == hashlib.sha256(b"ee355910a942").hexdigest()[:12]
-    assert commands == [
-        ["git", "rev-parse", "HEAD:infra/envoy-cache-adapter",
-         *(f"HEAD:{path}" for path in OBSERVER_SHARED_PATHS)]
-    ]
+    assert commands == [["git", "rev-parse", "HEAD:infra/envoy-cache-adapter",
+                         *(f"HEAD:{path}" for path in OBSERVER_SHARED_PATHS)]]
 
 
 def test_observer_context_contains_only_runtime_and_shared_stdlib_modules() -> None:
@@ -593,9 +603,7 @@ def test_existing_observer_image_skips_rebuild_and_restart(
     runner = CommandRunner()
     commands: list[Sequence[str]] = []
 
-    def run(
-        command: Sequence[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         return subprocess.CompletedProcess(command, 0)
 
@@ -606,10 +614,7 @@ def test_existing_observer_image_skips_rebuild_and_restart(
         inputs,
         {
             "acrName": "acrexisting",
-            "image": (
-                "acrexisting.azurecr.io/turnstile/"
-                "envoy-cache-adapter:ee355910a942"
-            ),
+            "image": ("acrexisting.azurecr.io/turnstile/envoy-cache-adapter:ee355910a942"),
             "webAppName": "observer-existing",
         },
         "ee355910a942",
@@ -636,9 +641,7 @@ def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
     )
     monkeypatch.setattr(
         "scripts.deploy.deploy_webapp_package",
-        lambda _runner, _inputs, app_name, package: api_deployments.append(
-            (app_name, package)
-        ),
+        lambda _runner, _inputs, app_name, package: api_deployments.append((app_name, package)),
     )
     deploy_packages(
         Runner(),  # type: ignore[arg-type]
@@ -713,8 +716,7 @@ def test_webapp_package_deployment_uses_entra_without_logging_token(
     ]
     request, timeout = requests[0]
     assert request.full_url == (
-        "https://api.scm.azurewebsites.net/api/publish"
-        "?type=zip&clean=true&restart=true"
+        "https://api.scm.azurewebsites.net/api/publish?type=zip&clean=true&restart=true"
     )
     assert request.get_header("Authorization") == "Bearer secret-token"
     assert request.data == b"package-bytes"
@@ -732,9 +734,7 @@ def test_function_package_deployment_restarts_and_retries_after_failure(
         def run(self, command: Sequence[str], **_: object) -> None:
             commands.append(list(command))
 
-    def deploy_package(
-        _runner: object, _inputs: object, app_name: str, package: Path
-    ) -> None:
+    def deploy_package(_runner: object, _inputs: object, app_name: str, package: Path) -> None:
         if app_name == "api":
             return
         deployments.append((app_name, package))
@@ -879,7 +879,10 @@ def test_linux_install_locks_primary_and_fallback_dependencies(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(runner, "run", run)
-    monkeypatch.setattr("scripts.deploy.shutil.which", lambda _: "/usr/bin/pip3")
+    monkeypatch.setattr(
+        "scripts.deploy.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
     _install_linux_dependencies(runner, staged)
     assert commands[0][:3] == ["uv", "export", "--locked"]
     assert "--no-dev" in commands[0] and "--no-emit-project" in commands[0]
@@ -909,10 +912,12 @@ def test_linux_fallback_accepts_locked_pillow_and_older_binary_wheels(tmp_path: 
     lock = tomllib.loads((REPOSITORY_ROOT / "uv.lock").read_text(encoding="utf-8"))
     for package_name in ("pillow", "cryptography", "psycopg-binary"):
         package = next(item for item in lock["package"] if item["name"] == package_name)
-        available = set().union(*(
-            parse_wheel_filename(wheel["url"].rsplit("/", 1)[-1])[3]
-            for wheel in package["wheels"]
-        ))
+        available = set().union(
+            *(
+                parse_wheel_filename(wheel["url"].rsplit("/", 1)[-1])[3]
+                for wheel in package["wheels"]
+            )
+        )
         assert compatible.intersection(available), f"No compatible locked wheel for {package_name}"
 
 
@@ -973,7 +978,8 @@ def test_upgrade_files_are_private_and_concurrent_execution_is_rejected(tmp_path
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     with (
-        _upgrade_lock(directory), pytest.raises(DeploymentError, match="Another process"),
+        _upgrade_lock(directory),
+        pytest.raises(DeploymentError, match="Another process"),
         _upgrade_lock(directory),
     ):
         pass
@@ -983,14 +989,23 @@ def test_upgrade_files_are_private_and_concurrent_execution_is_rejected(tmp_path
 
 @pytest.mark.parametrize("action", ["plan-upgrade", "upgrade", "rollback-upgrade"])
 def test_incremental_commands_do_not_recreate_secrets_or_deploy_packages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
 ) -> None:
     from scripts import deploy
 
-    arguments = build_parser().parse_args([
-        action, "--subscription", "subscription", "--parameters",
-        str(_parameters(tmp_path / "parameters.json")), "--state", str(tmp_path / "state.json"),
-    ])
+    arguments = build_parser().parse_args(
+        [
+            action,
+            "--subscription",
+            "subscription",
+            "--parameters",
+            str(_parameters(tmp_path / "parameters.json")),
+            "--state",
+            str(tmp_path / "state.json"),
+        ]
+    )
     outputs = {"resourceGroupName": "turnstile-test"}
     monkeypatch.setattr(deploy, "require_prerequisites", lambda *_: None)
     monkeypatch.setattr(deploy, "validate_source_snapshot", lambda *_: None)
@@ -1013,14 +1028,20 @@ def test_incremental_commands_do_not_recreate_secrets_or_deploy_packages(
 
 
 def test_rerun_checks_apim_upgrade_before_secrets_or_packages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from scripts import deploy
 
-    arguments = build_parser().parse_args([
-        "deploy", "--subscription", "subscription", "--parameters",
-        str(_parameters(tmp_path / "parameters.json")),
-    ])
+    arguments = build_parser().parse_args(
+        [
+            "deploy",
+            "--subscription",
+            "subscription",
+            "--parameters",
+            str(_parameters(tmp_path / "parameters.json")),
+        ]
+    )
     monkeypatch.setattr(deploy, "require_prerequisites", lambda *_: None)
     monkeypatch.setattr(deploy, "validate_source_snapshot", lambda *_: None)
     monkeypatch.setattr(deploy, "load_saved_outputs", lambda *_: {"existing": True})
@@ -1088,19 +1109,16 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
     release_declared = set(
         re.findall(
             r"(?m)^param\s+(\w+)",
-            (REPOSITORY_ROOT / "infra" / "runtime-release.bicep").read_text(
-                encoding="utf-8"
-            ),
+            (REPOSITORY_ROOT / "infra" / "runtime-release.bicep").read_text(encoding="utf-8"),
         )
     )
 
     assert set(root_document["parameters"]) <= root_declared
     assert set(observer_document["parameters"]) <= observer_declared
     assert set(release_document["parameters"]) <= release_declared
-    assert (
-        release_document["parameters"]["currentApiSettings"]["value"]
-        == {"EXISTING_API_SETTING": "preserved"}
-    )
+    assert release_document["parameters"]["currentApiSettings"]["value"] == {
+        "EXISTING_API_SETTING": "preserved"
+    }
 
 
 class WhatIfRunner(CommandRunner):

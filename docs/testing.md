@@ -1,6 +1,27 @@
 # Testing
 
+`018_permission_management` adds the persisted four-role menu matrix and audit.
+Permission regression tests use real PostgreSQL and authenticated sessions: Owner-only policy
+configuration, CAS save conflicts, existing-session revocation, ordinary-user self scope,
+department membership unions, exact team membership unions, and denial of global snapshots.
+Menu configuration does not alter budget storage, gateway admission, or Owner-only writes.
+
+Usage directory filter changes require real PostgreSQL and API coverage for repeated IDs,
+same-field union/cross-field intersection, authenticated scope isolation, active/archived/
+historical/unattributed classification, current-name precedence and all historical parent edges.
+Check totals agree across overview, distribution and hour/day/week trends for the same filters.
+Omitted status preserves the older all-status query, whereas UI reset returns to active.
+UI archive options are only All, Enabled and Archived. All must send active plus archived,
+not omit the status constraint; stale historical/unattributed UI selections return to active.
+Archived child scopes retain active ancestors in the facet list. Never prove these read changes
+by deleting usage rows or saving budgets. Browser checks cover five pages, theme/mobile layouts,
+multi-select persistence and clearing, cascading options, no console/API errors and zero writes.
+
 ## Clean installation
+
+Pricing upgrade `010_models_dev_pricing` adds the public catalog source and matching metadata
+without rewriting accepted prices. Verify explicit manual configurations remain manual, absent
+configurations follow the public default, and the numbered migration is applied once.
 
 ```bash
 uv sync --frozen
@@ -22,107 +43,184 @@ git diff --check
 
 ## Database validation
 
-New forward-only product upgrades are `017_budget_terminal_observation`,
-`018_budget_reservation_resolution`, `019_runtime_display_name`,
-`020_failed_publication_spec`, `021_usd_budget_reservations`, `022_subscription_tags`,
-`023_usd_reservation_resolution`, `024_gateway_usage_attribution`,
+The merged fork preserves migration identities from both histories. The runner uses the full
+filename minus `.up.sql`, not just the numeric prefix: `009_assistant_api_format` and
+`009_context_tier_pricing` are separate migrations. Never rename or edit either applied file.
+Validate both a fresh database and an upgrade from the fork's existing 18-file ledger.
+Keep existing usage, financial/audit history, directory memberships and menu assignments.
+SQL source checks do not prove applied migrations. Do not initialize a shared database.
+
+Upstream additions retained in this fork are `009_context_tier_pricing`,
+`010_budget_execution_protocol`, `011_gateway_targets`, `012_apim_onboarding`,
+`013_multi_target_rollout`, `014_self_hosted_gateway_provisioning`,
+`015_platform_invocation_trace`, `016_model_availability`,
+`017_budget_terminal_observation`, `018_budget_reservation_resolution`,
+`019_runtime_display_name`, `020_failed_publication_spec`, `021_usd_budget_reservations`,
+`022_subscription_tags`, `023_usd_reservation_resolution`, `024_gateway_usage_attribution`,
 `025_usage_cost_component_prices`, `026_invocation_trace_service_identity`,
-`027_product_schema_alignment` and `028_product_index_alignment`. They preserve applied migration
-bytes and existing usage, financial/audit history and routing identities. The first two add
-immutable admission-bound observations and explicit Owner approval records; elapsed time or
-an HTTP failure alone is not permission to refund unknown usage. Display names no longer
-define Connection identity, while endpoint/target uniqueness remains. Failed publication specs
-may be submitted as a new task without erasing the failed record. Tags are separate metadata.
+`027_product_schema_alignment` and `028_product_index_alignment`.
+Budget execution and settlement remain independently gated. Unknown usage is not refundable
+merely because time has elapsed or a request failed. Verify atomic reservations, immutable
+prices, settlement idempotency and late formal evidence on an isolated PostgreSQL target.
+Model availability tests and recording adapters do not prove PostgreSQL transaction isolation
+or real APIM propagation. These require separately authorized validation, not a Git merge.
 
-Run the migration-source and schema-documentation tests locally. On an accurately authorized
-PostgreSQL target, additionally verify parsing, unchanged old checksums/rows, immutable/FK
-constraints, same-approval idempotency, concurrent claims and the ordinary API outcomes.
-SQL source checks do not prove applied migrations, isolation, request attribution or refunds.
-Do not initialize a shared database or import model intelligent-routing schema.
+For a clean installation, run `uv run python -m backend.migrate` against an authorized new
+PostgreSQL 16+ database. Verify exactly one `schema_migration` row for every full version in
+the inventory below, with its matching source checksum. Run the command again and verify that
+no migration is reapplied and all checksums and applied timestamps remain unchanged.
 
-USD upgrades add exact `NUMERIC(30,14)` reservations, immutable admission prices and formal
-price-bound charges. Missing/estimated prices remain unknown, not zero. Owner-approved releases
-retain unknown actual Tokens/USD and their original receipt; later formal usage still settles
-once. Public legacy Token snapshots keep their separate upper-bound deduction. On the approved
-database, verify all seven new upgrades together, unchanged 001-016 checksums/history, exact
-cache-read/write buckets, same-approval idempotency, lost responses, late formal evidence and
-both Person/Application scopes before claiming financial acceptance. The later upgrades add
-Gateway-bound usage metadata, immutable component-price calculation, actual correlation-based
-Trace matching and the current product's required side tables and indexes. Static schema or
-migration tests do not prove that these upgrades have been applied or that existing history
-has been preserved in a real database.
+### Migration inventory
 
-Migration `016_model_availability` adds retained model identities, immutable commands/audit,
-capability and node-enrollment evidence, and a leased projection outbox. It preserves existing
-model states, prices, defaults and financial history. Local checks are:
+The current chain contains **38 migrations**, listed in the runner's lexicographic filename
+order. Shared files belong to both histories; Fork and Upstream identify additions on each
+side of the merge. These are source identities, not a choice of deployment subsets. Existing
+installations apply all pending files from the compatible candidate through `backend.migrate`
+while preserving every already-applied version and checksum.
 
-```bash
-uv run --frozen --no-sync pytest -q tests/backend/model_platform/test_model_availability.py \
-	tests/platform/contracts/test_migrations.py tests/platform/api/test_model_management_api.py \
-	tests/platform/deployment/test_control_plane_function.py
-node --experimental-strip-types --test tests/platform/frontend/model-edit-form.test.mjs \
-	tests/platform/frontend/model-publication-connections.test.mjs
-```
+| Migration file | Origin | Effect |
+| --- | --- | --- |
+| `001_initial_schema.up.sql` | Shared | Empty platform schema, including consolidated historical schema definitions; no customer data. |
+| `002_apim_request_attempt_identity.up.sql` | Shared | Non-unique caller request index; distinct APIM attempt identities. |
+| `003_budget_reservation_finalization.up.sql` | Shared | Immutable reservation finalization/recovery and Application ledger snapshots. |
+| `004_apim_usage_identity_guard.up.sql` | Shared | Guarded APIM usage identity and immutable discrepancy evidence. |
+| `005_billable_request_lifecycle.up.sql` | Shared | Durable billable-request journal and effective budget-usage views. |
+| `006_versioned_budget_evidence.up.sql` | Shared | Versioned evidence selection and separately scheduled, initially unset cutoff. |
+| `007_model_price_source.up.sql` | Shared | Pricing side tables, source metadata and connection discounts; no existing-model backfill. |
+| `008_price_review_and_guard.up.sql` | Shared | Separate pending-price review baseline and superseded sync status. |
+| `009_assistant_api_format.up.sql` | Fork | Assistant API format selection, defaulting to automatic. |
+| `009_context_tier_pricing.up.sql` | Upstream | Context-tier catalog prices and per-request tier snapshots. |
+| `010_budget_execution_protocol.up.sql` | Upstream | Default-off budget rollout/scopes, immutable execution evidence and settlement outbox. |
+| `010_models_dev_pricing.up.sql` | Fork | Public catalog source, matching/sync metadata and absent-row reader semantics; explicit choices preserved. |
+| `011_gateway_targets.up.sql` | Upstream | Registered APIM targets, Gateway deployments and model target bindings. |
+| `011_user_settings_profile.up.sql` | Fork | Private normalized avatars and account-security audit/throttling records. |
+| `012_apim_onboarding.up.sql` | Upstream | APIM onboarding release-operation kind. |
+| `012_organization_directory.up.sql` | Fork | Empty directory/synchronization tables, versioned authority state and stored query scopes. |
+| `013_menu_permission_groups.up.sql` | Fork | Local navigation group with Ordinary User as the default. |
+| `013_multi_target_rollout.up.sql` | Upstream | Multi-target publication parent/child tasks and target validation. |
+| `014_multiple_menu_permission_groups.up.sql` | Fork | Authoritative menu-group array preserving earlier single-group assignments. |
+| `014_self_hosted_gateway_provisioning.up.sql` | Upstream | Self-hosted Gateway provisioning operation and deployment metadata. |
+| `015_platform_invocation_trace.up.sql` | Upstream | Persisted platform attempts, telemetry matching and unified trace view. |
+| `015_scoped_menu_administrators.up.sql` | Fork | Scoped administrator appointments, valid legacy department imports and effective menu view. |
+| `016_model_availability.up.sql` | Upstream | Versioned model availability, tasks, coverage/enrollment evidence and immutable audit. |
+| `016_organization_members.up.sql` | Fork | Explicit organization ownership backfill and retirement of pending transfers. |
+| `017_budget_terminal_observation.up.sql` | Upstream | Immutable budget execution terminal observations. |
+| `017_department_memberships.up.sql` | Fork | Additional non-billing department memberships and hierarchy validation. |
+| `018_budget_reservation_resolution.up.sql` | Upstream | Immutable execution-reservation resolution documents. |
+| `018_permission_management.up.sql` | Fork | Persisted menu permission matrix/audit and effective appointment projection. |
+| `019_runtime_display_name.up.sql` | Upstream | Drops the global `model_runtime_name_key` uniqueness constraint; adds no metadata columns. |
+| `020_failed_publication_spec.up.sql` | Upstream | Rebuilds the reusable-spec unique index, excluding failed, superseded and rolled-back publications. |
+| `021_usd_budget_reservations.up.sql` | Upstream | USD budget limits, reservations, immutable admission prices and cost-aware settlement. |
+| `022_subscription_tags.up.sql` | Upstream | Application subscription-tag storage. |
+| `023_usd_reservation_resolution.up.sql` | Upstream | USD settlement/release evidence validation against immutable admission and approval. |
+| `024_gateway_usage_attribution.up.sql` | Upstream | Per-request APIM target, Gateway deployment/instance and revision attribution. |
+| `025_usage_cost_component_prices.up.sql` | Upstream | Replaces `budget_usage_usd_cost` to prefer stored exact USD cost or require prices only for nonzero usage components; estimated/unpriced usage stays unknown. Adds no price columns. |
+| `026_invocation_trace_service_identity.up.sql` | Upstream | Matches platform invocation telemetry using service identity. |
+| `027_product_schema_alignment.up.sql` | Upstream | Application recovery/finalization and Gateway provisioning tables; aligned finalization and invocation views. |
+| `028_product_index_alignment.up.sql` | Upstream | Scope/period finalization index and unique self-hosted provisioning request index. |
 
-The existing C# policy suite also compiles and runs native availability expressions. On an
-explicitly authorized PostgreSQL database, separately verify migration parsing, same-transaction
-command enforcement, stale/duplicate commands, concurrent removal, immutable intent/audit,
-retained tombstones, lost/expired worker leases, and bounded same-operation retry. Test exact
-Table ETag conflicts, projection readback and complete Gateway evidence independently. Do not
-run an initializing local database fixture against a shared database. Static SQL and recording
-adapters do not prove PostgreSQL transaction isolation.
+### Upgrade validation
 
-For UI acceptance, compare actual source and public components with the same data at desktop and
-390 px. Cover enabled, disabled, pending, projected, partial, failed and unknown; open details,
-long target names, keyboard activation, disabled controls, duplicate clicks and an uncertain
-response that reuses its idempotency key. Editing metadata must never submit `enabled`.
-Verify all locales and light/dark themes. Local component transport adapters are not authenticated
-Gateway E2E; that requires the separate installation and live validation workflow.
+Migration `012_organization_directory` adds empty organizational-directory and synchronization
+tables, versioned control state, audit guards and stored assistant/report scope metadata.
+It does not import customers, change login roles, rewrite budgets or activate directory mode.
+Run the isolated directory migration, service, synchronization and transfer suites before
+approving the separate business backfill and authority switch.
 
-Migration `015_platform_invocation_trace` adds nonbilling platform call snapshots and a
-Request Trace view. Apply it before deploying the updated API. On an authorized PostgreSQL
-database, verify duplicate-start rejection, conditional immutable completion, visibility before
-telemetry, and a unique formal match on the actual Gateway correlation ID, caller request ID,
-user, model, Runtime and optional Application identity. Missing or ambiguous correlation evidence
-must remain unmatched. Confirm that platform timeouts cannot overwrite formal usage, prices or
-Gateway status, and that attempts never enter budget totals. Static SQL and in-memory tests do
-not prove migration parsing, PostgreSQL concurrency or real Gateway attribution.
+Migration `013_menu_permission_groups` adds a local navigation group with Ordinary User
+as the default, without translating job titles or existing department grants.
+Apply it before the new authentication runtime. Verify fresh-install/rerun behavior,
+historical account/session/budget/usage/title/grant preservation, Owner-only assignment,
+source-import preservation, and unchanged API data scopes/model authorization.
+Menu-only saves must not add APIM projection work. Exercise all four groups in a real
+browser, including direct URL, search, source switch, existing-session downgrade and
+desktop/mobile rendering. See the menu matrix in the organization-management plan.
 
-Migration `014_self_hosted_gateway_provisioning` adds a durable creation operation, target-scoped
-idempotency index and nullable deployment-to-operation ownership link. It does not create Azure
-resources, enable the feature, store Gateway tokens or modify usage history. Validate concurrent
-duplicate submissions, cross-target foreign-key rejection, lease loss and same-ID failed-task
-retry against an explicitly authorized PostgreSQL database. Do not run an initializing local
-database fixture against an existing shared environment.
+Migration `014_multiple_menu_permission_groups` adds the authoritative group array,
+preserving any single-group assignments from 013. Check combinations of administrator
+groups, menu union, single-label removal and fallback to Ordinary User after the last
+administrator assignment is removed. Personnel forms display read-only tags, with no group
+checkboxes or dropdown. Verify profile saves omit both menu-group fields and preserve existing
+assignments, and new-person forms show Ordinary User without granting administrator groups.
 
-Migration `013_multi_target_rollout` adds parent intent and target-bound child publication tables
-only. It leaves models, existing releases and financial history unchanged. Validate all-or-none
-queue creation, stable lock order, cross-target child rejection and derived partial status in an
-authorized PostgreSQL database; local repository doubles do not prove transaction isolation.
+Migration `015_scoped_menu_administrators` unifies administrator appointments and menu identity.
+It imports valid legacy department administrators only, without inventing team/organization
+appointments or altering APIM, model access or historical billing. Verify old migration checksums,
+deduplication, rerun safety, real team-member validation, organization configuration, revocation,
+Owner/Member protection and consistent personnel/profile labels. Department appointments keep the
+existing department-scope contract through the legacy grant projection; there is no second UI.
+Scope matching regression must cover one person in two teams (including identical names),
+administrator in only one, unrelated departments/organizations, exact kind/ID matching,
+revocation and disabled memberships. Profile menu unions remain compatible but must not imply
+resource authority. Check selected-node personnel/editor tags, exact profile scope fields,
+per-department capability isolation and unchanged Owner/model/budget controls.
 
-Migration `012_apim_onboarding` extends the durable release-operation kind constraint only.
-It creates no target or credentials and does not activate a feature. Real initialization acceptance
-must verify same-plan idempotency, failed-task history, linked retry and lease-bound activation.
-
-Migration `011_gateway_targets` adds registered APIM identities, deployment inventory and
-logical-model route bindings. It does not register live targets or rewrite legacy models or usage.
-Validate cross-target foreign keys, the unique enabled default route, preserved retired history,
-and transactional inventory replacement against a separately authorized PostgreSQL environment.
-Local domain and SQL-source tests are not evidence that a migration has been applied.
-
-For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, `008_price_review_and_guard`, `009_context_tier_pricing`, `010_budget_execution_protocol`, `011_gateway_targets`, `012_apim_onboarding`, `013_multi_target_rollout`, `014_self_hosted_gateway_provisioning`, `015_platform_invocation_trace`, and `016_model_availability`), then run the command again and verify that no migration is reapplied.
+Migration `016_organization_members` backfills explicit organization ownership from current
+primary departments, retains all historical memberships and retires pending transfer plans.
+Migration `017_department_memberships` adds non-billing department membership. Verify the
+unchanged 001-016 ledger, rerun safety, same-organization constraints, one primary department
+and preservation of budget/usage/model facts. New personnel creation is Owner-only and requires
+name, email, login password and a primary department in the selected organization. Personnel,
+Member login account, account link and primary membership must commit together; conflicts must
+not overwrite an existing password or leave an orphan account. Passwords use the shared scrypt
+implementation and must never appear in responses, audit or idempotency evidence. Check required
+department validation, duplicate/cross-organization member selection, atomic batch rejection,
+linked password login, retired transfer/identity endpoints and desktop/mobile workflows.
+Department/team Add Members selects existing organization people only, without changing their
+primary budget department. Transfer scheduling and the historical-identity editor are retired;
+historical query catalogs, billing records and immutable audit data remain available.
 
 The initial schema contains no users, credentials, provider connections, runtimes, business models, usage events, or customer data.
 
-For an existing installation, run the same migration command to apply only pending upgrades. Verify that the initial migration checksum and existing usage rows are unchanged. Migration `002` replaces the unique caller-request index with a non-unique `(request_id, ts DESC)` index; it does not rewrite historical usage. Apply it before running the updated telemetry consumer, and drain older telemetry consumers before enabling the new version. Do not overlap consumers that use the old and new identity rules. Index replacement takes a table lock, so schedule the upgrade for an appropriate maintenance window. Migration `007` only adds nullable columns and defaults every existing model to `price_source = 'manual'`, so rates already in the registry are left exactly as they were and the price sync skips those rows until someone opts a model in.
+For an existing installation, run the same migration command to apply all pending upgrades.
+Verify that every previously applied checksum and existing usage row is unchanged. Migration
+`002_apim_request_attempt_identity` replaces the unique caller-request index with a non-unique
+`(request_id, ts DESC)` index; it does not rewrite historical usage. Apply it before running
+the updated telemetry consumer, and drain older telemetry consumers before enabling the new
+version. Do not overlap consumers that use the old and new identity rules. Index replacement
+takes a table lock, so schedule the upgrade for an appropriate maintenance window.
+
+Migration `007_model_price_source` creates the side tables `model_runtime_price` and
+`managed_model_price`, not nullable columns on the registry tables. The `price_source` SQL
+column default remains `manual`. Explicit manual rows remain manual and are skipped by sync.
+With `010_models_dev_pricing` and compatible readers, an absent row follows the default public
+catalog; neither migration backfills existing models or rewrites charged rates. A later accepted
+price synchronization is a separate write. Do not infer an explicit manual choice from the
+absence of a price-source row or from the SQL default.
 
 Request-attempt validation must prove that two APIM attempts with the same `request_id` and different `correlation_id` values both persist, while redelivery of one attempt is idempotent. Replay a pre-upgrade event whose stored primary key differs from its correlation ID: the existing primary key and Application attribution must remain unchanged, an estimated record may gain exact usage, and an already exact record must not be charged again. Detail lookup prefers an exact `correlation_id`; a legacy `request_id` selects the latest matching APIM attempt. Verify both lookups and confirm that Copilot records remain excluded. Isolated unit and migration-source tests do not substitute for this database validation.
 
-### Context-tier pricing validation
+### Personal user settings
 
-Apply `009_context_tier_pricing` only to the separately approved database before updating API, Control Plane and Telemetry packages together. The migration adds accepted/pending schedules to the price side table and request-level tier/schedule snapshots; it does not rewrite historical requests. Registry responses advertise `context_pricing_supported` only in the compatible application version. Do not enable tier writes while an old consumer still reads scalar rates.
+Apply `011_user_settings_profile` before deploying the updated authentication API, following
+the [upgrade procedure](deployment.md#user-settings-database-upgrade). Personal avatars are
+private PostgreSQL records; Microsoft sessions continue to use Graph photos.
+Only password sessions can update the current account's name, avatar, or password. Successful
+password changes revoke all Turnstile sessions without changing Microsoft credentials.
 
-Run `uv run --frozen --no-sync pytest -q tests/backend/persistence/test_price_sync_concurrency.py tests/backend/telemetry/test_processor.py tests/platform/pricing` and the two frontend model form Node suites. The PostgreSQL fixture starts an isolated session-owned local cluster; verify it runs rather than skips. Cover save/reopen, source/region/range mismatch, inherited and model discounts, sync review and concurrent edits, publication activation, exact threshold boundaries including cached input, missing usage, and reconciliation using the original schedule after registry prices change. Local source fixtures and local SQL results are not cloud deployment evidence.
+The reproducible migration suite starts and stops only its own local PostgreSQL 16+
+cluster, using a private Unix socket and rejecting TCP connections. It does not read
+`DATABASE_URL` or `TEST_USER_SETTINGS_DATABASE_URL` as a target. With `initdb` and
+`postgres` available on `PATH`, run:
+
+```bash
+uv run pytest -q tests/backend/persistence/test_user_settings_migration.py
+```
+
+It covers fresh installation through `011`, upgrade with historical account/session/budget/
+usage preservation, unchanged migration checksums and timestamps on rerun, rejection of
+applied-file changes, and schema/ledger rollback on failure. Missing or older PostgreSQL
+tools explicitly skip these tests; a skipped run is not migration evidence.
+The fresh-Owner case exercises migration followed by real bootstrap, session issuance
+with the new avatar schema, display-name/password updates and a restart-style rerun
+that must preserve the new name/password and the existing migration ledger.
+
+Run the self-service API and UI source checks with the ordinary suite. To exercise real
+transaction locking, rollback, avatar persistence, audit and password attempt limiting,
+explicitly set `TEST_USER_SETTINGS_DATABASE_URL` to an isolated, migrated PostgreSQL database
+and run `tests/backend/persistence/test_user_settings_store.py`. Never point this test
+variable at a shared or deployed database. Tests create temporary accounts and delete only
+those accounts during teardown.
 
 ### Ledger upgrade validation
 
@@ -178,100 +276,22 @@ their cause to the platform without evidence.
 
 ## Browser validation
 
-### Application and budget workflows
+### Assistant API protocols
 
-Local Application checks must cover exact APIM selection for discovery and key operations,
-creation progress recovery without duplicate submission, and successful navigation to the
-created Application. Initial keys must remain outside the DOM, URL and query cache.
+Apply `009_assistant_api_format` before deploying the updated API. Existing model and title
+settings remain unchanged and the new nullable protocol defaults to automatic selection.
+The initial migration and historical conversations must not be rewritten.
 
-Budget projection tests must cover ETag conflict retries, unchanged-value idempotence, invalid
-TPM, missing admission rows, readback mismatch and preservation of all unrelated quota fields.
-Database-save success with failed Table projection must remain distinguishable from a verified
-projection. The detail UI must retain unknown execution balances rather than falling back to
-historical usage or rendering a measured-zero progress indicator.
+Local gateway and assistant tests use mocked provider responses. They cover model-specific
+protocol selection, Claude tool definitions and parallel tool results, private reasoning
+continuity, optional protocol persistence, incompatible overrides, fallback visibility,
+usage, correlation IDs and API error propagation. Frontend tests cover protocol resets on
+model changes and preservation on title-toggle changes. None establishes live APIM routing.
 
-Run `tests/backend/model_platform/test_budget_diagnostics.py` for Owner and origin protection,
-strict request inputs, valid and wrong-audience delegation, exact fence error codes, isolated
-candidate requirements, both scope epochs and identities, a fence change before dispatch,
-one-request dispatch, APIM-only secret headers and immutable platform Trace. Settlement cases
-must include both exact receipts, one missing or mismatched receipt, unmeasured usage and timeout
-without replay. These tests use isolated HTTP and ledger adapters, not live budget validation.
-
-Compare the actual source and public components with identical synthetic data for release
-grouping, full release details, the two-step budget dialog, Application selection and details,
-budget editing, connection creation/editing and publication controls. Cover desktop and 390 px,
-Chinese and English, light and dark themes, expanded menus and invalid/disabled states. Verify
-fonts and images actually load and that mobile dialogs remain within the viewport. Save source
-and candidate fingerprints with results; a successful build or screenshot count alone does not
-establish feature equivalence.
-
-### Connection diagnostics and invocation Trace
-
-Local diagnostics tests must cover Owner-only plan and execution, explicit model/Gateway
-selection, exact system-probe subscription permissions, configuration changes between plan and
-dispatch, cooldown ownership, deadlines and safe historical outcomes. Invocation tests must cover
-exact target selection, unavailable selections without fallback, text output limits, image routing
-metadata exclusion and recording failure before dispatch. Test unknown usage separately from
-measured zero, and platform failures separately from formal Gateway status.
-
-Use the actual component handlers for selection and failure-state tests. Isolated component
-screenshots at desktop and 390 px verify layout only; they do not establish authenticated or
-deployed acceptance. A later authorized run must use real permissions, Gateway responses,
-persisted Trace identities and formal telemetry. Never replace that evidence with mock success
-or reuse a previous candidate's screenshots. Unknown outcomes must not be automatically replayed.
-
-### New Self-hosted Gateway creation
-
-Local checks exercise the actual API/client/worker handlers with isolated repository and HTTP
-adapters. Cover an initially absent native Gateway, stable generated ID, `HEAD` API membership
-readback, same-ID recovery after both possible lost PUT responses, foreign ownership rejection,
-missing permissions, disabled capabilities, Owner and origin guards, endpoint consent, no-store
-startup responses and secret-free task history. Frontend checks execute real component handlers
-for default creation versus legacy association, uncertainty-safe resubmission, pending status,
-renewal selection and memory/Blob cleanup. Compile the optional access template independently.
-
-For live acceptance, first authorize the exact APIM child resource, migration, identity permissions
-and application packages. Prove the generated native ID is absent before submitting the normal
-Turnstile form. Verify creation and API association through ARM and persisted task readback; then
-download the startup file without recording its token, run the official image on the separately
-authorized server, and validate connectivity from Turnstile. Complete model publication, normal
-page invocation, exact request/correlation Trace and accounting checks. Repeat the UI inspection
-at desktop and 390 px, retaining copyable non-secret input values above screenshots. Keep all
-existing gateways, containers and history; cleanup needs an exact session-owned allowlist.
-
-Do not count an already configured Gateway attachment, offline component screenshots, a generated
-Docker command, or task status alone as successful new-Gateway cloud acceptance.
-
-### APIM initialization
-
-Self-hosted lifecycle tests must cover strict endpoint/hosting requests, disabled capability,
-name-only acknowledgement, trusted-host checks before credential use, failed probe evidence,
-retirement blockers, re-addition identity and failed reassociation without an orphan destination.
-Validate publication/retirement locking against a separately authorized PostgreSQL database;
-in-memory tests prove state rules, not database concurrency. Actual Gateway container movement
-or deletion is outside the metadata lifecycle and is not implied by these tests.
-
-Protocol membership tests additionally cover exact response ETags, conditional conflict limits,
-preserved concurrent additions, retired-only revocation, current revision/epoch and canonical
-policy checks, lease loss immediately before a write, and lost responses both before and after
-server commit. Unknown outcomes must not cause an unconditional replay or overwrite unrelated
-F fields. The Table transport and repository doubles do not establish real Azure CAS or lease
-timing; verify those on separately authorized targets.
-
-Run the onboarding model-platform tests, target-inventory API tests, Control-plane Function tests
-and OpenAPI checks. Cover exact preview binding, ownership/readback drift, permissions, suspended
-subscriptions, concrete ETag activation, authentication denial, linked retries, lease expiry and
-failure without target activation. Verify repeated Ledger projection preserves confirmed usage and
-outstanding reservations and refuses a different F document. HTTP/SQL doubles are local evidence,
-not real PostgreSQL locking, role propagation, policy compilation or Gateway acceptance.
-
-Before deployment acceptance, authorize the exact existing APIM, Event Hub and Table resources
-and necessary role assignments. Verify the shared governance Named Value, target identity and
-current budget period; retain before/after resource and policy evidence. Confirm the seven owned
-protocol routes, two system-key catalog reads and anonymous denial, then exercise a normal model
-publication on that initialized target. Check the Owner dialog, preview blockers, durable progress,
-failure/retry and desktop/390 px layout against the real authenticated backend. Do not substitute a
-component fixture or create a new environment under a generic testing request.
+In an authorized deployed environment, verify the active APIM revision includes the selected
+model alias on its Messages or Responses operation, its backend path and provider credential.
+Test a real two-round analysis question, attribution and measured usage, then reopen its
+history. Ordinary text publication probes are not evidence of successful tool calling.
 
 ### Governed image generation and evidence v2
 
@@ -303,7 +323,12 @@ and promotion, resume without duplication, rerun after success, and verify expli
 before introducing later model publications. Never make the current revision writable through
 a fabricated success response or relax the shared Publisher role to pass these checks.
 
-Image generation is available without an enablement setting. Verify that a default installation advertises image support, allows selecting the image operation and accepts a valid publication without extra feature configuration. The version-2 budget evidence cutoff remains independently disabled (`budget_evidence_policy.effective_at IS NULL`). Applying migrations does not enable that cutoff or reassess historical requests. Enabling a future cutoff requires separate operational authorization; it cannot be cleared or moved after being set.
+This fork preserves `IMAGE_GENERATION_ENABLED=false` by default. Test the disabled capability
+and rejection paths separately, then use an explicitly enabled local fixture for image protocols.
+The version-2 budget evidence cutoff remains independently disabled
+(`budget_evidence_policy.effective_at IS NULL`). Applying migrations does not enable that cutoff
+or reassess historical requests. Enabling a future cutoff requires separate operational
+authorization; it cannot be cleared or moved after being set.
 
 Focused local checks include `tests/backend/model_platform/test_image_*.py`, `tests/backend/telemetry/test_billable_requests.py`, `tests/backend/telemetry/test_ledger.py`, and `tests/platform/frontend/test_image_generation.py`. These use unit fixtures and mocked transports, not live images or database evidence.
 

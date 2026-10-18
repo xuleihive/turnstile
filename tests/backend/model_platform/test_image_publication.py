@@ -74,7 +74,7 @@ def test_image_publication_uses_explicit_profile_and_isolated_protocol() -> None
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    )
+    image_generation_enabled=True)
     result = service.publish(image_publication(repository), "owner@example.com")
     binding = result.desired_spec.bindings[-1]
     assert binding.api_format is ApiFormat.OPENAI_IMAGES
@@ -92,7 +92,7 @@ def test_infrastructure_upgrade_failure_has_a_safe_actionable_public_message() -
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal",
-    )
+    image_generation_enabled=True)
     publication = service.publish(image_publication(repository), "owner@example.com")
     failed = publication.model_copy(update={
         "status": PublicationStatus.FAILED,
@@ -113,7 +113,7 @@ def test_infrastructure_upgrade_failure_has_a_safe_actionable_public_message() -
 def test_image_publication_still_requires_the_apim_identity() -> None:
     repository = InMemoryRepository()
     with pytest.raises(ControlPlaneConflictError, match="APIM managed identity"):
-        GatewayControlPlaneService(repository).publish(
+        GatewayControlPlaneService(repository, image_generation_enabled=True).publish(
             image_publication(repository), "owner@example.com"
         )
     assert repository.gateway_publications == []
@@ -124,7 +124,7 @@ def test_image_activation_keeps_chat_connection_and_uses_effective_snapshot() ->
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    )
+    image_generation_enabled=True)
     publication = service.publish(image_publication(repository), "owner@example.com")
     row = next(item for item in repository.gateway_publications if item["id"] == publication.id)
     row["status"] = "promoting"
@@ -161,7 +161,7 @@ def test_image_prices_are_explicit(field: str) -> None:
     service = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    )
+    image_generation_enabled=True)
     with pytest.raises(ControlPlaneConflictError, match="explicit"):
         service.publish(request, "owner@example.com")
 
@@ -219,7 +219,7 @@ def test_probe_journal_reuses_only_same_verified_plan() -> None:
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     binding = publication.desired_spec.bindings[-1]
     planned = publication_model_id(publication.id, binding.model.model_key)
     authorization = uuid4()
@@ -247,7 +247,7 @@ def test_image_probe_journal_keeps_each_gateway_endpoint_evidence_separate() -> 
     repository = InMemoryRepository()
     publication = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "unit-owner")
+    image_generation_enabled=True).publish(image_publication(repository), "unit-owner")
     binding = publication.desired_spec.bindings[-1]
     planned = publication_model_id(publication.id, binding.model.model_key)
     journal = PersistentProbeJournal(
@@ -279,7 +279,7 @@ def test_image_retry_capability_is_failed_only_and_bounded(
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal"
-    )
+    , image_generation_enabled=True)
     publication = service.publish(image_publication(repository), "owner@example.com")
     publication = publication.model_copy(update={
         "status": PublicationStatus(status),
@@ -297,7 +297,7 @@ def test_image_retry_authorization_is_explicit_and_cannot_exceed_limit() -> None
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal"
-    )
+    , image_generation_enabled=True)
     publication = service.publish(image_publication(repository), "owner@example.com")
     stored = next(row for row in repository.gateway_publications if row["id"] == publication.id)
     previous = {"id": str(uuid4()), "attempt_limit": 31}
@@ -340,7 +340,7 @@ def test_expired_publication_lease_cannot_commit_or_activate() -> None:
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     row = repository.claim_gateway_publication("expired-worker", 180)
     assert row is not None
     row["status"] = "promoting"
@@ -385,7 +385,7 @@ def test_image_removal_probe_accepts_compiled_rejection(
     repository = InMemoryRepository()
     publication = GatewayControlPlaneService(
         repository, apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     removed_model = "removed-image"
     publication.publication_kind = PublicationKind.MODEL_REMOVE
     publication.desired_spec.removed_models = [ModelRemovalTarget(
@@ -559,7 +559,7 @@ def test_image_worker_checks_parent_and_journals_before_activation() -> None:
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="unit-principal",
-    ).publish(image_publication(repository), "owner@example.com")
+    image_generation_enabled=True).publish(image_publication(repository), "owner@example.com")
     client = FakeApimClient()
     _source, client.policy = image_parent()
     worker = GatewayPublicationWorker(repository, client, client.policy)

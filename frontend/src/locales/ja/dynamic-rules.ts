@@ -81,8 +81,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/有\s*(\d+)\s*个模型没有维护价格，相关 token 未计入费用统计。/g, (_match, value) => `モデル ${value} 件に価格が設定されていないため、該当 token はコスト集計に含まれません。`],
   [/本次输出使用了\s*([\d,]+)\s*Token，已达到请求上限；模型可能在生成可见回答前耗尽了输出预算。后续调用已提高上限。/g, (_match, value) => `この応答は出力 Token を ${value} 使用し、リクエスト上限に達しました。モデルは可視応答を生成する前に出力予算を使い切った可能性があります。後続の呼び出しでは上限を引き上げています。`],
   [/(\d+)\s*\/\s*(\d+)\s*次调用失败，错误率超过\s*(\d+(?:\.\d+)?)%。/g, (_match, failed, total, threshold) => `${total} 件中 ${failed} 件が失敗し、エラー率が ${threshold}% を超えました。`],
-  // 異常ルールの名称と説明はしきい値を含んだまま PostgreSQL に保存される編集可能なデータなので、
-  // シード文字列ではなく形状で一致させる。しきい値を変更すると完全一致キーは即座に壊れる。
   [/慢请求超过\s*(\d+(?:\.\d+)?)\s*秒/g, (_match, value) => `${value} 秒超のリクエスト`],
   [/错误率超过\s*(\d+(?:\.\d+)?)%/g, (_match, value) => `エラー率が ${value}% 超過`],
   [/高成本请求\s*P(\d+)/g, (_match, value) => `高コストリクエスト P${value}`],
@@ -125,8 +123,6 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d+)\s*个智能体/g, (_match, value) => `${value} 個の Agent`],
   [/(\d+)\s*个 Agent/g, (_match, value) => `${value} 個の Agent`],
   [/(\d+)\s*个模型/g, (_match, value) => `${value} 個のモデル`],
-  /* 下の汎用「N 个图表」規則より前に置くこと。あの規則が文の途中だけを置換すると、
-     文全体としては二度と一致しなくなる。 */
   [/将作为第\s*(\d+)\s*个图表加入「([^」]*)」，报表名称保持不变。/g,
     (_match, index, title) => `「${title}」に第 ${index} チャートとして追加されます。レポート名は変更されません。`],
   [/「([^」]*)」已包含此图表，保存会用最新数据刷新它。/g,
@@ -156,4 +152,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
   [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `前期間比 ${value}%`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `利用シェア ${value}%`],
+  [/^全部 (\d+) 个模型 · 已更新 (\d+) · 无变化 (\d+) · 手动跳过 (\d+)$/g,
+    (_match, total, updated, unchanged, manual) => `${total} モデル · 更新 ${updated} · 変更なし ${unchanged} · 手動スキップ ${manual}`],
+  [/^同步全部 (\d+) 个已保存模型的定价$/g, (_match, count) => `保存済み ${count} モデルの価格を同期`],
 ]

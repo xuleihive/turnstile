@@ -1,0 +1,263 @@
+paths:
+  /api/v1/user-settings/me/account:
+    get:
+      summary: Account
+      operationId: account_api_v1_user_settings_me_account_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/AccountInformation
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/budget:
+    get:
+      summary: Budget
+      operationId: budget_api_v1_user_settings_me_budget_get
+      parameters:
+      - name: period
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PersonalBudget
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/models:
+    get:
+      summary: Models
+      operationId: models_api_v1_user_settings_me_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PersonalModelList
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/usage:
+    get:
+      summary: Usage
+      operationId: usage_api_v1_user_settings_me_usage_get
+      parameters:
+      - name: period
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Period
+      - name: interval
+        in: query
+        required: false
+        schema:
+          enum:
+          - hour
+          - day
+          type: string
+          default: day
+          title: Interval
+      - name: timezone
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: UTC
+          title: Timezone
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PersonalUsage
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/profile:
+    patch:
+      summary: Update Profile
+      operationId: update_profile_api_v1_user_settings_me_profile_patch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/ProfileUpdate
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/AuthProfile
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/avatar:
+    put:
+      summary: Update Avatar
+      operationId: update_avatar_api_v1_user_settings_me_avatar_put
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/AvatarUpdate
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PersonalAvatar
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+    get:
+      summary: Avatar
+      operationId: avatar_api_v1_user_settings_me_avatar_get
+      parameters:
+      - name: v
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: V
+      responses:
+        '200':
+          description: Private normalized avatar
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.
+  /api/v1/user-settings/me/password:
+    post:
+      summary: Password
+      operationId: password_api_v1_user_settings_me_password_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/PasswordUpdate
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+      tags:
+      - User Settings
+      security:
+      - sessionCookie: []
+      description: Current account only. Responses are no-store. Profile, avatar, and password writes
+        require a password session. Microsoft sessions are read-only. Avatar bodies are bounded to 96
+        KiB; password errors never echo inputs.

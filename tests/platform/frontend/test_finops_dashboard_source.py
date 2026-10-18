@@ -212,7 +212,8 @@ def test_data_source_switcher_replaces_the_legacy_access_channel_filter() -> Non
     assert '<ApimLogo size={17} />' in app_source
     assert '<CopilotLogo size={17} />' in app_source
     assert "function normalizePageForSource" in app_source
-    assert "normalizePageForSource(next, page)" in app_source
+    assert "normalizePageForAccess(next, page, user)" in app_source
+    assert "normalizePageForSource(source, page)" in app_source
     assert "export function normalizeApimPage" in apim_source
     assert 'return apimPageIds.has(page) ? page : "finops-overview"' in apim_source
     assert "function AccessPointFilter" not in dashboard_source
@@ -220,7 +221,7 @@ def test_data_source_switcher_replaces_the_legacy_access_channel_filter() -> Non
     assert '"接入来源"' not in dashboard_source
 
 
-def test_report_sidebar_group_uses_the_resource_name_not_the_pin_state() -> None:
+def test_reports_are_in_report_center_under_the_fixed_ai_finops_module() -> None:
     app_source = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     pin_dialog = (
         FRONTEND_SOURCE / "components/assistant/pin-dialog.tsx"
@@ -229,10 +230,12 @@ def test_report_sidebar_group_uses_the_resource_name_not_the_pin_state() -> None
         encoding="utf-8"
     )
 
-    assert "<span>报表</span>" in app_source
+    assert 'label: "AI FinOps"' in app_source
+    assert 'label: "报表中心"' in app_source
     assert "<span>固定</span>" not in app_source
-    assert "左侧导航的「报表」分组" in pin_dialog
-    assert '"报表": "Reports"' in english
+    assert "保存到报表中心。" in pin_dialog
+    assert "左侧导航" not in pin_dialog
+    assert '"报表中心": "Report Center"' in english
     assert '"固定": "Pinned"' not in english
 
 

@@ -52,6 +52,7 @@ from ..services.assistant import AssistantService
 from ..services.budget_service import TokenBudgetService
 from ..services.runtime_service import ModelRuntimeService
 from .dependencies import Repository
+from .session import CurrentSession
 
 
 @lru_cache(maxsize=1)
@@ -116,6 +117,7 @@ def control_plane_service(repository: Repository) -> GatewayControlPlaneService:
         application_default_token_limit=settings.gateway_application_default_monthly_token_limit,
         application_default_tokens_per_minute=settings.gateway_application_default_tokens_per_minute,
         image_generation_defaults=settings.image_generation_defaults,
+        image_generation_enabled=settings.image_generation_enabled,
         databricks_oauth_enabled=settings.databricks_oauth_enabled,
         target_inventory_sync_enabled=(
             settings.apim_target_registry_enabled
@@ -320,21 +322,13 @@ AnomalyRuleServiceDependency = Annotated[
 ]
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-def assistant_service(repository: Repository) -> AssistantService:
+def assistant_service(repository: Repository, identity: CurrentSession) -> AssistantService:
     settings = get_settings()
-    return AssistantService(repository, ModelRuntimeService(repository, settings), settings)
+    return AssistantService(
+        repository, ModelRuntimeService(repository, settings), settings,
+        department_ids=identity.directory_department_ids,
+        data_scope=identity.data_scope,
+    )
 
 
 AssistantServiceDependency = Annotated[AssistantService, Depends(assistant_service)]

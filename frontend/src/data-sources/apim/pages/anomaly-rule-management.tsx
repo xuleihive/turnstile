@@ -371,7 +371,7 @@ export function AnomalyRuleManagement({ rules, entities, models }: {
     {(save.error || remove.error) && editing === undefined && <div className="anomaly-rule-error"><AlertTriangle size={14} />{queryError(save.error ?? remove.error)}</div>}
     <div className="anomaly-rule-scroll">
       <ResizableGridTable className="anomaly-rule-list" role="table" aria-label="异常规则列表" headerSelector=".anomaly-rule-list-head" minWidths={[180, 120, 140, 72, 64, 42]} columnGap={10} horizontalPadding={28}>
-        <div className="anomaly-rule-list-head" role="row"><span>规则</span><span>条件</span><span>作用范围</span><span>级别</span><span>状态</span><span /></div>
+        <div className="anomaly-rule-list-head" role="row"><span><span>规则</span></span><span><span>条件</span></span><span><span>作用范围</span></span><span><span>级别</span></span><span><span>状态</span></span><span /></div>
         {rules.map((rule) => <div className="anomaly-rule-row" role="row" key={rule.id} data-enabled={rule.enabled}>
           <div className="anomaly-rule-primary"><i data-severity={rule.severity} /><span><strong>{rule.name}</strong><small>{metricLabels[rule.metric]} · {sampleLabel(rule)}</small></span></div>
           <div><strong>{conditionLabel(rule)}</strong><small>{rule.threshold_mode === "percentile" ? "随当前窗口动态计算" : "固定阈值"}</small></div>

@@ -1508,28 +1508,22 @@ paths:
       - sessionCookie: []
   /api/v1/model-management/price-catalog/models:
     get:
-      summary: Search Price Catalog Models
-      operationId: search_price_catalog_models_api_v1_model_management_price_catalog_models_get
+      summary: Search public catalog model names
+      operationId: searchPriceCatalogModels
       parameters:
-      - name: q
-        in: query
-        required: false
+      - in: query
+        name: q
         schema:
           type: string
           maxLength: 120
-          default: ''
-          title: Q
-      - name: authorization
-        in: header
-        required: false
+      - in: query
+        name: source
+        description: Read only this source; omission searches all sources for compatibility.
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
+          $ref: ../../openapi.yaml#/components/schemas/PriceSource
       responses:
         '200':
-          description: Successful Response
+          description: Catalog model names and unavailable sources
           content:
             application/json:
               schema:
@@ -1540,31 +1534,26 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
       security:
       - sessionCookie: []
+      tags:
+      - Model Platform
   /api/v1/model-management/price-catalog/options:
     get:
-      summary: Price Catalog Options
-      operationId: price_catalog_options_api_v1_model_management_price_catalog_options_get
+      summary: Read deployment-specific catalog pricing options
+      operationId: getPriceCatalogOptions
       parameters:
-      - name: model
-        in: query
+      - in: query
+        name: model
         required: true
         schema:
           type: string
-          maxLength: 300
-          title: Model
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
+          maxLength: 1500
       responses:
         '200':
-          description: Successful Response
+          description: Catalog options, completeness and warnings
           content:
             application/json:
               schema:
@@ -1575,12 +1564,18 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
       security:
       - sessionCookie: []
+      tags:
+      - Model Platform
   /api/v1/model-management/price-sync:
     post:
-      summary: Sync Model Prices
-      operationId: sync_model_prices_api_v1_model_management_price_sync_post
+      summary: Synchronize each model using its configured pricing source
+      operationId: syncModelPrices
       parameters:
       - name: authorization
         in: header
@@ -1598,9 +1593,10 @@ paths:
               - $ref: ../../openapi.yaml#/components/schemas/PriceSyncRequest
               - type: 'null'
               title: Request
+              $ref: ../../openapi.yaml#/components/schemas/PriceSyncRequest
       responses:
         '200':
-          description: Successful Response
+          description: Per-model outcomes and refreshed registry
           content:
             application/json:
               schema:
@@ -1611,8 +1607,16 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
       security:
       - sessionCookie: []
+      tags:
+      - Model Platform
+      description: Owner-only. Explicit manual models are skipped; absent configuration follows models.dev.
+        Context windows and routing are unchanged. dry_run performs no configuration writes or AI calls.
   /api/v1/model-management/models:
     post:
       summary: Create Model
@@ -3648,3 +3652,31 @@ paths:
       security:
       - sessionCookie: []
       description: Owner-only platform operation.
+  /api/v1/model-management/price-preview:
+    post:
+      tags:
+      - Model Platform
+      operationId: previewModelPrice
+      summary: Preview provider-specific pricing with bounded default-model matching
+      description: Owner-only; previews do not mutate model configuration. AI matching may incur usage.
+      security:
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/PricePreviewRequest
+      responses:
+        '200':
+          description: Matching result, authoritative prices and source warnings
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PricePreviewResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
