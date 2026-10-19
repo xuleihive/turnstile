@@ -34,20 +34,26 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
     ]
     usage_application_attributions: dict[str, UsageApplicationAttribution]
 
-    def list_token_budgets(self, period_start: date) -> list[dict[str, Any]]:
+    def list_token_budgets(
+        self, period_start: date, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         return [
             row
-            for (row_period, _, _), row in self.token_budgets.items()
-            if row_period == period_start
+            for (row_period, scope_type, scope_id), row in self.token_budgets.items()
+            if row_period == period_start and (
+                user_id is None or (scope_type == "user" and scope_id == user_id)
+            )
         ]
 
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self, from_: datetime, to: datetime, user_id: str | None = None
     ) -> list[dict[str, Any]]:
         totals: dict[tuple[str, str], int] = {}
         usd_totals: dict[tuple[str, str], Decimal] = {}
         unpriced_usd: dict[tuple[str, str], int] = {}
         for record in self.usage_records:
+            if user_id is not None and record.user_id != user_id:
+                continue
             if not from_ <= record.ts < to or record.usage_domain != "apim":
                 continue
             strict_record = self._strict_budget_record(record, "person", record.user_id)
@@ -73,6 +79,8 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
             and (not record.estimated or record.ingest_error == "stream_cache_usage_unavailable")
         }
         for item in self._effective_person_finalizations():
+            if user_id is not None and item.scope_id != user_id:
+                continue
             if (
                 from_ <= item.reservation_created_at < to
                 and item.finalization_kind != "unverified_upper_bound"
@@ -105,6 +113,8 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         people.update(item.scope_id for item in self.billable_requests.values()
                       if item.scope_type == "person")
         for person in people:
+            if user_id is not None and person != user_id:
+                continue
             choices = self._strict_budget_choices("person", person)
             for identity, (admitted, tokens, rank) in choices.items():
                 if not from_ <= admitted < to:
@@ -133,6 +143,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
                 "unpriced_usage_count": unpriced_usd.get((scope_type, scope_id), 0),
             }
             for scope_type, scope_id in keys
+            if user_id is None or (scope_type == "user" and scope_id == user_id)
         ]
 
     def upsert_token_budget(

@@ -52,25 +52,40 @@ class PostgreSqlBudgetRepositoryMixin:
             if mismatched is not None:
                 raise ValueError("Budget reservation admission is immutable")
 
-    def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]:
+    def list_token_budgets(
+        self, period_start: date, user_id: str | None = None
+    ) -> Sequence[dict[str, Any]]:
+        personal = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT period_start, scope_type, scope_id, parent_scope_id,
+                f"""SELECT period_start, scope_type, scope_id, parent_scope_id,
                           budget_mode, token_limit, usd_limit,
                           warning_threshold_percent, updated_at, updated_by
                    FROM token_budget
-                   WHERE period_start = %s
+                   WHERE period_start = %s{personal}
                    ORDER BY scope_type, scope_id""",
-                (period_start,),
+                (period_start, user_id) if user_id is not None else (period_start,),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
     def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
+        self, from_: datetime, to: datetime, user_id: str | None = None
     ) -> Sequence[dict[str, Any]]:
+        usage_person = " AND usage.user_id = %s" if user_id is not None else ""
+        recovery_person = " AND recovery.scope_id = %s" if user_id is not None else ""
+        evidence_person = " AND scope_id = %s" if user_id is not None else ""
+        usd_person = " AND user_id = %s" if user_id is not None else ""
+        result_person = " AND scope_type = 'user' AND scope_id = %s" if user_id is not None else ""
+        parameters: list[Any] = []
+        for _ in range(3):
+            parameters.extend([from_, to])
+            if user_id is not None:
+                parameters.append(user_id)
+        if user_id is not None:
+            parameters.append(user_id)
         with self._connection() as connection:
             rows = connection.execute(
-                """WITH canonical_correlations AS (
+                f"""WITH canonical_correlations AS (
                        SELECT DISTINCT user_id, correlation_id
                        FROM token_usage
                        WHERE usage_domain = 'apim'
@@ -85,6 +100,7 @@ class PostgreSqlBudgetRepositoryMixin:
                                                     AND NOT strict_budget_evidence(recovery.reservation_created_at)
                          AND recovery.reservation_created_at >= %s
                          AND recovery.reservation_created_at < %s
+                         {recovery_person}
                          AND NOT EXISTS (
                            SELECT 1 FROM canonical_correlations canonical
                            WHERE canonical.user_id = recovery.scope_id
@@ -96,6 +112,7 @@ class PostgreSqlBudgetRepositoryMixin:
                                                 FROM token_usage usage
                                              WHERE ts >= %s AND ts < %s
                                                  AND usage_domain = 'apim'
+                                                 {usage_person}
                                                     AND NOT EXISTS (
                                                         SELECT 1 FROM budget_usage_evidence evidence
                                                         WHERE evidence.usage_id = usage.id AND evidence.scope_type = 'person'
@@ -108,6 +125,7 @@ class PostgreSqlBudgetRepositoryMixin:
                                                 SELECT organization_id, department_id, scope_id, total_tokens
                                                 FROM budget_evidence_selected
                                                 WHERE scope_type = 'person' AND admitted_at >= %s AND admitted_at < %s
+                                                {evidence_person}
                    ), scoped_usage AS (
                        SELECT 'organization'::TEXT AS scope_type,
                               organization_id AS scope_id,
@@ -123,11 +141,11 @@ class PostgreSqlBudgetRepositoryMixin:
                    )
                    SELECT scope_type, scope_id, used_tokens
                    FROM scoped_usage
-                   WHERE scope_id <> 'unattributed'""",
-                (from_, to, from_, to, from_, to),
+                   WHERE scope_id <> 'unattributed'{result_person}""",
+                tuple(parameters),
             ).fetchall()
             usd_rows = connection.execute(
-                """WITH usage_scopes AS (
+                f"""WITH usage_scopes AS (
                       SELECT organization_id AS scope_id, 'organization'::TEXT AS scope_type,
                           budget_usage_usd_cost(
                             usd_cost, estimated, input_tokens, cached_tokens,
@@ -138,6 +156,7 @@ class PostgreSqlBudgetRepositoryMixin:
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND organization_id <> 'unattributed'
+                         {usd_person}
                        UNION ALL
                                              SELECT department_id, 'department'::TEXT,
                                                             budget_usage_usd_cost(
@@ -149,6 +168,7 @@ class PostgreSqlBudgetRepositoryMixin:
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND department_id <> 'unattributed'
+                         {usd_person}
                        UNION ALL
                                              SELECT user_id, 'user'::TEXT,
                                                             budget_usage_usd_cost(
@@ -160,12 +180,14 @@ class PostgreSqlBudgetRepositoryMixin:
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND user_id <> 'unattributed'
+                         {usd_person}
                    )
                    SELECT scope_type, scope_id,
                           COALESCE(SUM(usd_cost), 0)::NUMERIC(30,14) AS used_usd,
                           COUNT(*) FILTER (WHERE usd_cost IS NULL)::BIGINT AS unpriced_usage_count
-                   FROM usage_scopes GROUP BY scope_type, scope_id""",
-                (from_, to, from_, to, from_, to),
+                   FROM usage_scopes WHERE TRUE{result_person}
+                   GROUP BY scope_type, scope_id""",
+                tuple(parameters),
             ).fetchall()
         usd_by_scope = {
             (row["scope_type"], row["scope_id"]): row for row in usd_rows

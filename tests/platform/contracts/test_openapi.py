@@ -146,8 +146,27 @@ def test_openapi_root_is_a_small_domain_index() -> None:
         "github-copilot.yaml",
         "model-platform.yaml",
         "observability.yaml",
+        "user-settings.yaml",
     }
 
+
+def test_user_settings_contract_matches_served_self_service_routes() -> None:
+    documented = _operations(_documented_paths())
+    served = _operations(app.openapi()["paths"])
+    def personal(operations: set[tuple[str, str]]) -> set[tuple[str, str]]:
+        return {operation for operation in operations if "/user-settings/" in operation[0]}
+    assert personal(documented) == personal(served)
+    schemas = _documented_schemas()
+    avatar = cast(dict[str, dict[str, object]], schemas["AvatarUpdate"]["properties"])
+    branches = cast(list[dict[str, object]], avatar["avatar_data_url"]["anyOf"])
+    assert any(branch.get("maxLength") == 90_000 for branch in branches)
+    assert "avatar_data_url" in cast(list[str], schemas["AvatarUpdate"]["required"])
+    assert schemas["PasswordUpdate"]["additionalProperties"] is False
+    passwords = cast(dict[str, dict[str, object]], schemas["PasswordUpdate"]["properties"])
+    assert all(value["writeOnly"] for value in passwords.values())
+    actual = app.openapi()["components"]["schemas"]
+    for name in ("PersonalBudget", "AccountInformation", "PersonalUsage"):
+        assert _schema_contract(schemas[name]) == _schema_contract(actual[name]), name
 
 def test_model_availability_contract_matches_runtime_constraints_and_owner_routes() -> None:
     documented = _documented_schemas()

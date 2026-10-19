@@ -2,12 +2,14 @@ openapi: 3.1.0
 info:
   title: Token Observability API
   version: 0.1.0
-  description: 'Phase 1 INFORM contract for the Token Observability dashboard and usage
+  description: 'Phase 1 INFORM contract for the Token Observability dashboard and
+    usage
 
     processor. Query responses contain token counts and metadata only. Prompt
 
-    and completion content are absent from usage queries. Authenticated image invocation accepts a transient
-    provider payload and returns an image without storing its content.
+    and completion content are absent from usage queries. Authenticated image invocation
+    accepts a transient provider payload and returns an image without storing its
+    content.
 
     '
 servers:
@@ -26,10 +28,11 @@ tags:
 - name: Budgets
   description: Monthly soft Token allocation, utilization, forecast, and audit history.
 - name: Application Access
-  description: APIM consumer inventory, attribution, Ledger-backed quotas, and Owner-managed lifecycle
-    metadata.
+  description: APIM consumer inventory, attribution, Ledger-backed quotas, and Owner-managed
+    lifecycle metadata.
 - name: GitHub Copilot
-  description: 'Organization Copilot subscription, usage metrics, AI-credit billing, explicit
+  description: 'Organization Copilot subscription, usage metrics, AI-credit billing,
+    explicit
 
     application-user identity mapping, and reviewed personal budget requests.
 
@@ -37,7 +40,8 @@ tags:
 - name: Anomaly Rules
   description: Authenticated rule visibility with Owner-managed configuration.
 - name: Assistant
-  description: 'Natural-language analysis over the same repository the dashboard reads, and the
+  description: 'Natural-language analysis over the same repository the dashboard reads,
+    and the
 
     pinned reports it produces. Charts are authored by tools, never by the model.
 
@@ -47,7 +51,10 @@ tags:
 - name: Model Gateway
   description: Authenticated, assigned and budget-governed internal model invocation.
 - name: Model Router
-  description: User-scoped model routing drafts, validation, version publication, and lifecycle.
+  description: User-scoped model routing drafts, validation, version publication,
+    and lifecycle.
+- name: User Settings
+  description: Private current-account self service.
 paths:
   /api/v1/assistant/ask:
     $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1ask
@@ -333,6 +340,20 @@ paths:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}~1archive
   /api/v1/model-management/self-hosted-gateways/{deployment_id}/node-enrollments:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1self-hosted-gateways~1{deployment_id}~1node-enrollments
+  /api/v1/user-settings/me/account:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1account
+  /api/v1/user-settings/me/budget:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1budget
+  /api/v1/user-settings/me/models:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1models
+  /api/v1/user-settings/me/usage:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1usage
+  /api/v1/user-settings/me/profile:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1profile
+  /api/v1/user-settings/me/avatar:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1avatar
+  /api/v1/user-settings/me/password:
+    $ref: ./openapi/paths/user-settings.yaml#/paths/~1api~1v1~1user-settings~1me~1password
 components:
   securitySchemes:
     sessionCookie:
@@ -1128,6 +1149,36 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Input
     RouteSnapshot-Output:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Output
+    AccountEntity:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountEntity
+    AccountInformation:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AccountInformation
+    AvatarUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/AvatarUpdate
+    EditableProfile:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/EditableProfile
+    PasswordUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PasswordUpdate
+    PermissionGroup:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PermissionGroup
+    PersonalAvatar:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalAvatar
+    PersonalBudget:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalBudget
+    PersonalModel:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModel
+    PersonalModelList:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelList
+    PersonalModelUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalModelUsage
+    PersonalUsage:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsage
+    PersonalUsagePoint:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsagePoint
+    PersonalUsageTotals:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/PersonalUsageTotals
+    ProfileUpdate:
+      $ref: ./openapi/schemas/user-settings.yaml#/schemas/ProfileUpdate
 x-event-contracts:
   usage-event:
     transport: Azure Event Hubs

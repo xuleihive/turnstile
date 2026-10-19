@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 
 from backend.migrate import migration_files
@@ -36,6 +37,7 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "009_context_tier_pricing.up.sql",
         "010_budget_execution_protocol.up.sql",
         "011_gateway_targets.up.sql",
+        "011_user_settings_profile.up.sql",
         "012_apim_onboarding.up.sql",
         "013_multi_target_rollout.up.sql",
         "014_self_hosted_gateway_provisioning.up.sql",
@@ -56,6 +58,18 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
 
+
+def test_user_settings_upgrade_is_additive_and_keeps_private_data_bounded() -> None:
+    sql = (MIGRATIONS / "011_user_settings_profile.up.sql").read_text(encoding="utf-8")
+    assert hashlib.sha256(sql.encode()).hexdigest() == (
+        "c830385df79834f2730450365cc2fe3b590f325ea2ca550fd0906c4579747fa5"
+    )
+    assert table_names(sql) == {"app_user_avatar", "account_security_event"}
+    assert sql.count("REFERENCES app_user(id) ON DELETE CASCADE") == 2
+    assert "octet_length(image_bytes) BETWEEN 1 AND 65536" in sql
+    assert "media_type IN ('image/png', 'image/jpeg', 'image/webp')" in sql
+    assert "ON account_security_event(app_user_id, action, created_at)" in sql
+    assert not re.search(r"^\s*(ALTER|INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b", sql, re.MULTILINE)
 
 def test_final_product_indexes_keep_source_keys_and_do_not_rewrite_history() -> None:
     sql = (MIGRATIONS / "028_product_index_alignment.up.sql").read_text()

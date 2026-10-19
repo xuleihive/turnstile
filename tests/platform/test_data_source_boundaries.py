@@ -40,6 +40,7 @@ def test_frontend_copilot_owns_its_api_queries_types_and_pages() -> None:
         "auth.ts",
         "cache-policies.ts",
         "client.ts",
+        "user-settings.ts",
     ]
 
 

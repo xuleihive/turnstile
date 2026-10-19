@@ -51,6 +51,7 @@ class Profile(BaseModel):
     role: Literal["owner", "member"]
     method: Literal["password", "entra"]
     session_expires_at: datetime
+    avatar_url: str | None = None
 
 
 def _issue(
@@ -63,13 +64,16 @@ def _issue(
         authenticated_at,
     )
     store.delete_expired_sessions()
-    store.create_session(
+    issued = store.create_session(
         user_id=user["id"],
         token_sha256=digest,
         method=method,
         authenticated_at=authenticated_at,
         expires_at=expires_at,
+        expected_password_hash=user["password_hash"] if method == "password" else None,
     )
+    if not issued:
+        raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录。")
     store.touch_last_login(user["id"])
     response.set_cookie(
         key=settings.session_cookie_name,
@@ -80,6 +84,8 @@ def _issue(
         samesite="lax",
         path="/",
     )
+    response.headers["Cache-Control"] = "no-store"
+    owner = store.session_owner(digest)
     return Profile(
         id=str(user["id"]),
         email=user["email"],
@@ -87,6 +93,10 @@ def _issue(
         role=user["role"],
         method=method,  # type: ignore[arg-type]
         session_expires_at=expires_at,
+        avatar_url=(
+            f"/api/v1/user-settings/me/avatar?v={owner['avatar_revision']}"
+            if method == "password" and owner and owner.get("avatar_revision") else None
+        ),
     )
 
 
@@ -121,7 +131,8 @@ def login_with_entra(
 
 
 @router.get("/api/v1/auth/me", response_model=Profile)
-def whoami(identity: CurrentSession) -> Profile:
+def whoami(identity: CurrentSession, response: Response) -> Profile:
+    response.headers["Cache-Control"] = "no-store"
     return Profile(
         id=identity.id,
         email=identity.email,
@@ -129,6 +140,7 @@ def whoami(identity: CurrentSession) -> Profile:
         role=identity.role,
         method=identity.method,
         session_expires_at=identity.session_expires_at,
+        avatar_url=identity.avatar_url,
     )
 
 
