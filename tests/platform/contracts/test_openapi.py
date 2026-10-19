@@ -149,6 +149,16 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     }
 
 
+def test_assistant_protocol_settings_match_runtime_schemas() -> None:
+    documented = _documented_schemas()
+    actual = app.openapi()["components"]["schemas"]
+    for name in (
+        "AssistantSettingsWrite", "AssistantSettings", "AssistantModelChoice",
+        "InvocationApiFormat",
+    ):
+        assert _schema_contract(documented[name]) == _schema_contract(actual[name]), name
+
+
 def test_model_availability_contract_matches_runtime_constraints_and_owner_routes() -> None:
     documented = _documented_schemas()
     actual = app.openapi()["components"]["schemas"]

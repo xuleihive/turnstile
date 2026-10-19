@@ -1,4 +1,7 @@
 export const ENGLISH_CORE_PHRASES: Record<string, string> = {
+  "实际接口：": "Effective API: ",
+  "指定协议已不可用，当前使用自动匹配的接口。": "The selected protocol is no longer available. Using the automatically matched API.",
+  "助手设置保存失败": "Could not save assistant settings",
   "未知": "Unknown",
   "网关记录未匹配": "No matched gateway record",
   "预测预警": "Forecast warning",

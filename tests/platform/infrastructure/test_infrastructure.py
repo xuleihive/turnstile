@@ -531,6 +531,12 @@ def test_control_plane_features_default_to_disabled() -> None:
     assert "effectiveReleaseWorkerEnabled = releaseWorkerEnabled" in CONTROL_PLANE
 
 
+def test_standard_image_generation_does_not_restore_the_retired_opt_in() -> None:
+    for template in (MAIN, DATA_PLANE, CONTROL_PLANE):
+        assert "imageGenerationEnabled" not in template
+        assert "IMAGE_GENERATION_ENABLED" not in template
+
+
 def test_application_creation_is_gated_and_uses_the_exact_platform_ledger() -> None:
     assert "param gatewayApplicationProvisioningEnabled bool = false" in MAIN
     assert (

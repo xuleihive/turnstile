@@ -2415,6 +2415,10 @@ schemas:
         type: boolean
         title: Stream
         default: false
+      api_format:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        - type: 'null'
     additionalProperties: false
     type: object
     required:
@@ -3951,3 +3955,10 @@ schemas:
     - msg
     - type
     title: ValidationError
+  InvocationApiFormat:
+    type: string
+    enum:
+    - openai_chat
+    - openai_responses
+    - anthropic_messages
+    title: InvocationApiFormat

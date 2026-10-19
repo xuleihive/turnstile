@@ -48,11 +48,18 @@ from turnstile_core.domain.enterprise import (
 from turnstile_core.domain.models import EnterpriseEntityCatalog
 from turnstile_core.domain.runtime_models import (
     ChatMessage,
+    InvocationApiFormat,
     InvocationMetadata,
+    ManagedModel,
     ModelInvocationRequest,
     ToolCall,
 )
-from turnstile_core.integrations.gateway import elapsed_ms, supports_tool_calling
+from turnstile_core.integrations.gateway import elapsed_ms
+from turnstile_core.integrations.gateway_protocol import (
+    invocation_api_paths,
+    model_protocol_route,
+    registry_model_route,
+)
 from turnstile_core.persistence.repository import QueryRepository
 
 from .assistant_shared import (
@@ -177,7 +184,7 @@ class AssistantService:
 
     # -- model selection -------------------------------------------------------
 
-    def _eligible_models(self) -> list[Any]:
+    def _eligible_model_routes(self) -> list[tuple[ManagedModel, dict[str, Any]]]:
         """Registry models that can actually carry this assistant's tool calls.
 
         Declaring the requirement matters: a model without tool support answers from
@@ -186,37 +193,62 @@ class AssistantService:
         while its runtime has no tool protocol, so the runtime is checked too.
         """
         registry = self._runtime.registry()
-        runtimes = {
-            runtime.id
-            for runtime in registry.runtimes
-            if runtime.enabled
-            and supports_tool_calling(runtime.runtime_kind.value, runtime.config)
-        }
+        runtimes = {runtime.id for runtime in registry.runtimes if runtime.enabled}
+        providers = {provider.id for provider in registry.providers if provider.enabled}
         candidates = [
-            model
+            (model, registry_model_route(registry, model))
             for model in registry.models
             if model.enabled
             and "tools" in model.capabilities
             and model.runtime_id in runtimes
+            and model.provider_id in providers
             and "image_generation" not in model.capabilities
         ]
-        candidates.sort(key=lambda model: (not model.is_default, model.display_name))
-        return candidates
+        candidates.sort(key=lambda item: (not item[0].is_default, item[0].display_name))
+        return [item for item in candidates if invocation_api_paths(item[1])]
+
+    def _eligible_models(self) -> list[ManagedModel]:
+        return [model for model, _ in self._eligible_model_routes()]
+
+    def _resolve_selection(
+        self,
+        candidates: list[tuple[ManagedModel, dict[str, Any]]], stored: dict[str, Any],
+    ) -> tuple[ManagedModel | None, dict[str, Any] | None, bool]:
+        requested = InvocationApiFormat(stored["api_format"]) if stored.get("api_format") else None
+        configured = stored.get("model_id")
+        pinned = next((item for item in candidates if item[0].id == configured), None)
+        if self._selected_candidate([item[0] for item in candidates], configured) is None:
+            return None, None, requested is None
+        compatible = [
+            item for item in candidates
+            if requested is None or requested in invocation_api_paths(item[1])
+        ]
+        fallback = compatible or candidates
+        effective = pinned or (fallback[0] if fallback else None)
+        if effective is None:
+            return None, None, requested is None
+        model, route = effective
+        api_available = requested is None or requested in invocation_api_paths(route)
+        resolved = model_protocol_route(
+            route, requested if api_available else None, tools=True,
+        )
+        return model, resolved, api_available
+
+    def _select_invocation(self) -> tuple[UUID, UUID, str, InvocationApiFormat]:
+        model, route, _ = self._resolve_selection(
+            self._eligible_model_routes(), self._repository.assistant_settings(),
+        )
+        if model is None or route is None:
+            raise HTTPException(status_code=409, detail="No enabled model can carry tool calls")
+        return (
+            model.runtime_id, model.id, model.model_key,
+            InvocationApiFormat(route["runtime_config"]["api_format"]),
+        )
 
     def _select_model(self) -> tuple[UUID, UUID, str]:
-        candidates = self._eligible_models()
-        if not candidates:
-            raise HTTPException(
-                status_code=409,
-                detail="No enabled model declares the tools capability",
-            )
-        configured = self._repository.assistant_settings().get("model_id")
-        chosen = self._selected_candidate(candidates, configured)
-        if chosen is None:
-            raise HTTPException(
-                status_code=409, detail="Configured or default model is unavailable",
-            )
-        return chosen.runtime_id, chosen.id, chosen.model_key
+        """Resolve a compatible protocol without bypassing model availability."""
+        runtime_id, model_id, model_key, _ = self._select_invocation()
+        return runtime_id, model_id, model_key
 
     def _selected_candidate(self, candidates: list[Any], configured: UUID | None) -> Any:
         if configured is not None:
@@ -230,14 +262,26 @@ class AssistantService:
     def settings(self) -> AssistantSettings:
         stored = self._repository.assistant_settings()
         configured = stored.get("model_id")
-        candidates = self._eligible_models()
-        effective = self._selected_candidate(candidates, configured)
+        candidates = self._eligible_model_routes()
+        effective, route, api_available = self._resolve_selection(candidates, stored)
         return AssistantSettings(
             model_id=configured,
             auto_title=bool(stored.get("auto_title", True)),
+            api_format=stored.get("api_format"),
             effective_model_id=effective.id if effective else None,
             effective_model_name=effective.display_name if effective else None,
             model_available=effective is not None,
+            api_available=api_available,
+            effective_api_format=route["runtime_config"]["api_format"] if route else None,
+            effective_api_path=route["runtime_config"]["path"] if route else None,
+            available_api_formats=next(
+                (
+                    list(invocation_api_paths(model_route))
+                    for model, model_route in candidates
+                    if effective and model.id == effective.id
+                ),
+                [],
+            ),
             available_models=[
                 AssistantModelChoice(
                     id=model.id,
@@ -246,24 +290,47 @@ class AssistantService:
                     runtime_name=model.runtime_name,
                     input_cost_per_million=model.input_cost_per_million,
                     output_cost_per_million=model.output_cost_per_million,
+                    api_formats=list(invocation_api_paths(model_route)),
                 )
-                for model in candidates
+                for model, model_route in candidates
             ],
             updated_at=stored.get("updated_at"),
             updated_by=stored.get("updated_by"),
         )
 
     def save_settings(self, write: AssistantSettingsWrite, updated_by: str) -> AssistantSettings:
-        if (write.model_id is not None
-            and write.model_id != self._repository.assistant_settings().get("model_id")
-            and not any(model.id == write.model_id for model in self._eligible_models())
+        stored = self._repository.assistant_settings()
+        candidates = self._eligible_model_routes()
+        if write.model_id is not None:
+            candidates = [item for item in candidates if item[0].id == write.model_id]
+        if (
+            write.model_id is not None
+            and not candidates
+            and write.model_id != stored.get("model_id")
         ):
             raise HTTPException(
                 status_code=409,
                 detail="That model is not enabled, or its runtime cannot carry tool calls",
             )
+        requested = write.api_format
+        if (
+            "api_format" not in write.model_fields_set
+            and stored.get("model_id") == write.model_id
+            and stored.get("api_format")
+        ):
+            requested = InvocationApiFormat(stored["api_format"])
+        if (
+            requested is not None
+            and (candidates or "api_format" in write.model_fields_set)
+            and not any(requested in invocation_api_paths(route) for _, route in candidates)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="The selected API protocol cannot carry tool calls on this model route",
+            )
         self._repository.save_assistant_settings(
-            model_id=write.model_id, auto_title=write.auto_title, updated_by=updated_by
+            model_id=write.model_id, auto_title=write.auto_title,
+            api_format=requested.value if requested else None, updated_by=updated_by,
         )
         return self.settings()
 
@@ -278,7 +345,7 @@ class AssistantService:
     ) -> AssistantReply:
         started = time.monotonic()
         conversation_id = self._resolve_conversation(request.conversation_id, user_id)
-        runtime_id, model_id, model_key = self._select_model()
+        runtime_id, model_id, model_key, api_format = self._select_invocation()
         language = ANSWER_LANGUAGE.get(request.locale, "English")
 
         messages: list[ChatMessage] = [
@@ -311,6 +378,7 @@ class AssistantService:
                     tools=tools,
                     temperature=0,
                     max_output_tokens=1200,
+                    api_format=api_format,
                 ),
             )
             if response.usage is not None:
@@ -322,13 +390,7 @@ class AssistantService:
             answer = response.content
             if not response.tool_calls:
                 break
-            messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=response.content or None,
-                    tool_calls=response.tool_calls,
-                )
-            )
+            messages.append(response.assistant_message())
             for call in response.tool_calls:
                 outcome, step = self._run_tool(
                     call, request.timezone, request.locale, len(steps) + 1
@@ -350,7 +412,7 @@ class AssistantService:
         else:
             # The loop ran out of rounds while the model was still calling tools. Say so
             # rather than presenting a partial answer as complete.
-            answer = answer or "Too many analysis steps. Please narrow the question."
+            answer = "Too many analysis steps. Please narrow the question."
 
         reply = AssistantReply(
             conversation_id=conversation_id,
@@ -485,7 +547,7 @@ class AssistantService:
         first = conversation.exchanges[0]
         language = ANSWER_LANGUAGE.get(locale, "English")
         try:
-            runtime_id, model_id, model_key = self._select_model()
+            runtime_id, model_id, model_key, api_format = self._select_invocation()
             response = self._runtime.invoke(
                 ModelInvocationRequest(
                     metadata=self._metadata(
@@ -520,10 +582,12 @@ class AssistantService:
                         ),
                     ],
                     temperature=0,
-                    # A title cannot be long, so neither can the budget for one. This is
-                    # also the backstop against a model that ignores the prompt and starts
-                    # writing the answer again.
-                    max_output_tokens=32,
+                    # Responses counts reasoning against this budget as well; the
+                    # visible title remains bounded by TITLE_PROMPT and clean_title.
+                    max_output_tokens=(
+                        256 if api_format is InvocationApiFormat.OPENAI_RESPONSES else 32
+                    ),
+                    api_format=api_format,
                 ),
             )
         except Exception:  # noqa: BLE001 - a name is worth less than the conversation

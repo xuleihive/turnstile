@@ -22,6 +22,11 @@ git diff --check
 
 ## Database validation
 
+The assistant upgrade retains the immutable `009_assistant_api_format` migration alongside
+upstream's independent `009_context_tier_pricing`. Migration identity is the complete filename
+stem, not its numeric prefix; both must be recorded with their original checksums. Run the
+complete chain against an authorized empty database and again to verify no migration is reapplied.
+
 New forward-only product upgrades are `017_budget_terminal_observation`,
 `018_budget_reservation_resolution`, `019_runtime_display_name`,
 `020_failed_publication_spec`, `021_usd_budget_reservations`, `022_subscription_tags`,
@@ -177,6 +182,23 @@ request outcomes cannot authorize a replay. Record unresolved transport errors w
 their cause to the platform without evidence.
 
 ## Browser validation
+
+### Assistant API protocols
+
+Apply `009_assistant_api_format` before deploying the updated API. Existing model and title
+settings remain unchanged and the new nullable protocol defaults to automatic selection.
+The initial migration and historical conversations must not be rewritten.
+
+Local gateway and assistant tests use mocked provider responses. They cover model-specific
+protocol selection, Claude tool definitions and parallel tool results, private reasoning
+continuity, optional protocol persistence, incompatible overrides, fallback visibility,
+usage, correlation IDs and API error propagation. Frontend tests cover protocol resets on
+model changes and preservation on title-toggle changes. None establishes live APIM routing.
+
+In an authorized deployed environment, verify the active APIM revision includes the selected
+model alias on its Messages or Responses operation, its backend path and provider credential.
+Test a real two-round analysis question, attribution and measured usage, then reopen its
+history. Ordinary text publication probes are not evidence of successful tool calling.
 
 ### Application and budget workflows
 

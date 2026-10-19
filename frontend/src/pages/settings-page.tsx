@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react"
+import { Tabs } from "@base-ui/react/tabs"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, Check, Languages, Monitor, Moon, RefreshCw, Settings, Sparkles, Sun } from "lucide-react"
+import { AlertTriangle, Check, Languages, Monitor, Moon, RefreshCw, Save, Settings, Sparkles, Sun } from "lucide-react"
 
 import { assistantApi } from "../components/assistant/api"
 import { assistantSettingsKey, assistantSettingsQuery } from "../components/assistant/queries"
+import { assistantSettingsChanged, assistantSettingsModel, assistantSettingsUpdate } from "../components/assistant/settings-update"
+import type { AssistantApiFormat, AssistantSettingsWrite } from "../components/assistant/types"
 import { CopilotLogo } from "../components/brand-logos"
 import { CopilotSettingsSection } from "../data-sources/github-copilot/settings-section"
 import { Button } from "../components/ui/button"
@@ -11,6 +14,7 @@ import { Switch } from "../components/ui/switch"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -18,6 +22,7 @@ import {
 import { getIntlLocale, type LocalePreference, useLocale } from "../locales/index"
 import { type ThemePreference, useTheme } from "../providers/theme-provider"
 import { useTimezone } from "../providers/timezone-provider"
+import { useAuth } from "../providers/auth-provider"
 
 const themes: Array<{
   value: ThemePreference
@@ -43,58 +48,100 @@ type Pane = "preferences" | "assistant" | "copilot"
  *  than as an empty value: "let the registry decide" is a choice an administrator makes,
  *  not the absence of one, and Base UI reads an empty string as nothing selected. */
 const AUTOMATIC = "automatic"
+const API_LABELS: Record<AssistantApiFormat, string> = {
+  openai_chat: "Chat Completions",
+  openai_responses: "Responses",
+  anthropic_messages: "Anthropic Messages",
+}
 
 function price(value: number | null | undefined) {
   return value === null || value === undefined ? "\u2014" : `$${value}`
 }
 
-function AssistantSection() {
+function useAssistantEditor(enabled: boolean) {
   const queryClient = useQueryClient()
-  const settings = useQuery(assistantSettingsQuery())
+  const settings = useQuery({ ...assistantSettingsQuery(), enabled })
+  const [draft, setDraft] = useState<AssistantSettingsWrite | null>(null)
   const save = useMutation({
-    mutationFn: (body: { model_id: string | null; auto_title: boolean }) =>
+    mutationFn: (body: AssistantSettingsWrite) =>
       assistantApi.saveSettings(body),
-    // The response is the whole settings object, so the cache is written rather than
-    // invalidated: there is nothing left to fetch.
-    onSuccess: (next) => queryClient.setQueryData(assistantSettingsKey, next),
+    onSuccess: (next) => {
+      queryClient.setQueryData(assistantSettingsKey, next)
+      setDraft(null)
+    },
   })
 
   const value = settings.data
-  // The pane's structure does not depend on the response -- two headings, a picker and a
-  // switch, always. Only the picker's options and the switch's position do, so only those
-  // wait. Blanking the whole pane behind one spinner made a 200 ms fetch look like a page
-  // that had not loaded.
-  const chosen = value?.available_models.find((model) => model.id === value.model_id)
-  // Deliberately NOT `自动选择（当前为 ${name}）`. A phrase composed at runtime is invisible
-  // to the static extractor that feeds the locale catalogs, so only the leading words got
-  // translated and the label shipped as "Automatic (当前为 gpt-5.6-luna)". The model name is
-  // its own line below instead, where it needs no sentence around it.
+  const form = value ? assistantSettingsUpdate(value, draft ?? {}) : null
+  const dirty = !!value && !!form && assistantSettingsChanged(value, form)
+
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [dirty])
+
+  function update(changes: Partial<AssistantSettingsWrite>) {
+    if (!value || !form || save.isPending) return
+    save.reset()
+    setDraft(assistantSettingsUpdate(value, { ...form, ...changes }))
+  }
+
+  function submit() {
+    if (!value || !form || !dirty || save.isPending) return
+    save.mutate(assistantSettingsUpdate(value, form))
+  }
+
+  return { settings, save, value, form, dirty, update, submit }
+}
+
+function AssistantSection({ editor, canEdit }: {
+  editor: ReturnType<typeof useAssistantEditor>
+  canEdit: boolean
+}) {
+  const { settings, save, value, form, update, submit } = editor
+  const chosen = value?.available_models.find((model) => model.id === form?.model_id)
+  const effective = value && form ? assistantSettingsModel(value, form) : undefined
+  const apiFormats = effective?.api_formats
+    ?? (effective?.id === value?.effective_model_id ? value?.available_api_formats : [])
+    ?? []
+  const disabled = !value || !canEdit || save.isPending
   const automaticLabel = "自动选择"
 
-  return <>
+  return <form id="assistant-settings-form" onSubmit={(event) => {
+    event.preventDefault()
+    if (canEdit) submit()
+  }} aria-busy={save.isPending}>
     <div className="settings-section">
       <div>
         <h2>助手模型</h2>
         <p>FinOps 助手回答问题时调用的模型。仅列出已启用且支持工具调用的模型。</p>
       </div>
       <Select
-        value={value?.model_id ?? AUTOMATIC}
-        disabled={!value || save.isPending}
-        onValueChange={(next) => next && value && save.mutate({
+        items={[
+          { value: AUTOMATIC, label: automaticLabel },
+          ...(value?.available_models ?? []).map((model) => ({
+            value: model.id, label: model.display_name,
+          })),
+        ]}
+        value={form?.model_id ?? AUTOMATIC}
+        disabled={disabled}
+        onValueChange={(next) => next && update({
           model_id: next === AUTOMATIC ? null : String(next),
-          auto_title: value.auto_title,
         })}
       >
         <SelectTrigger aria-label="助手模型" className="settings-select-trigger">
           <SelectValue>
             {!value && settings.isPending
               ? <span className="settings-inline-loading"><RefreshCw className="spin" size={13} />正在加载模型</span>
-              : chosen ? chosen.display_name : value?.model_id ? "指定模型不可用" : automaticLabel}
+              : chosen ? chosen.display_name : form?.model_id ? "指定模型不可用" : automaticLabel}
           </SelectValue>
         </SelectTrigger>
         <SelectContent align="start" alignItemWithTrigger={false}>
+          <SelectGroup>
           <SelectItem value={AUTOMATIC}>{automaticLabel}</SelectItem>
-          {value?.model_id && !chosen && <SelectItem value={value.model_id} disabled>指定模型不可用</SelectItem>}
+          {form?.model_id && !chosen && <SelectItem value={form.model_id} disabled>指定模型不可用</SelectItem>}
           {(value?.available_models ?? []).map((model) => <SelectItem key={model.id} value={model.id}>
             <span className="settings-model-option">
               <b>{model.display_name}</b>
@@ -104,6 +151,7 @@ function AssistantSection() {
               </small>
             </span>
           </SelectItem>)}
+          </SelectGroup>
         </SelectContent>
       </Select>
       {value?.effective_model_name && <small>
@@ -120,6 +168,10 @@ function AssistantSection() {
           <br />
           <span data-no-localize>{settings.error instanceof Error ? settings.error.message : ""}</span>
         </span>
+        <Button type="button" variant="ghost" size="icon-sm" title="重试" aria-label="重试"
+          disabled={settings.isFetching} onClick={() => void settings.refetch()}>
+          <RefreshCw />
+        </Button>
       </p>}
       {/* Only the degraded cases are surfaced. Reporting a healthy pin as well would make
           this line permanent furniture and train the reader to skip it. */}
@@ -131,9 +183,57 @@ function AssistantSection() {
         <AlertTriangle size={13} />
         没有任何已启用的模型支持工具调用，助手无法回答问题。
       </p>}
-      {value?.updated_by && value.updated_at && <small>
-        上次修改：{new Date(value.updated_at).toLocaleString(getIntlLocale())} · {value.updated_by}
+    </div>
+    <div className="settings-section compact">
+      <h2>接口协议</h2>
+      <Select
+        items={[
+          { value: AUTOMATIC, label: automaticLabel },
+          ...apiFormats.map((api) => ({
+            value: api, label: API_LABELS[api],
+          })),
+        ]}
+        value={form?.api_format ?? AUTOMATIC}
+        disabled={disabled || !value?.available_api_formats || !apiFormats.length}
+        onValueChange={(next) => next && update({
+          api_format: next === AUTOMATIC ? null : next as AssistantApiFormat,
+        })}
+      >
+        <SelectTrigger aria-label="接口协议" className="settings-select-trigger">
+          <SelectValue>
+            {form?.api_format
+              ? <span data-no-localize>{API_LABELS[form.api_format]}</span>
+              : automaticLabel}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent align="start" alignItemWithTrigger={false}>
+          <SelectGroup>
+            <SelectItem value={AUTOMATIC}>{automaticLabel}</SelectItem>
+            {apiFormats.map((api) => (
+              <SelectItem key={api} value={api}>
+                <span data-no-localize>{API_LABELS[api]}</span>
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+      {value?.effective_api_format && value.effective_api_path && <small>
+        实际接口：<span data-no-localize>
+          {API_LABELS[value.effective_api_format]} · POST {value.effective_api_path}
+        </span>
       </small>}
+      {value?.api_available === false && <p className="settings-warning" role="alert">
+        <AlertTriangle size={13} />
+        指定协议已不可用，当前使用自动匹配的接口。
+      </p>}
+      {save.isError && <p className="settings-warning" role="alert">
+        <AlertTriangle size={13} />
+        <span>
+          助手设置保存失败
+          <br />
+          <span data-no-localize>{save.error instanceof Error ? save.error.message : ""}</span>
+        </span>
+      </p>}
     </div>
     <div className="settings-section compact">
       <div>
@@ -142,45 +242,68 @@ function AssistantSection() {
       </div>
       <label className="settings-switch">
         <Switch
-          // Off, not on, while the real position is unknown: a switch that starts on and
-          // flicks off is a worse lie than one that has not moved yet. Disabled until it
-          // is real, so nobody toggles a value that is about to be replaced.
-          checked={value?.auto_title ?? false}
-          disabled={!value || save.isPending}
-          onCheckedChange={(checked) => value && save.mutate({
-            model_id: value.model_id,
+          aria-label="自动生成对话标题"
+          checked={form?.auto_title ?? false}
+          disabled={disabled}
+          onCheckedChange={(checked) => update({
             auto_title: checked === true,
           })}
         />
-        <span>{value ? (value.auto_title ? "已开启" : "已关闭") : "\u2014"}</span>
+        <span>{form ? (form.auto_title ? "已开启" : "已关闭") : "\u2014"}</span>
       </label>
     </div>
-  </>
+  </form>
 }
 
-export function SettingsPage({ dataSource }: { dataSource: "apim" | "github-copilot" }) {
+export function SettingsPage({ dataSource }: {
+  dataSource: "apim" | "github-copilot"
+}) {
   const [pane, setPane] = useState<Pane>(() => dataSource === "apim" ? "preferences" : "copilot")
   useEffect(() => {
     setPane(dataSource === "apim" ? "preferences" : "copilot")
   }, [dataSource])
   const activePane = pane
+  const editor = useAssistantEditor(dataSource === "apim" && activePane === "assistant")
+  const { user } = useAuth()
+  const canEdit = user?.role === "owner"
   const { preference, resolvedTheme, setPreference } = useTheme()
   const { locale, setLocale } = useLocale()
   const { preference: timezonePreference, browserTimezone, setPreference: setTimezonePreference } = useTimezone()
   const browserTimezoneLabel = `${browserTimezone}（浏览器）`
   const timezoneLabel = timezonePreference === "UTC" ? "UTC" : browserTimezoneLabel
-  return <div className="settings-page">
-    <div className="settings-sidebar">
-      <h1>设置</h1>
-      {dataSource === "github-copilot" && <button type="button" className={activePane === "copilot" ? "active" : ""} onClick={() => setPane("copilot")}><CopilotLogo size={14} />GitHub Copilot{activePane === "copilot" && <i />}</button>}
-      <button type="button" className={activePane === "preferences" ? "active" : ""} onClick={() => setPane("preferences")}><Settings size={14} />偏好设置{activePane === "preferences" && <i />}</button>
-      {/* The assistant's own name and its own mark, the same pair the composer chip uses.
-          "AI 助手" named a category; this names the thing being configured, and a product
-          name is not translated. */}
-      {dataSource === "apim" && <button type="button" className={activePane === "assistant" ? "active" : ""} onClick={() => setPane("assistant")}><Sparkles size={14} /><span data-no-localize>FinOps Assistant</span>{activePane === "assistant" && <i />}</button>}
+  return <Tabs.Root className="smh-workspace settings-workspace" value={activePane}
+    onValueChange={(next) => setPane(next as Pane)}>
+    <header className="smh-page-header">
+      <div>
+        <span className="smh-header-icon"><Settings size={17} /></span><h1>设置</h1>
+      </div>
+      {activePane === "assistant" && <div className="smh-header-actions settings-save-actions">
+        <span role="status" className="settings-save-status">
+          {editor.dirty ? "未保存" : editor.save.isSuccess ? "配置已保存" : ""}
+        </span>
+        {canEdit && <Button type="submit" form="assistant-settings-form" variant="outline" size="sm"
+          title="保存" aria-label="保存"
+          disabled={!editor.dirty || !editor.value || editor.save.isPending || editor.settings.isError}>
+          {editor.save.isPending
+            ? <RefreshCw size={14} data-icon="inline-start" className="spin" />
+            : <Save size={14} data-icon="inline-start" />}
+          保存
+        </Button>}
+      </div>}
+    </header>
+    <div className="settings-toolbar">
+      <Tabs.List className="settings-tabs usage-metric-segment" aria-label="设置">
+        {dataSource === "github-copilot" && <Tabs.Tab value="copilot"><CopilotLogo size={14} />GitHub Copilot</Tabs.Tab>}
+        <Tabs.Tab value="preferences"><Settings size={14} />偏好设置</Tabs.Tab>
+        {dataSource === "apim" && <Tabs.Tab value="assistant"><Sparkles size={14} /><span data-no-localize>FinOps Assistant</span></Tabs.Tab>}
+      </Tabs.List>
     </div>
-    <section className="settings-content">
-      {activePane === "copilot" ? <CopilotSettingsSection /> : activePane === "assistant" ? <AssistantSection /> : <>
+    <div className="settings-workspace-scroll">
+      {dataSource === "github-copilot" && <Tabs.Panel value="copilot" className="settings-content"><CopilotSettingsSection /></Tabs.Panel>}
+      {dataSource === "apim" && <Tabs.Panel value="assistant" className="settings-content">
+        <AssistantSection editor={editor} canEdit={canEdit} />
+      </Tabs.Panel>}
+      <Tabs.Panel value="preferences" className="settings-content">
       <div className="settings-section">
         <div><h2>主题</h2><p>选择 FinOps 工作台的显示外观。</p></div>
         <div className="theme-options">
@@ -207,7 +330,14 @@ export function SettingsPage({ dataSource }: { dataSource: "apim" | "github-copi
           </SelectContent>
         </Select>
       </div>
-      </>}
-    </section>
-  </div>
+      </Tabs.Panel>
+    </div>
+    <footer className="model-table-footer settings-audit-footer">
+      {activePane === "assistant" && editor.value?.updated_by && editor.value.updated_at && <span>
+        上次修改：<span data-no-localize>
+          {new Date(editor.value.updated_at).toLocaleString(getIntlLocale())} · {editor.value.updated_by}
+        </span>
+      </span>}
+    </footer>
+  </Tabs.Root>
 }

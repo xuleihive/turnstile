@@ -33,6 +33,8 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "006_versioned_budget_evidence.up.sql",
         "007_model_price_source.up.sql",
         "008_price_review_and_guard.up.sql",
+        "009_assistant_api_format.up.sql",
+
         "009_context_tier_pricing.up.sql",
         "010_budget_execution_protocol.up.sql",
         "011_gateway_targets.up.sql",
@@ -56,6 +58,13 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
 
+
+def test_assistant_api_upgrade_defaults_to_automatic_without_rewriting_settings() -> None:
+    sql = (MIGRATIONS / "009_assistant_api_format.up.sql").read_text()
+    assert "ADD COLUMN api_format TEXT" in sql
+    assert "'openai_chat', 'openai_responses', 'anthropic_messages'" in sql
+    assert "NULL selects" in sql
+    assert not re.search(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b", sql, re.MULTILINE)
 
 def test_final_product_indexes_keep_source_keys_and_do_not_rewrite_history() -> None:
     sql = (MIGRATIONS / "028_product_index_alignment.up.sql").read_text()

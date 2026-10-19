@@ -94,6 +94,7 @@ from turnstile_core.integrations.gateway import (
     OpenAICompatibleGatewayAdapter,
     elapsed_ms,
 )
+from turnstile_core.integrations.gateway_protocol import model_protocol_route
 from turnstile_core.integrations.reconciliation import ManagedIdentityTokenProvider
 from turnstile_core.persistence.repository import QueryRepository
 from turnstile_core.pricing.catalog import (
@@ -1903,6 +1904,15 @@ class ModelRuntimeService:
             raise HTTPException(
                 status_code=409, detail="Use the image generation endpoint for this model"
             )
+        try:
+            route = model_protocol_route(
+                route, request.api_format,
+                tools=bool(request.tools) or any(
+                    message.tool_calls or message.role == "tool" for message in request.messages
+                ),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         if self._settings.production and route.get("gateway_implementation") != GatewayKind.APIM:
             raise HTTPException(
                 status_code=409,
@@ -2055,9 +2065,12 @@ class ModelRuntimeService:
             return DecisionInvocationResponse(
                 **values, answers=cast(dict[str, Any], result.answers),
             )
-        return ModelInvocationResponse(
+        response = ModelInvocationResponse(
             **values, content=result.content, tool_calls=list(result.tool_calls) or None,
         )
+        response._responses_output = result.responses_output
+        response._anthropic_content = result.anthropic_content
+        return response
 
     def _finish_invocation(self, completion: PlatformInvocationCompletion) -> bool:
         try:
@@ -2196,20 +2209,7 @@ class ModelRuntimeService:
                 **dict(route.get("runtime_config") or {}),
                 "path": "/providers/microsoft/v1/systemone", "api_format": "microsoft_decision",
             }}
-        if (
-            route.get("provider_kind") != ProviderKind.MICROSOFT_FOUNDRY
-            or route.get("model_family_key") != ModelFamilyKey.CLAUDE
-        ):
-            return route
-        return {
-            **route,
-            "runtime_config": {
-                **dict(route.get("runtime_config") or {}),
-                "path": "/v1/messages",
-                "api_format": "anthropic_messages",
-                "anthropic_version": "2023-06-01",
-            },
-        }
+        return model_protocol_route(route)
 
     def _save(self, kind: str, values: dict[str, Any], item_id: UUID | None) -> dict[str, Any]:
         try:

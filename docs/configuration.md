@@ -306,6 +306,27 @@ Each measured request selects one tier using uncached input plus all cached inpu
 
 Synchronization preserves custom rule versions and configuration times. Every result is checked against the original mapping, effective discount, accepted list prices and complete schedule before it is written. New or removed price buckets and previously free buckets require review. Request Trace uses the recorded `cost_available` flag to distinguish a known zero cost from an unpriced request. Its calculation uses the request's four saved unit prices and `price_context_snapshot`, including the original custom-rule provenance; it does not reprice historical requests with current model settings. All strict JSON-snapshot readers, including API, Publisher and Telemetry, must support the new provenance fields before custom rules are enabled. No additional migration is required beyond the existing context-price schema.
 
+### FinOps Assistant API protocol
+
+Apply migration `009_assistant_api_format` before deploying the updated API. The assistant
+setting `api_format` accepts `openai_chat`, `openai_responses`, `anthropic_messages`, or
+`null` for automatic selection. Settings advertise the compatible protocols per model and
+the effective public API path. Invalid overrides are rejected before provider dispatch;
+an override that later becomes unavailable visibly falls back on the same eligible model.
+An unavailable pinned or default model stops analysis and preserves the saved selection.
+Changing the title setting must not silently choose another model.
+
+Foundry Claude uses the Messages route even when its shared Connection declares OpenAI
+Chat. GPT-6 tool calls use Responses. Claude content blocks, including signed thinking,
+and Responses reasoning items are retained only inside the current analysis loop and
+never returned to the browser or written into conversation history.
+
+Production requests still require APIM. Changing the protocol neither creates a gateway
+operation nor publishes a model or changes credentials. The active revision must contain
+the model alias on its matching operation. Managed Responses support follows the publisher's
+existing Foundry binding boundary (`/openai/v1/chat/completions`); arbitrary compatible
+Chat connections are not assumed to support Responses. Local mocks do not verify live routes.
+
 ### Governed image generation
 
 Image generation is a standard capability and requires no enablement setting. Deploy and verify the API, Control-plane package, required migrations and image-ready APIM parent policy together. The Registry advertises `image_generation_supported: true` and `image_configuration_schema_version: 4`; an older backend must not be treated as image-capable. Publication still rejects missing or incompatible APIM image infrastructure, and invocation still requires a published model, authorization and available budget.

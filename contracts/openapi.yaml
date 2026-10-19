@@ -1128,6 +1128,8 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Input
     RouteSnapshot-Output:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Output
+    InvocationApiFormat:
+      $ref: ./openapi/schemas/common.yaml#/schemas/InvocationApiFormat
 x-event-contracts:
   usage-event:
     transport: Azure Event Hubs
