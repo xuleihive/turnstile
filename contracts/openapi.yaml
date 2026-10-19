@@ -333,6 +333,8 @@ paths:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}~1archive
   /api/v1/model-management/self-hosted-gateways/{deployment_id}/node-enrollments:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1self-hosted-gateways~1{deployment_id}~1node-enrollments
+  /api/v1/model-management/price-preview:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-preview
 components:
   securitySchemes:
     sessionCookie:
@@ -1128,6 +1130,14 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Input
     RouteSnapshot-Output:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/RouteSnapshot-Output
+    InvocationApiFormat:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/InvocationApiFormat
+    PriceMatch:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/PriceMatch
+    PricePreviewRequest:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/PricePreviewRequest
+    PricePreviewResponse:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/PricePreviewResponse
 x-event-contracts:
   usage-event:
     transport: Azure Event Hubs

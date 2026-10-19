@@ -4,11 +4,12 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
-import {
+import { loadTypeScriptModule } from "./load-typescript-module.mjs"
+const filterLogic = await loadTypeScriptModule(new URL("../../../frontend/src/lib/model-inventory-filters.ts", import.meta.url))
+const {
   MODEL_FILTER_DIMENSIONS, emptyModelFilters, matchesModelFilters, modelFilterRecord,
   modelInventoryFamily, modelInventoryPlatform, publicationFilterRecord, toggleModelFilter,
-} from "../../../frontend/src/lib/model-inventory-filters.ts"
-import * as filterLogic from "../../../frontend/src/lib/model-inventory-filters.ts"
+} = filterLogic
 
 const model = (changes = {}) => ({
   id: "model-one", model_key: "chat-public", display_name: "Chat model", family_key: "generic",
@@ -17,9 +18,9 @@ const model = (changes = {}) => ({
 })
 const runtime = { id: "connection-one", brand_key: "microsoft_foundry", runtime_kind: "foundry" }
 
-test("the five filter dimensions match the model inventory menu", () => {
-  assert.deepEqual(MODEL_FILTER_DIMENSIONS, ["family", "platform", "capability", "connection", "status"])
-  assert.deepEqual(emptyModelFilters(), { family: [], platform: [], capability: [], connection: [], status: [] })
+test("the six filter dimensions match the model inventory menu", () => {
+  assert.deepEqual(MODEL_FILTER_DIMENSIONS, ["family", "platform", "capability", "connection", "apim", "status"])
+  assert.deepEqual(emptyModelFilters(), { family: [], platform: [], capability: [], connection: [], apim: [], status: [] })
   const first = emptyModelFilters()
   first.family.push("openai")
   assert.deepEqual(emptyModelFilters().family, [])
@@ -135,18 +136,18 @@ const records = [
 ]
 function menu(filters = emptyModelFilters(), overrides = {}) {
   const changes = []
-  const tree = exports.ModelInventoryFilterMenu({ filters, connections: [{ ...runtime, name: "Primary connection" }], records, search: "", compact: false, onChange: next => changes.push(next), ...overrides })
+  const tree = exports.ModelInventoryFilterMenu({ filters, connections: [{ ...runtime, name: "Primary connection" }], gateways: [], apimInstances: [], records, search: "", compact: false, onChange: next => changes.push(next), ...overrides })
   const categories = nodes(tree).filter(node => node.type === "DropdownMenuSub")
   return { tree, changes, categories,
     options: dimension => nodes(categories.find(node => node.key === dimension)).filter(node => node.type === "DropdownMenuCheckboxItem"),
   }
 }
 
-test("menu exposes all five original categories in the original order", () => {
+test("menu exposes all six categories in the current inventory order", () => {
   const current = menu()
   assert.deepEqual(current.categories.map(node => node.key), MODEL_FILTER_DIMENSIONS)
   const labels = nodes(current.tree).filter(node => node.props?.className === "model-filter-label").map(node => node.props.children)
-  assert.deepEqual(labels, ["模型家族", "接入平台", "模型类型", "连接", "状态"])
+  assert.deepEqual(labels, ["模型家族", "接入平台", "模型类型", "连接", "APIM 实例", "状态"])
   assert.equal(nodes(current.tree).find(node => node.type === "DropdownMenuTrigger").props.render.props["aria-label"], "筛选模型")
 })
 
@@ -191,14 +192,14 @@ test("mobile submenus open below and active chips remove one category or clear a
   const current = menu(filters, { compact: true })
   assert.ok(nodes(current.tree).filter(node => node.type === "DropdownMenuSubContent").every(node => node.props.side === "bottom" && node.props.align === "end"))
   const changes = []
-  const chips = exports.ModelInventoryFilterChips({ filters, connections: [], onChange: value => changes.push(value) })
+  const chips = exports.ModelInventoryFilterChips({ filters, connections: [], gateways: [], apimInstances: [], onChange: value => changes.push(value) })
   const chipNodes = nodes(chips)
   assert.equal(chipNodes.filter(node => node.props?.className === "model-filter-chip").length, 2)
   chipNodes.find(node => node.props?.["aria-label"] === "移除筛选：模型家族").props.onClick()
   assert.deepEqual(plain(changes[0]), { ...emptyModelFilters(), status: ["enabled"] })
   chipNodes.find(node => node.props?.className === "model-filter-reset").props.onClick()
   assert.deepEqual(plain(changes[1]), emptyModelFilters())
-  assert.equal(exports.ModelInventoryFilterChips({ filters: emptyModelFilters(), connections: [], onChange() {} }), null)
+  assert.equal(exports.ModelInventoryFilterChips({ filters: emptyModelFilters(), connections: [], gateways: [], apimInstances: [], onChange() {} }), null)
 })
 
 for (const [locale, expected, count, selected] of [

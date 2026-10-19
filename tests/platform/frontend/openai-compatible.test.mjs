@@ -1,14 +1,35 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
+import { runInNewContext } from "node:vm"
 
-import {
-  displayNameFromProviderId,
-  isOpenAICompatibleBaseUrl,
-  isUnsupportedOpenAICompatibleDetails,
-  modelVendorFromMetadata,
-  modelVendorLabel,
-  publicModelKeyFromProviderId,
-} from "../../../frontend/src/components/model-management/openai-compatible.ts"
+import { isOpenAICompatibleBaseUrl } from "../../../frontend/src/components/model-management/openai-compatible.ts"
+
+const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+async function componentExports(path, expose = []) {
+  const entry = fileURLToPath(new URL(path, import.meta.url))
+  const bundle = await rolldown({ input: entry, external: id => id !== entry,
+    transform: { jsx: { runtime: "automatic" } }, treeshake: false,
+    plugins: expose.length ? [{ name: "test-component-exports", load(id) {
+      return id === entry ? `${readFileSync(entry, "utf8")}\nexport { ${expose.join(", ")} }` : null
+    } }] : [],
+  })
+  const exports = {}
+  try {
+    runInNewContext((await bundle.generate({ format: "cjs" })).output[0].code, {
+      exports, require: name => name === "react/jsx-runtime" ? frontendRequire(name) : new Proxy({}, { get: (_target, key) => key }),
+    })
+    return exports
+  } finally { await bundle.close() }
+}
+const { modelVendorFromMetadata, modelVendorLabel } = await componentExports("../../../frontend/src/components/model-management/model-vendor-select.tsx")
+const { displayNameFromProviderId, publicModelKeyFromProviderId, publicationErrorMessage } = await componentExports(
+  "../../../frontend/src/components/model-management/model-publication-dialog.tsx",
+  ["displayNameFromProviderId", "publicModelKeyFromProviderId", "publicationErrorMessage"],
+)
 
 test("compatible endpoints accept HTTPS bases and full chat paths only without URL credentials", () => {
   for (const value of ["https://api.example.test/v1", " https://api.example.test/v1/chat/completions "]) {
@@ -44,14 +65,8 @@ test("explicit vendor metadata wins over a display-name guess", () => {
   assert.equal(modelVendorLabel("anthropic"), "Anthropic")
 })
 
-test("old schema detection requires both exact provider and endpoint rejections", () => {
-  const provider = { type: "literal_error", loc: ["body", "provider", "template"], input: "openai_compatible" }
-  const endpoint = { type: "extra_forbidden", loc: ["body", "openai_base_url"] }
-  assert.equal(isUnsupportedOpenAICompatibleDetails({ detail: [provider, endpoint] }), true)
-  for (const value of [null, {}, { detail: "invalid" }, { detail: [provider] }, { detail: [endpoint] },
-    { detail: [{ ...provider, input: "microsoft_foundry" }, endpoint] },
-    { detail: [{ ...provider, loc: ["body", "other", "template"] }, endpoint] },
-    { detail: [null, 1, "value"] }]) {
-    assert.equal(isUnsupportedOpenAICompatibleDetails(value), false)
-  }
+test("publication compatibility errors use the current pricing schema without exposing inputs", () => {
+  const detail = [{ type: "extra_forbidden", loc: ["body", "model", "price_source"], input: "secret", msg: "Extra inputs are not permitted" }]
+  assert.equal(publicationErrorMessage(`API 422: ${JSON.stringify({ detail })}`), "\u524d\u540e\u7aef\u8ba1\u4ef7\u63a5\u53e3\u7248\u672c\u4e0d\u4e00\u81f4\uff0c\u8bf7\u66f4\u65b0\u540e\u7aef\u540e\u518d\u53d1\u5e03\u3002")
+  assert.equal(publicationErrorMessage("API 403: Access denied"), "API 403: Access denied")
 })

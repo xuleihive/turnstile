@@ -1519,6 +1519,14 @@ paths:
           maxLength: 120
           default: ''
           title: Q
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+          - type: 'null'
+          title: Source
       - name: authorization
         in: header
         required: false
@@ -1540,8 +1548,6 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
-      security:
-      - sessionCookie: []
   /api/v1/model-management/price-catalog/options:
     get:
       summary: Price Catalog Options
@@ -1552,7 +1558,7 @@ paths:
         required: true
         schema:
           type: string
-          maxLength: 300
+          maxLength: 1500
           title: Model
       - name: authorization
         in: header
@@ -1575,8 +1581,6 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
-      security:
-      - sessionCookie: []
   /api/v1/model-management/price-sync:
     post:
       summary: Sync Model Prices
@@ -1611,8 +1615,6 @@ paths:
             application/json:
               schema:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
-      security:
-      - sessionCookie: []
   /api/v1/model-management/models:
     post:
       summary: Create Model
@@ -3648,3 +3650,26 @@ paths:
       security:
       - sessionCookie: []
       description: Owner-only platform operation.
+  /api/v1/model-management/price-preview:
+    post:
+      summary: Preview Model Price
+      operationId: preview_model_price_api_v1_model_management_price_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/PricePreviewRequest
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PricePreviewResponse
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError

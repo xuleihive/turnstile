@@ -518,19 +518,21 @@ class PostgreSqlAssistantRepositoryMixin:
         return dict(cast(dict[str, Any], row)) if row else {"model_id": None, "auto_title": True}
 
     def save_assistant_settings(
-        self, *, model_id: UUID | None, auto_title: bool, updated_by: str
+        self, *, model_id: UUID | None, auto_title: bool, updated_by: str,
+        api_format: str | None = None,
     ) -> dict[str, Any]:
         with self._connection() as connection:
             row = connection.execute(
-                """INSERT INTO assistant_setting (id, model_id, auto_title, updated_by)
-                   VALUES (true, %s, %s, %s)
+                """INSERT INTO assistant_setting (id, model_id, auto_title, api_format, updated_by)
+                   VALUES (true, %s, %s, %s, %s)
                    ON CONFLICT (id) DO UPDATE SET
                        model_id = EXCLUDED.model_id,
                        auto_title = EXCLUDED.auto_title,
+                       api_format = EXCLUDED.api_format,
                        updated_at = now(),
                        updated_by = EXCLUDED.updated_by
                    RETURNING *""",
-                (model_id, auto_title, updated_by),
+                (model_id, auto_title, api_format, updated_by),
             ).fetchone()
         return dict(cast(dict[str, Any], row))
 

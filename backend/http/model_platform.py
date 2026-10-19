@@ -96,6 +96,9 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationResponse,
     PriceCatalogModelsResponse,
     PriceCatalogOptionsResponse,
+    PricePreviewRequest,
+    PricePreviewResponse,
+    PriceSource,
     PriceSyncRequest,
     PriceSyncResponse,
     ProviderWrite,
@@ -325,6 +328,18 @@ def update_model_connection(
 
 
 @protected_router.post(
+    "/api/v1/model-management/price-preview",
+    response_model=PricePreviewResponse,
+)
+def preview_model_price(
+    request: PricePreviewRequest,
+    service: RuntimeService,
+    identity: OwnerSession,
+) -> PricePreviewResponse:
+    return service.price_preview(request, user_id=identity.email)
+
+
+@protected_router.post(
     "/api/v1/model-management/connections/{runtime_id}/adopt",
     response_model=GatewayPublicationRequestAccepted,
     status_code=202,
@@ -384,13 +399,14 @@ def search_price_catalog_models(
     service: RuntimeService,
     identity: CurrentSession,
     q: Annotated[str, Query(max_length=120)] = "",
+    source: Annotated[PriceSource | None, Query()] = None,
     authorization: Authorization = None,
 ) -> PriceCatalogModelsResponse:
     # Reading a vendor's published price list changes nothing and reveals nothing the vendor
     # does not print on its own website, so this is gated like the registry read it sits beside
     # rather than like the write it leads to.
     service.authorize(identity.role, authorization, manage=False)
-    return service.price_catalog_models(q)
+    return service.price_catalog_models(q, source=source)
 
 
 @protected_router.get(
@@ -400,7 +416,7 @@ def search_price_catalog_models(
 def price_catalog_options(
     service: RuntimeService,
     identity: CurrentSession,
-    model: Annotated[str, Query(max_length=300)],
+    model: Annotated[str, Query(max_length=1500)],
     authorization: Authorization = None,
 ) -> PriceCatalogOptionsResponse:
     service.authorize(identity.role, authorization, manage=False)
@@ -421,7 +437,12 @@ def sync_model_prices(
     # owner session and skips the management credential for a price-only change, and repricing
     # in bulk is the same act at a larger scale. One gate, stated once.
     service.authorize(identity.role, authorization, manage=False)
-    return service.sync_prices(request.model_ids if request else None)
+    return service.sync_prices(
+        request.model_ids if request else None,
+        refresh=request.refresh if request else True,
+        dry_run=request.dry_run if request else False,
+        user_id=identity.email,
+    )
 
 
 @protected_router.post("/api/v1/model-management/models", response_model=RegistryResponse)
@@ -654,9 +675,40 @@ def create_gateway_publication(
     write: GatewayPublicationCreate,
     service: ControlPlaneService,
     owner_email: PublicationOwner,
+    pricing_service: RuntimeService,
 ) -> GatewayPublicationRequestAccepted:
+    pricing_values = None
+    model = write.model
+    if model.price_source is not None and not model.context_price_references:
+        pricing_values = {
+            "price_source": model.price_source.value,
+            "price_reference": model.price_reference,
+            "price_discount_percent": model.price_discount_percent,
+        }
+        if model.price_source is not PriceSource.MANUAL:
+            preview = pricing_service.price_preview(PricePreviewRequest(
+                runtime_id=write.runtime.existing_id,
+                price_source=model.price_source, price_reference=model.price_reference,
+                deployment_name=model.deployment_name, upstream_model_id=model.upstream_model_id,
+                display_name=model.display_name, model_key=model.model_key,
+                operation=model.operation, price_discount_percent=model.price_discount_percent,
+            ), user_id=owner_email)
+            if preview.status == "matched" and preview.match:
+                if model.price_entry_digest and preview.entry_digest != model.price_entry_digest:
+                    raise HTTPException(status_code=409, detail="目录价格已变化，请重新同步并确认")
+                accepted = pricing_service._accepted_price_values(preview)
+                write = write.model_copy(update={"model": model.model_copy(update={
+                    key: accepted[key] for key in (
+                        "input_cost_per_million", "output_cost_per_million",
+                        "cached_cost_per_million", "cache_write_cost_per_million",
+                    )
+                })})
+                pricing_values.update(accepted)
+                pricing_values["price_reference"] = preview.match.reference
+            elif not model.allow_unpriced or model.operation == "image_generation":
+                raise HTTPException(status_code=422, detail="请同步定价或明确确认暂不计价")
     try:
-        publication = service.publish(write, owner_email)
+        publication = service.publish(write, owner_email, pricing_values=pricing_values)
     except ControlPlaneUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneConflictError as error:

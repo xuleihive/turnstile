@@ -803,13 +803,13 @@ test("Decision and image price sources omit Anthropic while chat retains it", ()
   assert.match(dialog, /showAnthropic=\{!decision && !imageGeneration\}/)
   assert.match(dialog, /imageGeneration=\{imageGeneration\}/)
   assert.match(source, /showAnthropic = true/)
-  const choices = source.match(/\{(\(\["manual", "azure_retail", "anthropic"\] as const\)\.filter\(.*?\))\.map/)
+  const choices = source.match(/\{(\(\["models_dev", "manual", "azure_retail", "anthropic"\] as const\)\.filter\(.*?\))\.map/)
   assert.ok(choices)
   for (const showAnthropic of [true, false]) {
     const sources = runInNewContext(stripTypeScriptTypes(choices[1]), { showAnthropic })
     assert.deepEqual([...sources], showAnthropic
-      ? ["manual", "azure_retail", "anthropic"]
-      : ["manual", "azure_retail"])
+      ? ["models_dev", "manual", "azure_retail", "anthropic"]
+      : ["models_dev", "manual", "azure_retail"])
   }
 })
 
@@ -833,9 +833,9 @@ test("Decision purpose changes reset prices for shared catalog selection", () =>
     assert.equal(draft.outputPrice, "")
     assert.equal(draft.cacheReadPrice, "")
     assert.equal(draft.cacheWritePrice, "")
-    assert.equal(draft.priceSource, "manual")
+    assert.equal(draft.priceSource, "models_dev")
     assert.equal(draft.priceReference, "")
-    assert.equal(validateModelPricing(draft), null)
+    assert.equal(validateModelPricing(draft), "price_reference")
   }
   assert.doesNotMatch(source, />应用参考价<\/Button>/)
   assert.match(source, /className=\{decision \? "publication-decision-price-fields" : "form-grid"\}/)

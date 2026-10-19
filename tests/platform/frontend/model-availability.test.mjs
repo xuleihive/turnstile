@@ -7,6 +7,7 @@ import { runInNewContext } from "node:vm"
 import { availabilityPresentation, availabilityRefetchInterval } from "../../../frontend/src/lib/model-availability.ts"
 import { resolveInvocationModel } from "../../../frontend/src/lib/gateway-topology.ts"
 import * as runtimeHealth from "../../../frontend/src/lib/runtime-health.ts"
+import * as settingsUpdate from "../../../frontend/src/components/assistant/settings-update.ts"
 
 const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
 const { rolldown } = await import(frontendRequire.resolve("rolldown"))
@@ -19,7 +20,7 @@ finally { await bundle.close() }
 const settingsEntry = fileURLToPath(new URL("../../../frontend/src/pages/settings-page.tsx", import.meta.url))
 const settingsBundle = await rolldown({ input: settingsEntry, external: path => path !== settingsEntry,
   transform: { jsx: { runtime: "automatic" } }, treeshake: false,
-  plugins: [{ name: "settings-test-export", transform(source, id) { return id === settingsEntry ? `${source}\nexport { AssistantSection }` : null } }],
+  plugins: [{ name: "settings-test-export", transform(source, id) { return id === settingsEntry ? `${source}\nexport { AssistantSection, useAssistantEditor }` : null } }],
 })
 let settingsComponent
 try { settingsComponent = (await settingsBundle.generate({ format: "cjs" })).output[0].code }
@@ -32,13 +33,14 @@ class ApiError extends Error {
 function componentHarness(initial = readback(), send = async (_modelId, value) => ({
   operation: { id: "unit-operation", model_id: "unit-model", desired_enabled: value.enabled,
     desired_revision: value.expected_revision + 1, status: "pending", targets: [] },
-})) {
+}), role = "owner") {
   const keys = { modelAvailability: ["model-platform", "model-availability"], registry: ["reference", "model-registry"] }
   const refs = []
   const calls = []
   const invalidated = []
   let cursor = 0
   let pending = 0
+  let pendingAction
   let error = null
   let completion = Promise.resolve()
   let sequence = 0
@@ -49,6 +51,7 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
   } })
   const client = {
     isMutating: () => pending,
+    cancelQueries: async () => undefined,
     setQueryData(_key, update) { cached = update(cached) },
     invalidateQueries({ queryKey }) { invalidated.push(queryKey); return Promise.resolve() },
   }
@@ -58,13 +61,15 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
     "@tanstack/react-query": {
       useQueryClient: () => client,
       useIsMutating: () => pending,
+      useMutationState: options => pending ? [options.select({ state: { variables: pendingAction } })] : [],
       useMutation(options) {
         assert.equal(options.retry, false)
         return { error, mutate(action) {
+          pendingAction = action
           pending += 1
-          completion = Promise.resolve().then(() => options.mutationFn(action)).then(result => {
+          completion = Promise.resolve().then(() => options.mutationFn(action)).then(async result => {
             error = null
-            options.onSuccess?.(result)
+            await options.onSuccess?.(result)
           }, failure => {
             error = failure
             options.onError?.(failure)
@@ -81,6 +86,7 @@ function componentHarness(initial = readback(), send = async (_modelId, value) =
     "../../lib/runtime-health": runtimeHealth,
     "../../locales": { getIntlLocale: () => "en-US" },
     "../../providers/timezone-provider": { useTimezone: () => ({ timezone: "Asia/Shanghai" }) },
+    "../../providers/auth-provider": { useAuth: () => ({ user: { role } }) },
     "../assistant/queries": { assistantSettingsKey: ["assistant", "settings"] },
   }
   const exports = {}
@@ -182,7 +188,7 @@ test("the actual command hook deduplicates clicks and never promotes accepted st
   assert.equal(harness.state().effective_enabled, true)
   assert.equal(harness.state().effective_revision, 2)
   assert.equal(harness.action().canChange, false)
-  assert.equal(harness.invalidated.length, 3)
+  assert.deepEqual(harness.invalidated, [["reference", "model-registry"], ["model-platform", "model-availability"]])
 })
 
 test("an uncertain command reuses its idempotency key while a version conflict clears it", async () => {
@@ -302,25 +308,38 @@ test("a disabled default blocks automatic invocation selection but not an explic
 
 test("assistant settings preserve an unavailable pin when changing auto-title", async () => {
   const writes = []
+  let draft = null
   const value = { model_id: "disabled-model", model_available: false, effective_model_id: null,
     effective_model_name: null, auto_title: true, available_models: [{ id: "other", display_name: "Other", runtime_name: "Connection" }] }
   const imports = {
+    react: { useState: () => [draft, value => { draft = value }], useEffect() {} },
     "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
     "@tanstack/react-query": {
       useQueryClient: () => ({ setQueryData() {} }),
       useQuery: () => ({ data: value, isPending: false }),
-      useMutation: options => ({ isPending: false, mutate: payload => options.mutationFn(payload) }),
+      useMutation: options => ({ isPending: false, reset() {}, mutate: payload => options.mutationFn(payload) }),
     },
     "../components/assistant/api": { assistantApi: { saveSettings: async payload => { writes.push(payload); return value } } },
     "../components/assistant/queries": { assistantSettingsKey: ["assistant", "settings"], assistantSettingsQuery: () => ({}) },
+    "../components/assistant/settings-update": settingsUpdate,
   }
   const exports = {}
   runInNewContext(settingsComponent, { exports, require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }) })
-  const nodes = componentHarness().nodes(exports.AssistantSection())
+  const nodes = componentHarness().nodes(exports.AssistantSection({ editor: exports.useAssistantEditor(true), canEdit: true }))
   assert.equal(nodes.find(node => node.type === "Select").props.value, "disabled-model")
   const option = nodes.find(node => node.type === "SelectItem" && node.props.value === "disabled-model")
   assert.equal(option.props.disabled, true)
   assert.equal(option.props.children, "指定模型不可用")
   await nodes.find(node => node.type === "Switch").props.onCheckedChange(false)
+  assert.equal(writes.length, 0)
+  await exports.useAssistantEditor(true).submit()
   assert.deepEqual(JSON.parse(JSON.stringify(writes)), [{ model_id: "disabled-model", auto_title: false }])
+})
+
+test("member views cannot enable model availability commands", () => {
+  const view = componentHarness(ready(), undefined, "member")
+  assert.equal(view.action().canChange, false)
+  view.action().change()
+  assert.equal(view.calls.length, 0)
+  assert.equal(view.render("ModelAvailabilitySwitch", { readback: ready(), registryEnabled: true }).props.disabled, true)
 })

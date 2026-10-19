@@ -21,6 +21,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from .models import StrictModel
+from .runtime_models import InvocationApiFormat
 
 ChartKind = Literal["bar", "line", "table", "kpi"]
 
@@ -266,6 +267,7 @@ class AssistantSettingsWrite(StrictModel):
 
     model_id: UUID | None = None
     auto_title: bool = True
+    api_format: InvocationApiFormat | None = None
 
 
 class AssistantModelChoice(StrictModel):
@@ -282,6 +284,7 @@ class AssistantModelChoice(StrictModel):
     runtime_name: str
     input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
+    api_formats: list[InvocationApiFormat] = Field(default_factory=list)
 
 
 class AssistantSettings(AssistantSettingsWrite):
@@ -302,6 +305,10 @@ class AssistantSettings(AssistantSettingsWrite):
     effective_model_id: UUID | None = None
     effective_model_name: str | None = None
     model_available: bool = True
+    api_available: bool = True
+    effective_api_format: InvocationApiFormat | None = None
+    effective_api_path: str | None = None
+    available_api_formats: list[InvocationApiFormat] = Field(default_factory=list)
     available_models: list[AssistantModelChoice] = Field(default_factory=list)
     updated_at: datetime | None = None
     updated_by: str | None = None

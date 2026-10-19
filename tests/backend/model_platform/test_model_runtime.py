@@ -2163,6 +2163,7 @@ def test_complete_catalog_price_can_be_saved(
 ) -> None:
     service, catalog, write, model_id = price_edit_service
 
+    previous = next(model for model in service.registry().models if model.id == model_id)
     result = service.save_model(write.model_copy(update={
         "input_cost_per_million": 0.000001, "output_cost_per_million": 99999,
     }), model_id)
@@ -2173,7 +2174,10 @@ def test_complete_catalog_price_can_be_saved(
     charged = published.discounted(saved.effective_discount_percent)
     assert saved.input_cost_per_million == charged.input_per_million
     assert saved.output_cost_per_million == charged.output_per_million
-    assert saved.cached_cost_per_million == charged.cached_per_million
+    assert saved.cached_cost_per_million == (
+        charged.cached_per_million if charged.cached_per_million is not None
+        else previous.cached_cost_per_million
+    )
     assert saved.list_input_cost_per_million == published.input_per_million
     assert saved.price_sync_status == "ok"
     catalog.lookup.assert_called_once_with(write.price_reference)

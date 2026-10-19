@@ -10,7 +10,8 @@ import {
 } from "../../../frontend/src/lib/gateway-topology.ts"
 import * as gatewayTopology from "../../../frontend/src/lib/gateway-topology.ts"
 import * as gatewayForms from "../../../frontend/src/lib/gateway-forms.ts"
-import * as modelFilters from "../../../frontend/src/lib/model-inventory-filters.ts"
+import { loadTypeScriptModule } from "./load-typescript-module.mjs"
+const modelFilters = await loadTypeScriptModule(new URL("../../../frontend/src/lib/model-inventory-filters.ts", import.meta.url))
 import * as runtimeHealth from "../../../frontend/src/lib/runtime-health.ts"
 import { formatTimeAgo } from "../../../frontend/src/lib/time.ts"
 import * as publicationConnections from "../../../frontend/src/components/model-management/model-publication-connections.ts"

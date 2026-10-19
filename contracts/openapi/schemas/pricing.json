@@ -1,0 +1,1010 @@
+{
+  "schemas": {
+    "PendingListPrice": {
+      "properties": {
+        "input": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Input"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output"
+        },
+        "cached": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cached"
+        },
+        "cache_write": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cache Write"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "PendingListPrice",
+      "description": "A published price waiting for a person, in the same four buckets as the accepted one."
+    },
+    "PriceCatalogContextTier": {
+      "properties": {
+        "group_key": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Group Key"
+        },
+        "model_label": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Model Label"
+        },
+        "service_tier": {
+          "type": "string",
+          "title": "Service Tier",
+          "default": ""
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Key"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Label"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0.0,
+          "title": "Order"
+        },
+        "input_range": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceCatalogInputRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_range_source": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceCatalogRuleSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "group_key",
+        "model_label",
+        "key",
+        "label",
+        "order"
+      ],
+      "title": "PriceCatalogContextTier"
+    },
+    "PriceCatalogInputRange": {
+      "properties": {
+        "min_input_tokens": {
+          "type": "integer",
+          "minimum": 0.0,
+          "title": "Min Input Tokens"
+        },
+        "max_input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0.0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Input Tokens"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "min_input_tokens"
+      ],
+      "title": "PriceCatalogInputRange"
+    },
+    "PriceCatalogModel": {
+      "properties": {
+        "key": {
+          "type": "string",
+          "title": "Key"
+        },
+        "label": {
+          "type": "string",
+          "title": "Label"
+        },
+        "product": {
+          "type": "string",
+          "title": "Product"
+        },
+        "source": {
+          "$ref": "#/schemas/PriceSource"
+        },
+        "context_tier": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceCatalogContextTier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text_to_image": {
+          "type": "boolean",
+          "title": "Text To Image",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "product",
+        "source"
+      ],
+      "title": "PriceCatalogModel",
+      "description": "One priceable model in a vendor's published list, named the way that vendor names it."
+    },
+    "PriceCatalogModelsResponse": {
+      "properties": {
+        "models": {
+          "items": {
+            "$ref": "#/schemas/PriceCatalogModel"
+          },
+          "type": "array",
+          "title": "Models"
+        },
+        "unavailable": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Unavailable"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "models"
+      ],
+      "title": "PriceCatalogModelsResponse"
+    },
+    "PriceCatalogOption": {
+      "properties": {
+        "reference": {
+          "type": "string",
+          "title": "Reference"
+        },
+        "deployment": {
+          "type": "string",
+          "title": "Deployment"
+        },
+        "regions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Regions"
+        },
+        "references_by_region": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "title": "References By Region"
+        },
+        "region_required": {
+          "type": "boolean",
+          "title": "Region Required",
+          "default": false
+        },
+        "input_per_million": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Input Per Million"
+        },
+        "output_per_million": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Per Million"
+        },
+        "cached_per_million": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cached Per Million"
+        },
+        "cache_write_per_million": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cache Write Per Million"
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Context Window"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "reference",
+        "deployment"
+      ],
+      "title": "PriceCatalogOption",
+      "description": "How one model is priced under one deployment shape.\n\n`regions` lists every region charging exactly these rates. `region_required` is false when\nthe shape charges one figure everywhere -- Global always does -- because asking for a region\nthat cannot change the answer is asking someone to guess at nothing."
+    },
+    "PriceCatalogOptionsResponse": {
+      "properties": {
+        "model_entry": {
+          "$ref": "#/schemas/PriceCatalogModel"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/schemas/PriceCatalogOption"
+          },
+          "type": "array",
+          "title": "Options"
+        },
+        "complete": {
+          "type": "boolean",
+          "title": "Complete",
+          "default": true
+        },
+        "unreadable": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Unreadable"
+        },
+        "other_meters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Other Meters"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Note"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "model_entry"
+      ],
+      "title": "PriceCatalogOptionsResponse"
+    },
+    "PriceCatalogRuleSource": {
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Rule Id"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Url"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Revision"
+        },
+        "verified_on": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Verified On"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "official",
+            "reference",
+            "custom"
+          ],
+          "title": "Origin",
+          "default": "official"
+        },
+        "configured_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Configured At"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 500
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Note"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rule_id",
+        "revision"
+      ],
+      "title": "PriceCatalogRuleSource"
+    },
+    "PriceMatch": {
+      "properties": {
+        "reference": {
+          "type": "string",
+          "title": "Reference"
+        },
+        "provider_id": {
+          "type": "string",
+          "title": "Provider Id"
+        },
+        "model_id": {
+          "type": "string",
+          "title": "Model Id"
+        },
+        "name": {
+          "type": "string",
+          "title": "Name"
+        },
+        "canonical_model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Canonical Model Id"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "ai",
+            "manual",
+            "stored"
+          ],
+          "title": "Method",
+          "default": "exact"
+        },
+        "price_basis": {
+          "type": "string",
+          "enum": [
+            "deployment",
+            "origin_reference"
+          ],
+          "title": "Price Basis",
+          "default": "deployment"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "default_model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Model Id"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "reference",
+        "provider_id",
+        "model_id",
+        "name"
+      ],
+      "title": "PriceMatch"
+    },
+    "PricePreviewRequest": {
+      "properties": {
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Id"
+        },
+        "runtime_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Runtime Id"
+        },
+        "price_source": {
+          "$ref": "#/schemas/PriceSource",
+          "default": "models_dev"
+        },
+        "deployment_name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 500
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deployment Name"
+        },
+        "upstream_model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 500
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Upstream Model Id"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 255
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Display Name"
+        },
+        "model_key": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 255
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Key"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "image_generation",
+            "decision"
+          ],
+          "title": "Operation",
+          "default": "chat"
+        },
+        "price_reference": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1500
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Price Reference"
+        },
+        "price_discount_percent": {
+          "anyOf": [
+            {
+              "type": "number",
+              "maximum": 100.0,
+              "exclusiveMinimum": 0.0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Price Discount Percent"
+        },
+        "refresh": {
+          "type": "boolean",
+          "title": "Refresh",
+          "default": false
+        },
+        "rematch": {
+          "type": "boolean",
+          "title": "Rematch",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "PricePreviewRequest"
+    },
+    "PricePreviewResponse": {
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "matched",
+            "unmapped",
+            "ambiguous",
+            "stale",
+            "unsupported",
+            "deferred"
+          ],
+          "title": "Status"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Context Window"
+        },
+        "list_prices": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PendingListPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_prices": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PendingListPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_discount_percent": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Effective Discount Percent"
+        },
+        "entry_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Entry Digest"
+        },
+        "catalog_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Catalog Snapshot Id"
+        },
+        "fetched_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fetched At"
+        },
+        "source_updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Updated At"
+        },
+        "fresh": {
+          "type": "boolean",
+          "title": "Fresh",
+          "default": false
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Warnings"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/schemas/PriceMatch"
+          },
+          "type": "array",
+          "title": "Candidates"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "title": "PricePreviewResponse"
+    },
+    "PriceSource": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "models_dev",
+        "azure_retail",
+        "anthropic"
+      ],
+      "title": "PriceSource",
+      "description": "Where a model's charged rates come from.\n\n`MANUAL` is what every model did before this existed: a person typed four numbers and they\nstay until that person changes them. The other two derive the rates as list price times\ndiscount and keep them current, which only works because the discount is stored separately\n-- a published list price is a fact, the discount is a contract term."
+    },
+    "PriceSyncDetail": {
+      "properties": {
+        "model_id": {
+          "type": "string",
+          "format": "uuid",
+          "title": "Model Id"
+        },
+        "model_key": {
+          "type": "string",
+          "title": "Model Key"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceSyncStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Message"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Outcome"
+        },
+        "price_source": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PriceSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Price Reference"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "model_id",
+        "model_key"
+      ],
+      "title": "PriceSyncDetail"
+    },
+    "PriceSyncRequest": {
+      "properties": {
+        "model_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Ids"
+        },
+        "refresh": {
+          "type": "boolean",
+          "title": "Refresh",
+          "default": true
+        },
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry Run",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "PriceSyncRequest",
+      "description": "Which models to sync. Omitting the list syncs everything that follows a list price."
+    },
+    "PriceSyncResponse": {
+      "properties": {
+        "considered": {
+          "type": "integer",
+          "title": "Considered"
+        },
+        "updated": {
+          "type": "integer",
+          "title": "Updated"
+        },
+        "unmapped": {
+          "type": "integer",
+          "title": "Unmapped"
+        },
+        "review_needed": {
+          "type": "integer",
+          "title": "Review Needed"
+        },
+        "stale": {
+          "type": "integer",
+          "title": "Stale"
+        },
+        "superseded": {
+          "type": "integer",
+          "title": "Superseded",
+          "default": 0
+        },
+        "total": {
+          "type": "integer",
+          "title": "Total",
+          "default": 0
+        },
+        "unchanged": {
+          "type": "integer",
+          "title": "Unchanged",
+          "default": 0
+        },
+        "skipped_manual": {
+          "type": "integer",
+          "title": "Skipped Manual",
+          "default": 0
+        },
+        "ambiguous": {
+          "type": "integer",
+          "title": "Ambiguous",
+          "default": 0
+        },
+        "unsupported": {
+          "type": "integer",
+          "title": "Unsupported",
+          "default": 0
+        },
+        "deferred": {
+          "type": "integer",
+          "title": "Deferred",
+          "default": 0
+        },
+        "partial_fields": {
+          "type": "integer",
+          "title": "Partial Fields",
+          "default": 0
+        },
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry Run",
+          "default": false
+        },
+        "details": {
+          "items": {
+            "$ref": "#/schemas/PriceSyncDetail"
+          },
+          "type": "array",
+          "title": "Details"
+        },
+        "registry": {
+          "$ref": "../../openapi.yaml#/components/schemas/RegistryResponse"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "considered",
+        "updated",
+        "unmapped",
+        "review_needed",
+        "stale",
+        "details",
+        "registry"
+      ],
+      "title": "PriceSyncResponse",
+      "description": "What a sync run did, reported per outcome rather than as a single count.\n\n`updated` counts rows whose charged rates changed. The rest is why the others did not, which\nis the part worth reading: a sync that silently prices nothing looks identical to one that\nprices everything unless the skips are named. The refreshed registry rides along so the\ndashboard can show the new rates without a second round trip."
+    },
+    "PriceSyncStatus": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "unmapped",
+        "stale",
+        "review_needed",
+        "superseded",
+        "ambiguous",
+        "unsupported",
+        "deferred"
+      ],
+      "title": "PriceSyncStatus"
+    }
+  }
+}

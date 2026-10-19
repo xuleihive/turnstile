@@ -15,7 +15,7 @@ unambiguous, small-enough change writes.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -24,8 +24,7 @@ from turnstile_core.domain.runtime_models import ManagedModel, PriceSource, Pric
 from turnstile_core.pricing.catalog import CatalogEntry, CompositeCatalog, parse_context_tier
 from turnstile_core.pricing.context import resolve_context_prices
 
-# A published rate rarely moves more than a few percent. Twenty is generous enough that ordinary
-# repricing passes unattended, and tight enough that a parser reading the wrong column stops.
+# A published rate rarely moves more than a few percent. Larger moves need review.
 DEFAULT_REVIEW_THRESHOLD = 0.20
 
 # Every bucket the registry charges for, paired with the accepted baseline it is measured against.
@@ -61,13 +60,20 @@ class ModelPriceUpdate:
     context_price_tiers: list[dict[str, Any]] | None = None
     pending_context_price_tiers: list[dict[str, Any]] | None = None
     expected_context_price_tiers: list[dict[str, Any]] | None = None
+    expected_list_prices: dict[str, float | None] | None = None
     # What the model's pricing looked like when this was planned. The write refuses if any of it
     # has moved since -- otherwise a sync that started before someone switched the model back to
     # manual finishes afterwards and puts its rate on a row that no longer follows a list.
     expected_source: str | None = None
     expected_reference: str | None = None
     expected_discount_percent: float | None = None
-    expected_list_prices: dict[str, float | None] | None = None
+    expected_configured: bool = True
+    expected_updated_at: Any = None
+    expected_price_updated_at: Any = None
+    price_source: str | None = None
+    price_reference: str | None = None
+    match_metadata: dict[str, Any] | None = None
+    source_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,7 @@ def plan_price_sync(
     *,
     only: Sequence[UUID] | None = None,
     review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
+    resolved_entries: Mapping[UUID, CatalogEntry] | None = None,
 ) -> SyncSummary:
     selected = set(only) if only is not None else None
     updates: list[ModelPriceUpdate] = []
@@ -107,7 +114,10 @@ def plan_price_sync(
         # feature ship without touching anyone's existing rates.
         if model.price_source is PriceSource.MANUAL:
             continue
-        updates.append(_plan_one(model, catalog, review_threshold))
+        updates.append(_plan_one(
+            model, catalog, review_threshold,
+            entry=resolved_entries.get(model.id) if resolved_entries else None,
+        ))
     return SyncSummary(updates=tuple(updates))
 
 
@@ -119,22 +129,34 @@ def _planned_against(model: ManagedModel, **fields: Any) -> ModelPriceUpdate:
         expected_source=str(model.price_source),
         expected_reference=model.price_reference,
         expected_discount_percent=model.effective_discount_percent,
-        expected_list_prices={column: getattr(model, column) for _, column, _ in _BUCKETS},
+        expected_configured=model.price_source_configured,
+        expected_updated_at=model.updated_at,
+        expected_price_updated_at=model.price_config_updated_at,
         expected_context_price_tiers=[
             tier.model_dump(mode="json") for tier in model.context_price_tiers
         ],
+        expected_list_prices={column: getattr(model, column) for _, column, _ in _BUCKETS},
+        price_source=model.price_source.value,
+        price_reference=model.price_reference,
         **fields,
     )
 
 
 def _plan_one(
-    model: ManagedModel, catalog: CompositeCatalog, review_threshold: float
+    model: ManagedModel, catalog: CompositeCatalog, review_threshold: float,
+    *, entry: CatalogEntry | None = None,
 ) -> ModelPriceUpdate:
     if model.context_price_tiers:
         return _plan_context(model, catalog, review_threshold)
     reference = model.price_reference or ""
+    if reference and reference.partition(":")[0] != model.price_source.value:
+        return _planned_against(
+            model, status=PriceSyncStatus.UNSUPPORTED,
+            message="价格引用与所选来源不一致，保留已有单价",
+        )
     try:
-        entry = catalog.lookup(reference)
+        if entry is None:
+            entry = catalog.lookup(reference)
     except Exception as error:  # noqa: BLE001 - any source failure means "keep what we have"
         return _planned_against(
             model,
@@ -146,6 +168,22 @@ def _plan_one(
             model,
             status=PriceSyncStatus.UNMAPPED,
             message=f"价目表中找不到 {reference}，保留现有单价",
+        )
+    if entry.unsupported:
+        return _planned_against(
+            model, status=PriceSyncStatus.UNSUPPORTED, message=entry.unsupported,
+        )
+    operation = "image_generation" if "image_generation" in model.capabilities else "chat"
+    if entry.operation != operation:
+        return _planned_against(
+            model, status=PriceSyncStatus.UNSUPPORTED,
+            message="目录价格用途与模型不一致，保留已有单价",
+        )
+    if operation == "image_generation" and entry.cached_per_million is None \
+            and model.cached_cost_per_million is None:
+        return _planned_against(
+            model, status=PriceSyncStatus.UNMAPPED,
+            message="目录缺少缓存文字单价，请使用手动定价",
         )
     if not entry.priced:
         return _planned_against(
@@ -171,13 +209,14 @@ def _plan_one(
     moved = _largest_drift(model, entry)
     if moved is not None and moved[1] > review_threshold:
         bucket, drift = moved
+        published = "公开" if model.price_source is PriceSource.MODELS_DEV else "官方"
         return _planned_against(
             model,
             status=PriceSyncStatus.REVIEW_NEEDED,
             message=(
-                f"官方{bucket}较上次接受的价格变动 {drift:.0%}，"
+                f"{published}{bucket}较上次接受的价格变动 {drift:.0%}，"
                 f"超过 {review_threshold:.0%} 复核阈值，未自动写入"
-            ),
+            ) if drift != float("inf") else "价格在免费与收费之间变化，待复核，未自动写入",
             pending_list_price={
                 "input": entry.input_per_million,
                 "output": entry.output_per_million,
@@ -194,8 +233,10 @@ def _plan_one(
         message=None,
         input_cost_per_million=charged.input_per_million,
         output_cost_per_million=charged.output_per_million,
-        cached_cost_per_million=charged.cached_per_million,
-        cache_write_cost_per_million=charged.cache_write_per_million,
+        cached_cost_per_million=charged.cached_per_million
+        if charged.cached_per_million is not None else model.cached_cost_per_million,
+        cache_write_cost_per_million=charged.cache_write_per_million
+        if charged.cache_write_per_million is not None else model.cache_write_cost_per_million,
         list_input_cost_per_million=entry.input_per_million,
         list_output_cost_per_million=entry.output_per_million,
         list_cached_cost_per_million=entry.cached_per_million,
@@ -266,13 +307,19 @@ def _largest_drift(model: ManagedModel, entry: CatalogEntry) -> tuple[str, float
     for field, baseline_field, label in _BUCKETS:
         previous = getattr(model, baseline_field)
         current = getattr(entry, field)
+        if current is None and model.price_source is PriceSource.MODELS_DEV:
+            continue
+        if previous is None and not accepted and model.price_source is PriceSource.MODELS_DEV:
+            actual_field = baseline_field.removeprefix("list_")
+            previous = getattr(model, actual_field)
+            current = getattr(entry.discounted(model.effective_discount_percent), field)
         if previous == current:
             continue
         if previous is None:
             if not accepted:
                 continue
             drift = float("inf")
-        elif current is None or previous == 0:
+        elif current is None or previous == 0 or current == 0:
             drift = float("inf")
         else:
             drift = abs(current - previous) / previous

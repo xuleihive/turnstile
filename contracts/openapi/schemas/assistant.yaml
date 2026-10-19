@@ -208,23 +208,19 @@ schemas:
   AssistantSettingsWrite:
     properties:
       model_id:
-        type:
-        - string
-        - 'null'
-        format: uuid
-        description: 'The model the assistant calls. Null means automatic selection, which is the
-
-          registry''s own order: the default model first, then alphabetically.
-
-          '
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Model Id
       auto_title:
         type: boolean
+        title: Auto Title
         default: true
-        description: 'Whether a new conversation is named by the model. One small extra call per
-
-          thread; switching it off leaves the first question as the title.
-
-          '
+      api_format:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        - type: 'null'
     additionalProperties: false
     type: object
     title: AssistantSettingsWrite
@@ -241,6 +237,10 @@ schemas:
         type: boolean
         title: Auto Title
         default: true
+      api_format:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        - type: 'null'
       effective_model_id:
         anyOf:
         - type: string
@@ -256,6 +256,24 @@ schemas:
         type: boolean
         title: Model Available
         default: true
+      api_available:
+        type: boolean
+        title: Api Available
+        default: true
+      effective_api_format:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        - type: 'null'
+      effective_api_path:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Effective Api Path
+      available_api_formats:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        type: array
+        title: Available Api Formats
       available_models:
         items:
           $ref: ../../openapi.yaml#/components/schemas/AssistantModelChoice
@@ -296,69 +314,36 @@ schemas:
       tool protocol; reimplementing it client-side would let the picker offer a model the
 
       server then rejects, and the two copies would drift on the next adapter added.'
-    allOf:
-    - $ref: ../../openapi.yaml#/components/schemas/AssistantSettingsWrite
-    - type: object
-      additionalProperties: false
-      properties:
-        effective_model_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
-          description: The model that will actually be called. Null if none qualifies.
-        effective_model_name:
-          type:
-          - string
-          - 'null'
-        model_available:
-          type: boolean
-          description: 'False when a model is pinned but no longer qualifies, so the assistant has
-
-            fallen back to automatic selection. True whenever nothing is pinned.
-
-            '
-        available_models:
-          type: array
-          description: 'The models the assistant may be pointed at. Served rather than derived by
-
-            the client because eligibility is a server rule that includes the
-
-            runtime''s tool protocol; a second copy in the browser would offer models
-
-            the server then rejects.
-
-            '
-          items:
-            $ref: ../../openapi.yaml#/components/schemas/AssistantModelChoice
-        updated_at:
-          type:
-          - string
-          - 'null'
-          format: date-time
-        updated_by:
-          type:
-          - string
-          - 'null'
   AssistantModelChoice:
     properties:
       id:
         type: string
         format: uuid
+        title: Id
       display_name:
         type: string
+        title: Display Name
       model_key:
         type: string
+        title: Model Key
       runtime_name:
         type: string
+        title: Runtime Name
       input_cost_per_million:
-        type:
-        - number
-        - 'null'
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Input Cost Per Million
       output_cost_per_million:
-        type:
-        - number
-        - 'null'
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Output Cost Per Million
+      api_formats:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        type: array
+        title: Api Formats
     additionalProperties: false
     type: object
     required:

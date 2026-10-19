@@ -2169,6 +2169,36 @@ schemas:
     description: Catalog pricing is resolved by the server before publication. Submitted rates are used
       only for manual pricing.
     properties:
+      price_source:
+        type: string
+        enum:
+        - manual
+        - azure_retail
+        - anthropic
+        default: manual
+      price_reference:
+        type:
+        - string
+        - 'null'
+        maxLength: 1000
+        description: Selected flat-rate catalog entry; use context_price_references instead for tiered
+          prices.
+      price_discount_percent:
+        type:
+        - number
+        - 'null'
+        exclusiveMinimum: 0
+        maximum: 100
+        description: Percent of list price charged; 90 means a 10 percent discount. Null inherits the
+          connection discount, or list price when none is set.
+      price_entry_digest:
+        type:
+        - string
+        - 'null'
+        maxLength: 64
+      allow_unpriced:
+        type: boolean
+        default: false
       operation:
         type: string
         enum:
@@ -2223,20 +2253,6 @@ schemas:
         - number
         - 'null'
         minimum: 0
-      price_source:
-        type: string
-        enum:
-        - manual
-        - azure_retail
-        - anthropic
-        default: manual
-      price_reference:
-        type:
-        - string
-        - 'null'
-        maxLength: 1000
-        description: Selected flat-rate catalog entry; use context_price_references instead for tiered
-          prices.
       context_price_references:
         type: array
         default: []
@@ -2252,14 +2268,6 @@ schemas:
         oneOf:
         - $ref: ../../openapi.yaml#/components/schemas/ContextPriceRule
         - type: 'null'
-      price_discount_percent:
-        type:
-        - number
-        - 'null'
-        exclusiveMinimum: 0
-        maximum: 100
-        description: Percent of list price charged; 90 means a 10 percent discount. Null inherits the
-          connection discount, or list price when none is set.
     allOf:
     - if:
         required:
@@ -5365,3 +5373,210 @@ schemas:
     - routes
     - members
     title: RouteSnapshot
+  InvocationApiFormat:
+    type: string
+    enum:
+    - openai_chat
+    - openai_responses
+    - anthropic_messages
+    title: InvocationApiFormat
+  PriceMatch:
+    properties:
+      reference:
+        type: string
+        title: Reference
+      provider_id:
+        type: string
+        title: Provider Id
+      model_id:
+        type: string
+        title: Model Id
+      name:
+        type: string
+        title: Name
+      canonical_model_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Canonical Model Id
+      method:
+        type: string
+        enum:
+        - exact
+        - ai
+        - manual
+        - stored
+        title: Method
+        default: exact
+      price_basis:
+        type: string
+        enum:
+        - deployment
+        - origin_reference
+        title: Price Basis
+        default: deployment
+      reason:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Reason
+      default_model_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Default Model Id
+    additionalProperties: false
+    type: object
+    required:
+    - reference
+    - provider_id
+    - model_id
+    - name
+    title: PriceMatch
+  PricePreviewRequest:
+    properties:
+      model_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Model Id
+      runtime_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+        title: Runtime Id
+      price_source:
+        $ref: ../../openapi.yaml#/components/schemas/PriceSource
+        default: models_dev
+      deployment_name:
+        anyOf:
+        - type: string
+          maxLength: 500
+        - type: 'null'
+        title: Deployment Name
+      upstream_model_id:
+        anyOf:
+        - type: string
+          maxLength: 500
+        - type: 'null'
+        title: Upstream Model Id
+      display_name:
+        anyOf:
+        - type: string
+          maxLength: 255
+        - type: 'null'
+        title: Display Name
+      model_key:
+        anyOf:
+        - type: string
+          maxLength: 255
+        - type: 'null'
+        title: Model Key
+      operation:
+        type: string
+        enum:
+        - chat
+        - image_generation
+        title: Operation
+        default: chat
+      price_reference:
+        anyOf:
+        - type: string
+          maxLength: 1500
+        - type: 'null'
+        title: Price Reference
+      price_discount_percent:
+        anyOf:
+        - type: number
+          maximum: 100.0
+          exclusiveMinimum: 0.0
+        - type: 'null'
+        title: Price Discount Percent
+      refresh:
+        type: boolean
+        title: Refresh
+        default: false
+      rematch:
+        type: boolean
+        title: Rematch
+        default: false
+    additionalProperties: false
+    type: object
+    title: PricePreviewRequest
+  PricePreviewResponse:
+    properties:
+      status:
+        type: string
+        enum:
+        - matched
+        - unmapped
+        - ambiguous
+        - stale
+        - unsupported
+        - deferred
+        title: Status
+      match:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceMatch
+        - type: 'null'
+      context_window:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Context Window
+      list_prices:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PendingListPrice
+        - type: 'null'
+      effective_prices:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PendingListPrice
+        - type: 'null'
+      effective_discount_percent:
+        anyOf:
+        - type: number
+        - type: 'null'
+        title: Effective Discount Percent
+      entry_digest:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Entry Digest
+      catalog_snapshot_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Catalog Snapshot Id
+      fetched_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+        title: Fetched At
+      source_updated_at:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Source Updated At
+      fresh:
+        type: boolean
+        title: Fresh
+        default: false
+      warnings:
+        items:
+          type: string
+        type: array
+        title: Warnings
+      candidates:
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PriceMatch
+        type: array
+        title: Candidates
+    additionalProperties: false
+    type: object
+    required:
+    - status
+    title: PricePreviewResponse

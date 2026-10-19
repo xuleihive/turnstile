@@ -788,6 +788,7 @@ export type ManagedModel = {
   created_at: string
   updated_at: string
   price_source: PriceSource
+  price_source_configured?: boolean
   price_reference: string | null
   price_discount_percent: number | null
   effective_discount_percent: number | null
@@ -976,6 +977,8 @@ export type GatewayPublicationCreate = {
     price_source?: PriceSource
     price_reference?: string | null
     price_discount_percent?: number | null
+    price_entry_digest?: string | null
+    allow_unpriced?: boolean
     context_price_references?: string[]
     context_price_rule?: ContextPriceRule
   }
@@ -1721,9 +1724,43 @@ export type ImageInvocationResponse = Pick<ModelInvocationResponse,
   data: Array<{ b64_json: string; media_type: "image/png" | "image/jpeg" | "image/webp" }>
 }
 
-export type PriceSource = "manual" | "azure_retail" | "anthropic"
+export type PriceSource = "models_dev" | "manual" | "azure_retail" | "anthropic"
 
-export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded"
+export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded" | "ambiguous" | "unsupported" | "deferred"
+
+export type PriceMatch = {
+  reference: string
+  provider_id: string
+  model_id: string
+  name: string
+  method: "exact" | "ai" | "manual" | "stored"
+  price_basis: "deployment" | "origin_reference"
+}
+
+export type PricePreviewRequest = {
+  model_id?: string
+  runtime_id?: string
+  price_source?: PriceSource
+  deployment_name?: string
+  upstream_model_id?: string
+  display_name?: string
+  model_key?: string
+  operation?: "chat" | "image_generation" | "decision"
+  price_reference?: string | null
+  price_discount_percent?: number | null
+  refresh?: boolean
+  rematch?: boolean
+}
+
+export type PricePreviewResponse = {
+  status: "matched" | "unmapped" | "ambiguous" | "stale" | "unsupported" | "deferred"
+  match: PriceMatch | null
+  context_window: number | null
+  effective_prices: PendingListPrice | null
+  entry_digest: string | null
+  warnings: string[]
+  candidates: PriceMatch[]
+}
 
 export type PendingListPrice = {
   input: number | null
@@ -1818,11 +1855,20 @@ export type PriceCatalogOptionsResponse = {
 export type PriceSyncDetail = {
   model_id: string
   model_key: string
-  status: PriceSyncStatus
+  status: PriceSyncStatus | null
+  outcome: string | null
   message: string | null
 }
 
 export type PriceSyncResponse = {
+  total: number
+  unchanged: number
+  skipped_manual: number
+  ambiguous: number
+  unsupported: number
+  deferred: number
+  partial_fields: number
+  dry_run: boolean
   considered: number
   updated: number
   unmapped: number

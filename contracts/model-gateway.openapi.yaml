@@ -272,28 +272,33 @@ components:
           - user
           - assistant
           - tool
+          title: Role
         content:
-          type:
-          - string
-          - 'null'
-          maxLength: 200000
+          anyOf:
+          - type: string
+            maxLength: 200000
+          - type: 'null'
+          title: Content
         tool_calls:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/ToolCall'
-          maxItems: 20
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ToolCall'
+            type: array
+            maxItems: 20
+          - type: 'null'
+          title: Tool Calls
         tool_call_id:
-          type:
-          - string
-          - 'null'
-          maxLength: 255
-          minLength: 1
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Tool Call Id
       additionalProperties: false
       type: object
       required:
       - role
+      title: ChatMessage
       description: 'One turn in an OpenAI-shaped conversation.
 
 
@@ -307,99 +312,78 @@ components:
         metadata:
           $ref: '#/components/schemas/InvocationMetadata'
         runtime_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Id
         model_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Model Id
         gateway_profile_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Gateway Profile Id
         gateway_deployment_id:
-          type:
-          - string
-          - 'null'
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Gateway Deployment Id
         messages:
           items:
             $ref: '#/components/schemas/ChatMessage'
           type: array
           maxItems: 100
           minItems: 1
+          title: Messages
         tools:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/ToolDefinition'
-          maxItems: 32
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ToolDefinition'
+            type: array
+            maxItems: 32
+          - type: 'null'
+          title: Tools
         temperature:
-          type:
-          - number
-          - 'null'
-          maximum: 2
-          minimum: 0
+          anyOf:
+          - type: number
+            maximum: 2.0
+            minimum: 0.0
+          - type: 'null'
+          title: Temperature
         max_output_tokens:
-          type:
-          - integer
-          - 'null'
-          maximum: 1000000
-          minimum: 1
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Output Tokens
         response_format:
           anyOf:
           - type: string
             const: json_object
           - type: 'null'
+          title: Response Format
         stream:
           type: boolean
+          title: Stream
           default: false
-          description: Provider streaming is consumed and returned as one normalized response.
+        api_format:
+          anyOf:
+          - $ref: '#/components/schemas/InvocationApiFormat'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
       - metadata
       - messages
-      allOf:
-      - if:
-          required:
-          - gateway_profile_id
-          properties:
-            gateway_profile_id:
-              type: string
-        then:
-          required:
-          - model_id
-          - gateway_deployment_id
-          properties:
-            model_id:
-              type: string
-              format: uuid
-            gateway_deployment_id:
-              type: string
-              format: uuid
-      - if:
-          required:
-          - gateway_deployment_id
-          properties:
-            gateway_deployment_id:
-              type: string
-        then:
-          required:
-          - model_id
-          - gateway_profile_id
-          properties:
-            model_id:
-              type: string
-              format: uuid
-            gateway_profile_id:
-              type: string
-              format: uuid
+      title: ModelInvocationRequest
     InvocationUsage:
       properties:
         input_tokens:
@@ -428,69 +412,81 @@ components:
       properties:
         request_id:
           type: string
+          title: Request Id
         correlation_id:
-          type:
-          - string
-          - 'null'
-          description: Actual Gateway correlation ID, never a fallback caller or upstream ID.
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
         upstream_request_id:
-          type:
-          - string
-          - 'null'
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Request Id
         content:
           type: string
+          title: Content
         tool_calls:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/ToolCall'
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ToolCall'
+            type: array
+          - type: 'null'
+          title: Tool Calls
         provider:
           type: string
+          title: Provider
         runtime:
           type: string
+          title: Runtime
         model:
           type: string
+          title: Model
         gateway:
           type: string
+          title: Gateway
         gateway_profile_id:
           anyOf:
           - type: string
             format: uuid
           - type: 'null'
+          title: Gateway Profile Id
         gateway_deployment_id:
           anyOf:
           - type: string
             format: uuid
           - type: 'null'
+          title: Gateway Deployment Id
         native_gateway_id:
           anyOf:
           - type: string
           - type: 'null'
+          title: Native Gateway Id
         latency_ms:
           type: integer
           minimum: 0.0
+          title: Latency Ms
         usage:
           anyOf:
           - $ref: '#/components/schemas/InvocationUsage'
           - type: 'null'
-          oneOf:
-          - $ref: '#/components/schemas/InvocationUsage'
-          - type: 'null'
         estimated_cost:
-          type:
-          - number
-          - 'null'
-          minimum: 0
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Estimated Cost
         selected_model_id:
           anyOf:
           - type: string
             format: uuid
           - type: 'null'
+          title: Selected Model Id
         selected_model_name:
           anyOf:
           - type: string
           - type: 'null'
+          title: Selected Model Name
       additionalProperties: false
       type: object
       required:
@@ -502,6 +498,14 @@ components:
       - gateway
       - latency_ms
       - usage
+      title: ModelInvocationResponse
+    InvocationApiFormat:
+      type: string
+      enum:
+      - openai_chat
+      - openai_responses
+      - anthropic_messages
+      title: InvocationApiFormat
 x-gateway-adapters:
   internal-schema: ModelInvocationRequest
   implementations:

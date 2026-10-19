@@ -1,5 +1,9 @@
 import contextRules from "../../../../turnstile_core/pricing/context-rules.json" with { type: "json" }
-import type { ContextPriceRule, ManagedModel, PriceCatalogContextTier, PriceCatalogModel, PriceCatalogOption, PriceCatalogOptionsResponse, PriceSource } from "../../data-sources/apim/types"
+import type { ContextPriceRule, ManagedModel, PriceCatalogContextTier, PriceCatalogModel, PriceCatalogOption, PriceCatalogOptionsResponse, PriceSource, PriceSyncResponse } from "../../data-sources/apim/types"
+
+export function pricingSyncSummary(result: PriceSyncResponse): string {
+  return `全部 ${result.total} 个模型 · 已更新 ${result.updated} · 无变化 ${result.unchanged} · 手动跳过 ${result.skipped_manual}`
+}
 
 export function resolveContextPriceRule(
   model: PriceCatalogModel,
@@ -206,6 +210,10 @@ export function pairContextPriceOptions(
 }
 
 export type ModelPriceDraft = {
+  contextWindow?: string
+  contextOrigin?: "user" | "catalog"
+  priceEntryDigest: string
+  allowUnpriced: boolean
   inputPrice: string
   outputPrice: string
   cacheReadPrice: string
@@ -232,6 +240,7 @@ export type ModelPriceDraft = {
 export type ModelEditDraft = ModelPriceDraft & {
   displayName: string
   contextWindow: string
+  contextOrigin?: "user" | "catalog"
   allowedRoles: string[]
   isDefault: boolean
 }
@@ -250,7 +259,8 @@ export type ModelEditError =
 export function createModelPriceDraft(contextPricingSupported = false, contextPriceRulesSupported = false): ModelPriceDraft {
   return {
     inputPrice: "", outputPrice: "", cacheReadPrice: "", cacheWritePrice: "",
-    priceSource: "manual", priceReference: "", discountPercent: "",
+    priceSource: "models_dev", priceReference: "", discountPercent: "",
+    priceEntryDigest: "", allowUnpriced: false,
     contextPricingPreview: false,
     contextPricingSupported, contextPriceReferences: [], contextPriceTiers: [], contextPriceRefresh: false,
     contextPriceRulesSupported, contextRuleMode: "catalog", contextThreshold: "", contextRuleNote: "", contextRuleUrl: "",
@@ -268,7 +278,8 @@ export function createModelEditDraft(model: ManagedModel, contextPricingSupporte
     cacheWritePrice: model.cache_write_cost_per_million?.toString() ?? "",
     allowedRoles: [...model.allowed_roles],
     isDefault: model.is_default,
-    priceSource: model.price_source ?? "manual",
+    priceSource: model.price_source_configured === false ? "models_dev" : model.price_source ?? "models_dev",
+    priceEntryDigest: "", allowUnpriced: false,
     priceReference: model.price_reference ?? "",
     discountPercent: model.price_discount_percent?.toString() ?? "",
     contextPricingPreview: !!restored,
@@ -392,6 +403,7 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
  */
 export function modelKeyFromReference(reference: string): string | null {
   const parts = reference.split(":")
+  if (parts[0] === "models_dev" && parts.length === 3) return reference
   return parts.length === 5 ? parts.slice(0, 3).join(":") : null
 }
 
@@ -416,7 +428,7 @@ export function resolveDiscount(
 
 export function modelEditHasChanges(initial: ModelEditDraft, draft: ModelEditDraft): boolean {
   const comparable = (value: ModelEditDraft) => ({
-    ...value,
+    ...value, contextOrigin: undefined,
     contextPriceTiers: undefined, contextPricingSupported: undefined, contextPriceRulesSupported: undefined,
     allowedRoles: [...value.allowedRoles].sort(),
   })
@@ -462,7 +474,8 @@ export function validateModelPricing(draft: ModelPriceDraft): Exclude<ModelEditE
       if ((range.max_input_tokens === null) !== (index === tiers.length - 1)) return "context_pricing_incomplete"
       minimum = range.max_input_tokens === null ? minimum : range.max_input_tokens + 1
     }
-  } else if (draft.priceSource !== "manual" && !draft.priceReference.trim().startsWith(`${draft.priceSource}:`)) return "price_reference"
+  } else if (draft.priceSource !== "manual" && !(draft.priceSource === "models_dev" && draft.allowUnpriced)
+    && !draft.priceReference.trim().startsWith(`${draft.priceSource}:`)) return "price_reference"
   const discount = draft.discountPercent.trim()
   if (discount && (!Number.isFinite(Number(discount)) || Number(discount) <= 0 || Number(discount) > 100)) {
     return "discount"
@@ -494,8 +507,12 @@ export function modelEditPayload(model: ManagedModel, draft: ModelEditDraft) {
     allowed_roles: [...draft.allowedRoles],
     is_default: draft.isDefault,
     price_source: draft.priceSource,
-    price_reference: draft.priceSource === "manual" || draft.contextPricingPreview ? null : draft.priceReference.trim(),
+    price_reference: draft.priceSource === "manual" || draft.contextPricingPreview ? null : draft.priceReference.trim() || null,
     price_discount_percent: optionalNumber(draft.discountPercent),
+    ...(draft.priceSource === "models_dev" ? {
+      price_entry_digest: draft.priceEntryDigest || null,
+      allow_unpriced: draft.allowUnpriced,
+    } : {}),
     ...(draft.contextPricingPreview ? {
       context_price_references: draft.contextPriceReferences,
       context_price_refresh: draft.contextPriceRefresh === true,

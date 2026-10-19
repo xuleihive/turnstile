@@ -52,6 +52,9 @@ import type {
   ImageInvocationRequest,
   ImageInvocationResponse,
   ModelRegistry,
+  PriceCatalogModel,
+  PricePreviewRequest,
+  PricePreviewResponse,
   MultiTargetPublicationAccepted,
   MultiTargetPublicationCreate,
   MultiTargetRollout,
@@ -536,6 +539,11 @@ export const dataSource = {
     `/api/v1/model-management/model-availability/operations/${encodeURIComponent(operationId)}/retry`,
     { expected_revision: revision },
   ),
+  // Omitting the ids syncs everything that follows a list price. Passing them is how the
+  // price table's row selection turns into "sync just these".
+  pricePreview: (value: PricePreviewRequest) => writeJson<PricePreviewResponse>(
+    "/api/v1/model-management/price-preview", value,
+  ),
   deleteModel: (id: string) => request<GatewayPublicationAccepted>(
     `/api/v1/model-management/models/${encodeURIComponent(id)}`,
     { method: "DELETE" },
@@ -807,8 +815,8 @@ export const dataSource = {
   executeTraffic: (value: TrafficGenerationRequest) => writeJson<TrafficGenerationResult>(
     "/api/v1/traffic/execute", value,
   ),
-  priceCatalogModels: (query: string) => request<PriceCatalogModelsResponse>(
-    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}`,
+  priceCatalogModels: (query: string, source: PriceCatalogModel["source"]) => request<PriceCatalogModelsResponse>(
+    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}`,
   ),
   priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
     `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,

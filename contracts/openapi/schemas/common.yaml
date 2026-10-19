@@ -676,9 +676,9 @@ schemas:
           discriminator:
             propertyName: type
             mapping:
-                choice: ../../openapi.yaml#/components/schemas/ChoiceQuestion
-                noul: ../../openapi.yaml#/components/schemas/NoulQuestion
-                score: ../../openapi.yaml#/components/schemas/ScoreQuestion
+              choice: ../../openapi.yaml#/components/schemas/ChoiceQuestion
+              noul: ../../openapi.yaml#/components/schemas/NoulQuestion
+              score: ../../openapi.yaml#/components/schemas/ScoreQuestion
         type: object
         minProperties: 1
         title: Questions
@@ -1979,13 +1979,23 @@ schemas:
           type: string
         type: array
         title: Allowed Roles
+      price_entry_digest:
+        anyOf:
+        - type: string
+          maxLength: 64
+        - type: 'null'
+        title: Price Entry Digest
+      allow_unpriced:
+        type: boolean
+        title: Allow Unpriced
+        default: false
       price_source:
         $ref: ../../openapi.yaml#/components/schemas/PriceSource
-        default: manual
+        default: models_dev
       price_reference:
         anyOf:
         - type: string
-          maxLength: 255
+          maxLength: 1500
           minLength: 1
         - type: 'null'
         title: Price Reference
@@ -2028,8 +2038,30 @@ schemas:
         title: Publication Id
       image_profile:
         anyOf:
-        - $ref: ../../openapi.yaml#/components/schemas/ImageGenerationProfile
+        - $ref: ../../openapi.yaml#/components/schemas/ImageGenerationProfile-Output
         - type: 'null'
+      price_source_configured:
+        type: boolean
+        title: Price Source Configured
+        default: true
+      price_config_updated_at:
+        anyOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+        title: Price Config Updated At
+      match_metadata:
+        anyOf:
+        - additionalProperties: true
+          type: object
+        - type: 'null'
+        title: Match Metadata
+      source_snapshot:
+        anyOf:
+        - additionalProperties: true
+          type: object
+        - type: 'null'
+        title: Source Snapshot
       created_at:
         type: string
         format: date-time
@@ -2199,13 +2231,23 @@ schemas:
           type: string
         type: array
         title: Allowed Roles
+      price_entry_digest:
+        anyOf:
+        - type: string
+          maxLength: 64
+        - type: 'null'
+        title: Price Entry Digest
+      allow_unpriced:
+        type: boolean
+        title: Allow Unpriced
+        default: false
       price_source:
         $ref: ../../openapi.yaml#/components/schemas/PriceSource
-        default: manual
+        default: models_dev
       price_reference:
         anyOf:
         - type: string
-          maxLength: 255
+          maxLength: 1500
           minLength: 1
         - type: 'null'
         title: Price Reference
@@ -2312,12 +2354,13 @@ schemas:
         - type: 'null'
         title: Cache Write Cost Per Million
       price_source:
-        $ref: ../../openapi.yaml#/components/schemas/PriceSource
-        default: manual
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+        - type: 'null'
       price_reference:
         anyOf:
         - type: string
-          maxLength: 1000
+          maxLength: 1500
         - type: 'null'
         title: Price Reference
       price_discount_percent:
@@ -2327,6 +2370,16 @@ schemas:
           exclusiveMinimum: 0.0
         - type: 'null'
         title: Price Discount Percent
+      price_entry_digest:
+        anyOf:
+        - type: string
+          maxLength: 64
+        - type: 'null'
+        title: Price Entry Digest
+      allow_unpriced:
+        type: boolean
+        title: Allow Unpriced
+        default: false
       context_price_references:
         items:
           type: string
@@ -2415,6 +2468,10 @@ schemas:
         type: boolean
         title: Stream
         default: false
+      api_format:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/InvocationApiFormat
+        - type: 'null'
     additionalProperties: false
     type: object
     required:
@@ -2807,6 +2864,11 @@ schemas:
         - type: number
         - type: 'null'
         title: Cache Write Per Million
+      context_window:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        title: Context Window
     additionalProperties: false
     type: object
     required:
@@ -2906,6 +2968,7 @@ schemas:
     type: string
     enum:
     - manual
+    - models_dev
     - azure_retail
     - anthropic
     title: PriceSource
@@ -2929,18 +2992,33 @@ schemas:
         type: string
         title: Model Key
       status:
-        $ref: ../../openapi.yaml#/components/schemas/PriceSyncStatus
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceSyncStatus
+        - type: 'null'
       message:
         anyOf:
         - type: string
         - type: 'null'
         title: Message
+      outcome:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Outcome
+      price_source:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+        - type: 'null'
+      price_reference:
+        anyOf:
+        - type: string
+        - type: 'null'
+        title: Price Reference
     additionalProperties: false
     type: object
     required:
     - model_id
     - model_key
-    - status
     title: PriceSyncDetail
   PriceSyncRequest:
     properties:
@@ -2952,6 +3030,14 @@ schemas:
           type: array
         - type: 'null'
         title: Model Ids
+      refresh:
+        type: boolean
+        title: Refresh
+        default: true
+      dry_run:
+        type: boolean
+        title: Dry Run
+        default: false
     additionalProperties: false
     type: object
     title: PriceSyncRequest
@@ -2977,6 +3063,38 @@ schemas:
         type: integer
         title: Superseded
         default: 0
+      total:
+        type: integer
+        title: Total
+        default: 0
+      unchanged:
+        type: integer
+        title: Unchanged
+        default: 0
+      skipped_manual:
+        type: integer
+        title: Skipped Manual
+        default: 0
+      ambiguous:
+        type: integer
+        title: Ambiguous
+        default: 0
+      unsupported:
+        type: integer
+        title: Unsupported
+        default: 0
+      deferred:
+        type: integer
+        title: Deferred
+        default: 0
+      partial_fields:
+        type: integer
+        title: Partial Fields
+        default: 0
+      dry_run:
+        type: boolean
+        title: Dry Run
+        default: false
       details:
         items:
           $ref: ../../openapi.yaml#/components/schemas/PriceSyncDetail
@@ -3013,6 +3131,9 @@ schemas:
     - stale
     - review_needed
     - superseded
+    - ambiguous
+    - unsupported
+    - deferred
     title: PriceSyncStatus
   Profile:
     properties:

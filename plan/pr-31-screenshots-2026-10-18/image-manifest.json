@@ -1,0 +1,30 @@
+{
+  "captured_on": "2026-10-18",
+  "timezone": "Asia/Shanghai",
+  "pull_request": 31,
+  "source": "live integrated test environment",
+  "deployment_record_source": "8e4b568",
+  "independent_pr_head_deployment_verified": false,
+  "redaction": "opaque raster masks and cropping, flattened RGB PNG, no metadata",
+  "review": [
+    "visual inspection",
+    "OCR scan"
+  ],
+  "new_model_invocations": 0,
+  "images": [
+    {
+      "file": "pricing-sources.png",
+      "sha256": "2119ebb6fe739844655d707114e915cb88e2318cd44833fd09a37590c341d825",
+      "bytes": 99346,
+      "width": 600,
+      "height": 688
+    },
+    {
+      "file": "pricing-manual.png",
+      "sha256": "bd4ada4b69218fbc166ace108f5884358f71eab0efc59952d5bdcd6df4d47ecd",
+      "bytes": 88790,
+      "width": 600,
+      "height": 688
+    }
+  ]
+}
