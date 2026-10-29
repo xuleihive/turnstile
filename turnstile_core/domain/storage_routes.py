@@ -533,6 +533,8 @@ class FixedProgramUpgrade(RouteModel):
         changed = {"program", "parent_policy_sha256", "model_additions_enabled",
                    "legacy_program_sha256", "operation_policies_sha256",
                    "predecessor_program_sha256"}
+        if current.pool_enabled and not previous.pool_enabled:
+            changed.add("pool_enabled")
         if current.decision_enabled and not previous.decision_enabled:
             if (current.operation_contracts != {
                 **previous.operation_contracts,

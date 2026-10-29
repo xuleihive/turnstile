@@ -3397,7 +3397,7 @@ def test_backend_pool_accepts_distinct_deployments_in_one_runtime() -> None:
 
 @pytest.mark.parametrize("invalid", [
     None, "disabled", "runtime", "provider", "image", "decision", "embeddings",
-    "family", "protocol", "unrelated-model", "version-lookalike",
+    "family", "protocol", "unrelated-model", "version-lookalike", "pool-capability",
 ])
 @pytest.mark.parametrize("independent", [False, True])
 @pytest.mark.parametrize("deployment_name", ["gpt-5-unit-chat", "unit-future-chat"])
@@ -3455,6 +3455,51 @@ def test_backend_pool_resolves_registered_deployments_in_one_runtime(
     write = GatewayBackendPoolMemberWrite(
         runtime_id=runtime["id"], model_id=replica["id"], priority=0, weight=1,
     )
+    if invalid == "pool-capability":
+        from turnstile_core.domain.storage_routes import (
+            FixedProgramInstallation,
+            ProgramIdentity,
+            RouteScope,
+        )
+
+        installed = FixedProgramInstallation(
+            program=ProgramIdentity(
+                scope=RouteScope(target_id=str(APIM_ID), api_id="unit-api", gateway_id="managed"),
+                api_revision="1", instance_id="managed", program_sha256="a" * 64,
+                trust_binding_sha256="b" * 64,
+            ),
+            target_identity_sha256="c" * 64,
+            storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
+            gateway_endpoint="https://unit.azure-api.net/turnstile",
+            publisher_subscription_id="unit", parent_policy_sha256="d" * 64,
+            operation_policies_sha256={"models": "e" * 64},
+            operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
+        )
+        original_model = repository.models[0]
+        repository.models = [{**original_model, **model}, {**original_model, **replica}]
+        fixed_effective = publication.model_copy(update={
+            "resource_manifest": {"fixed_route_program": installed.model_dump(mode="json")},
+        })
+        monkeypatch.setattr(repository, "effective_gateway_publication", lambda _: (
+            fixed_effective.model_dump(mode="python")
+        ))
+        request = GatewayBackendPoolWrite(members=[
+            GatewayBackendPoolMemberWrite(runtime_id=runtime["id"], model_id=model["id"],
+                                         priority=0, weight=1), write,
+        ], rate_limit=GatewayRateLimitResilience(
+            max_attempts_per_request=2, retry_interval_seconds=1, first_fast_retry=True,
+            circuit_breaker=GatewayRateLimitCircuitBreaker(
+                failure_count=1, interval_seconds=60, trip_duration_seconds=60,
+                accept_retry_after=True,
+            ),
+        ))
+        with patch.object(service, "_queue_route_reconcile") as queue:
+            with pytest.raises(ControlPlaneConflictError, match="Pool capability is not installed"):
+                service.model_backend_pool_candidates(model["id"])
+            with pytest.raises(ControlPlaneConflictError, match="Pool capability is not installed"):
+                service.configure_model_backend_pool(model["id"], request, "owner@example.com")
+            queue.assert_not_called()
+        return
     if invalid is not None:
         with pytest.raises(ControlPlaneConflictError):
             service._backend_pool_member(

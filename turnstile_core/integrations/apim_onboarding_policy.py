@@ -47,6 +47,7 @@ def render_onboarding_fixed_program(
         trusted_vault_origins=(f"https://{vault}.vault.azure.net",),
         publisher_subscription_id=request.probe_subscription_id,
         model_additions_enabled=True,
+        pool_enabled=True,
         native_gateway_scope=native_gateway_scope_for_capability(self_hosted_gateway),
         legacy_program_sha256=previous_program_sha256,
         models_path="/v1/models",

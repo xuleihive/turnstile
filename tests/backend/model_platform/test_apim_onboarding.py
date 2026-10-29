@@ -145,6 +145,29 @@ def test_onboarding_fixed_program_scope_matches_apim_tier(
         self_hosted_gateway=capability,
     )
     assert program.binding.native_gateway_scope is expected
+    assert program.binding.pool_enabled is True
+    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_onboarding_policy import (
+        _render_onboarding_parent,
+        onboarding_canonical_parent,
+    )
+    from turnstile_core.integrations.apim_storage_routes import (
+        compile_fixed_route_program,
+        upgrade_fixed_pool_program,
+    )
+
+    canonical = compose_availability_parent(onboarding_canonical_parent(
+        source.read_text(), plan.request.api_id,
+    ))
+    baseline = _render_onboarding_parent(plan.request, onboarding_configuration(), canonical)
+    previous = compile_fixed_route_program(
+        baseline, program.binding.model_copy(update={"pool_enabled": False}),
+        canonical_parent=canonical,
+    )
+    assert previous.binding.pool_enabled is False
+    upgraded = upgrade_fixed_pool_program(previous.parent_policy, previous.binding)
+    assert upgraded.parent_policy == program.parent_policy
+    assert upgraded.operation_policies == program.operation_policies
 
 
 @pytest.mark.parametrize("display_name", [None, "Team inference gateway"])

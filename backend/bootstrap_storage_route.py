@@ -44,6 +44,8 @@ from turnstile_core.integrations.apim_storage_routes import (
     fixed_operation_contracts,
     fixed_policy_digest,
     fixed_program_digest,
+    installed_route_binding,
+    upgrade_fixed_pool_program,
 )
 from turnstile_core.integrations.apim_target_client_factory import (
     apim_target_client_config_resolver,
@@ -534,6 +536,7 @@ def bootstrap(descriptor: FixedInstallationDescriptor, settings: Settings) -> di
 def prepare_budget_delegation_upgrade(
     installed: FixedProgramInstallation, publication_id: str, candidate: str,
     operations: dict[str, tuple[str, str, str]],
+    *, enable_pool: bool = False,
 ) -> tuple[FixedProgramUpgrade, str]:
     contracts = fixed_operation_contracts(
         installed.operation_contracts["models"][1],
@@ -573,6 +576,9 @@ def prepare_budget_delegation_upgrade(
             "parent_policy_sha256": fixed_policy_digest(candidate),
             "legacy_program_sha256": legacy,
             "predecessor_program_sha256": predecessors,
+            **({"pool_enabled": True, "operation_policies_sha256": {
+                name: fixed_policy_digest(operation[2]) for name, operation in operations.items()
+            }} if enable_pool else {}),
         }),
     )
     upgrade.require_previous(publication_id, installed)
@@ -610,18 +616,33 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
                 raise RuntimeError("Budget delegation current approved parent changed")
             parent = checkpoint["parent_policy"]
         candidate = bind_budget_delegation(parent, trust, gateway_profile_id=target_id)
-        if candidate == parent:
+        enable_pool = not installed.pool_enabled
+        if candidate == parent and not enable_pool:
             if recovering:
                 raise RuntimeError("Budget delegation current approved parent changed")
             return
         candidate = compact_fixed_policy(candidate)
-        if fixed_policy_digest(candidate) == installed.parent_policy_sha256:
+        if fixed_policy_digest(candidate) == installed.parent_policy_sha256 and not enable_pool:
             if recovering:
                 raise RuntimeError("Budget delegation current approved parent changed")
             return
         operations = management.route_program_operations(installed.program.api_revision)
+        operation_policies = None
+        operation_etags = None
+        if enable_pool:
+            pool_program = upgrade_fixed_pool_program(candidate, installed_route_binding(
+                installed, settings.ledger_table_endpoint, settings.ledger_table_name,
+                settings.apim_usage_observer_key_named_value,
+            ))
+            candidate = pool_program.parent_policy
+            operation_policies = dict(pool_program.operation_policies)
+            operations = {name: (method, template, operation_policies[name])
+                          for name, method, template in pool_program.operation_contracts}
+            operation_etags = {name: management._request(
+                "HEAD", path + "/operations/" + name + "/policies/policy",
+            ).headers.get("ETag") for name in operation_policies}
         upgrade, candidate = prepare_budget_delegation_upgrade(
-            installed, str(previous["id"]), candidate, operations,
+            installed, str(previous["id"]), candidate, operations, enable_pool=enable_pool,
         )
         pending = {
             "previous_publication_id": str(previous["id"]),
@@ -651,6 +672,7 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
             repository, apim_target_client_config_resolver(repository, settings),
             upgrade, document_digest(config), parent_policy=candidate,
             expected_parent_etag=response.headers.get("ETag"),
+            operation_policies=operation_policies, expected_operation_etags=operation_etags,
         )
 
 

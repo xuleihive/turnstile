@@ -2730,6 +2730,80 @@ def _without_fixed_route_parent(
     return root
 
 
+def installed_route_binding(
+    installation: FixedProgramInstallation, ledger_endpoint: str | None, ledger_table: str,
+    observer_key: str | None,
+) -> FixedRouteBinding:
+    values = installation.model_dump(mode="python", include={
+        "publisher_subscription_id", "supported_profiles", "image_limits", "oauth_enabled",
+        "pool_enabled", "decision_enabled", "model_additions_enabled", "native_gateway_scope",
+        "legacy_program_sha256", "predecessor_program_sha256", "supported_adapters",
+        "trusted_vault_origins", "retired_operations",
+    })
+    return FixedRouteBinding.model_validate({
+        **values, "scope": installation.program.scope,
+        "api_revision": installation.program.api_revision,
+        "table_endpoint": installation.storage_endpoint, "table_name": installation.storage_table,
+        "ledger_table_endpoint": ledger_endpoint, "ledger_table_name": ledger_table,
+        "trust_binding_sha256": installation.program.trust_binding_sha256,
+        "program_sha256": installation.program.program_sha256,
+        "observer_key_named_value": observer_key,
+        "models_path": installation.operation_contracts["models"][1],
+        "messages_path": installation.operation_contracts["anthropic-messages"][1],
+    })
+
+
+def upgrade_fixed_pool_program(source: str, binding: FixedRouteBinding) -> FixedRouteProgram:
+    root = parse_policy(source)
+    predecessors = root.findall(".//set-variable[@name='routePredecessorPrograms']")
+    if not binding.predecessor_program_sha256 and predecessors:
+        if len(predecessors) != 1 or predecessors[0].get("value") != "[]":
+            raise PolicyCompilationError("Pool upgrade predecessor history changed")
+        owner = next(node for node in root.iter() if predecessors[0] in list(node))
+        owner.remove(predecessors[0])
+        source = serialize_policy(root)
+    baseline = _without_fixed_route_parent(source, binding)
+    enabled = binding.model_copy(update={"pool_enabled": True})
+    root = parse_policy(source)
+    inbound = root.find("inbound")
+    assert inbound is not None
+    marker = inbound.find("set-variable[@name='storageRouteAbi']")
+    assert marker is not None
+    index = list(inbound).index(marker)
+    inbound[index + 1] = fixed_reader(enabled)
+    inbound[index + 2] = route_metadata(enabled)
+    plan = root.find(".//set-variable[@name='executionPlan']")
+    assert plan is not None
+    owner = next(node for node in root.iter() if plan in list(node))
+    owner[list(owner).index(plan) + 3] = provider_credential_stage(enabled)
+    contracts = tuple((name, *contract) for name, contract in fixed_operation_contracts(
+        binding.models_path, binding.messages_path, binding.retired_operations,
+        decision_enabled=binding.decision_enabled,
+    ).items())
+    operations = {
+        name: compact_fixed_policy(
+            fixed_operation(name, enabled) if name in FIXED_OPERATIONS else
+            retired_operation() if name in binding.retired_operations else auxiliary_operation()
+        ) for name, _, _ in contracts
+    }
+    digest = fixed_program_digest(
+        compact_fixed_policy(serialize_policy(root)), operations, contracts,
+    )
+    identity = root.find(".//set-variable[@name='routeProgram']")
+    assert identity is not None
+    identity.set("value", digest)
+    enabled = enabled.model_copy(update={"program_sha256": digest})
+    parent = compact_fixed_policy(serialize_policy(root))
+    restored = _without_fixed_route_parent(parent, enabled)
+    if component_digest(restored, normalize_text_defaults=False) != component_digest(
+        baseline, normalize_text_defaults=False,
+    ):
+        raise PolicyCompilationError("Pool upgrade changed protected authentication or accounting")
+    return FixedRouteProgram(
+        enabled, text_digest(serialize_policy(baseline)), parent, tuple(operations.items()), contracts,
+    )
+
+
 def validate_fixed_route_parent(
     candidate: str,
     baseline: str,

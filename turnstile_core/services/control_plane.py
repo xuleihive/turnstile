@@ -2435,6 +2435,32 @@ class GatewayControlPlaneService:
                     pools.append(GatewayBackendPoolSummary(model_id=model["id"], pool=pool))
         return pools
 
+    def _require_backend_pool_capability(self, publication: GatewayPublication) -> None:
+        from ..domain.storage_routes import FixedProgramInstallation, canonical_document
+        from ..persistence.repository_support import _registered_program_installation
+
+        raw = publication.resource_manifest.get("fixed_route_program")
+        if raw is None:
+            return
+        if not isinstance(raw, dict):
+            raise ControlPlaneConflictError("Pool Gateway installation is invalid")
+        gateways = self._repository.get_gateway_profiles([publication.gateway_profile_id])
+        if len(gateways) != 1 or gateways[0]["id"] != publication.gateway_profile_id:
+            raise ControlPlaneConflictError("Pool Gateway installation is unavailable")
+        try:
+            installed = _registered_program_installation(
+                str(publication.id), FixedProgramInstallation.model_validate_json(
+                    canonical_document(raw),
+                ), gateways[0].get("config") or {},
+            )
+        except ValueError as error:
+            raise ControlPlaneConflictError("Pool Gateway installation is invalid") from error
+        if (installed.program.scope.target_id != str(publication.gateway_profile_id)
+                or not installed.pool_enabled):
+            raise ControlPlaneConflictError(
+                "Pool capability is not installed; complete the guarded Gateway program upgrade",
+            )
+
     def model_backend_pool_candidates(self, model_id: UUID) -> list[GatewayBackendPoolCandidate]:
         registry = self._repository.registry()
         model = self._find(registry["models"], model_id)
@@ -2447,6 +2473,7 @@ class GatewayControlPlaneService:
         effective = self._repository.effective_gateway_publication(gateway_id)
         if effective is None:
             raise ControlPlaneConflictError("The gateway has no effective release")
+        self._require_backend_pool_capability(GatewayPublication.model_validate(effective))
         spec = self._backend_pool_release_spec(
             GatewayPublication.model_validate(effective), registry,
         )
@@ -2506,6 +2533,7 @@ class GatewayControlPlaneService:
         if effective_row is None:
             raise ControlPlaneConflictError("The gateway has no effective release")
         effective = GatewayPublication.model_validate(effective_row)
+        self._require_backend_pool_capability(effective)
         reconciled = self._backend_pool_release_spec(effective, registry)
         alias = str(model["model_key"]).casefold()
         target = next(

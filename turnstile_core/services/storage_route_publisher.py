@@ -262,7 +262,13 @@ def _validate_program_cutover(
     management: AzureApimPublisherClient,
     operation_policies: Mapping[str, str] | None = None,
 ) -> None:
-    from ..integrations.apim_storage_routes import FixedRouteBinding, fixed_operation
+    from ..integrations.apim_storage_routes import (
+        FixedRouteBinding,
+        auxiliary_operation,
+        fixed_operation,
+        installed_route_binding,
+        retired_operation,
+    )
 
     validate_policy_upload(
         parent_policy,
@@ -273,9 +279,14 @@ def _validate_program_cutover(
         table_name=config.settings.ledger_table_name,
     )
     operations = management.route_program_operations(previous.program.api_revision)
+    enables_pool = installed.pool_enabled and not previous.pool_enabled
     if (set(operations) != set(previous.operation_contracts)
             or any((method, path) != previous.operation_contracts[name]
-                   or fixed_policy_digest(policy) != previous.operation_policies_sha256[name]
+                   or fixed_policy_digest(policy) not in {
+                       previous.operation_policies_sha256[name],
+                       installed.operation_policies_sha256[name] if enables_pool
+                       and operation_policies else previous.operation_policies_sha256[name],
+                   }
                    for name, (method, path, policy) in operations.items())):
         raise PolicyCompilationError("Program cutover operation contract changed")
     contracts = fixed_operation_contracts(
@@ -284,11 +295,23 @@ def _validate_program_cutover(
         decision_enabled=installed.decision_enabled,
     )
     selected = {name: operation[2] for name, operation in operations.items()}
+    pool_binding = installed_route_binding(
+        installed, config.settings.ledger_table_endpoint, config.settings.ledger_table_name,
+        config.settings.apim_usage_observer_key_named_value,
+    ) if enables_pool else None
     if operation_policies:
         if set(operation_policies) != set(contracts):
             raise PolicyCompilationError("Program cutover operation set changed")
         for name, policy in operation_policies.items():
-            if name not in selected:
+            if pool_binding is not None:
+                original = parse_policy(
+                    retired_operation() if name in installed.retired_operations else
+                    auxiliary_operation() if name in {
+                        "models", "storage-route-program-probe",
+                        "storage-route-configuration-probe",
+                    } else fixed_operation(name, pool_binding)
+                )
+            elif name not in selected:
                 if (name != "microsoft-decision" or previous.decision_enabled
                         or not installed.decision_enabled):
                     raise PolicyCompilationError("Program cutover adds an unsupported Operation")
@@ -418,14 +441,26 @@ def register_verified_program_upgrade(
                         native_digest != installed.parent_policy_sha256
                         and native_digest == fixed_policy_digest(normalized)
                     )
-                    recovering = candidate_written or normalized_written
-                    if not recovering and native_digest != (
+                    enables_pool = installed.pool_enabled and not previous_installation.pool_enabled
+                    native_operations = management.route_program_operations(
+                        previous_installation.program.api_revision,
+                    ) if enables_pool and operation_policies else {}
+                    written_operations = any(
+                        fixed_policy_digest(value[2]) == (
+                            installed.operation_policies_sha256.get(name)
+                        )
+                        and installed.operation_policies_sha256.get(name)
+                        != previous_installation.operation_policies_sha256.get(name)
+                        for name, value in native_operations.items()
+                    )
+                    recovering = candidate_written or normalized_written or written_operations
+                    if not (candidate_written or normalized_written) and native_digest != (
                         previous_installation.parent_policy_sha256
                     ):
                         raise PolicyCompilationError(
                             "Program cutover native parent is not an approved candidate",
                         )
-                    if recovering and operation_policies:
+                    if recovering and operation_policies and not enables_pool:
                         raise PolicyCompilationError(
                             "Program cutover partial Operations require explicit recovery",
                         )

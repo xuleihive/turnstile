@@ -2019,6 +2019,7 @@ def initialize_fixed_program(
         publisher_subscription_id=_output_string(outputs, "apimProbeSubscriptionId"),
         observer_key_named_value=_output_string(outputs, "observerAdapterKeyNamedValueName"),
         model_additions_enabled=True,
+        pool_enabled=True,
         native_gateway_scope=native_gateway_scope_for_capability(
             self_hosted_gateway_capability_for_tier(service.json()["sku"]["name"]),
         ),
