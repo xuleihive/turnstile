@@ -14,6 +14,7 @@ import pytest
 
 from scripts.prepare_budget_execution import CutoverReadback, render_candidate
 from tests.backend.telemetry.test_atomic_ledger import EPOCH, NOW, completion, identity, summary
+from tests.platform.api.test_model_router_api import router_repository as router_repository
 from turnstile_core.domain.ledger import LedgerAdmissionReceipt, complete_ledger, reserve_ledger
 from turnstile_core.integrations import apim_budget_execution as compiler
 from turnstile_core.integrations import apim_model_availability as availability
@@ -98,6 +99,7 @@ sealed class Response : IResponse {
 }
 sealed class Request {
     public Body Body; public Headers Headers = new Headers(); public string Method = "POST";
+    public Uri OriginalUrl = new Uri("https://unit.azure-api.net/turnstile/chat/completions");
 }
 sealed class Operation { public string Id; }
 sealed class Subscription { public string Id; }
@@ -123,7 +125,8 @@ sealed class Context {
         Deployment.Gateway.Id = (string)source["gateway"] ?? "managed";
         Deployment.Gateway.InstanceId = (string)source["instance"] ?? "managed";
         Deployment.Gateway.IsManaged = Deployment.Gateway.Id == "managed";
-        Response = new Response(new JObject(new JProperty("status", 200),
+        Response = new Response(new JObject(
+            new JProperty("status", (int?)source["response_status"] ?? 200),
             new JProperty("headers", new JObject()),
             new JProperty("body", (string)source["response"] ?? "{}")));
     Operation = new Operation { Id = (string)source["operation"] ?? "responses" };
@@ -193,6 +196,210 @@ def application_tpm_expressions() -> dict[str, str]:
             for node in root.iter("set-variable") if node.get("name") in names}
 
 
+def native_router_expressions() -> dict[str, str]:
+    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+
+    inbound, outbound = fixed_router_operation_stages(
+        "https://unitstore.table.core.windows.net", "Ledger", "unit-turnstile",
+        "90000000-0000-4000-8000-000000000002",
+    )
+    result = {}
+    for node in inbound.iter("set-variable"):
+        if node.get("name") in {"routerNativeDocumentReady", "routerPlanState"}:
+            name = node.attrib["name"]
+            result[name if name not in result else "routerDecisionResult"] = node.attrib["value"]
+    decision = inbound.find(
+        ".//send-request[@response-variable-name='routerDecisionHttp']/set-body",
+    )
+    assert decision is not None
+    result["routerDecisionBody"] = decision.text or ""
+    rewrite = next(node for node in inbound.iter("set-body")
+                   if 'context.Variables["routerOriginalRequestBody"]' in (node.text or ""))
+    result["routerCandidateBody"] = rewrite.text or ""
+    for node in outbound.iter("set-variable"):
+        name = node.attrib["name"]
+        if name in {"routerPlanState", "routerOutboundCompleted"}:
+            key = "routerFailedAttempt" if name == "routerPlanState" else name
+            result[key] = node.attrib["value"]
+    trace = outbound.find(
+        ".//send-request[@response-variable-name='routerOutboundTraceWrite']/set-body",
+    )
+    assert trace is not None
+    result["routerTraceBody"] = trace.text or ""
+    return result
+
+
+@pytest.mark.parametrize("fault", [
+    None, "digest", "target", "unpublished", "direct-provider", "fallback",
+    "prepared", "multiple-gateways",
+])
+def test_native_router_definition_proof_executes_before_paid_routing(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, fault: str | None,
+) -> None:
+    from turnstile_core.integrations.router_table_projection import router_row_key
+
+    document = {
+        "status": "draft" if fault == "unpublished" else "published", "router_version": 1,
+        "gateway_profile_id": "foreign" if fault == "target"
+        else None if fault == "multiple-gateways"
+        else "90000000-0000-4000-8000-000000000002",
+        "candidates_by_id": {"candidate": {"profile": "openai-v1"}},
+        "definition": {"nodes": [{"fallback_on": ["timeout"] if fault == "fallback" else []}]},
+        "routing_models_by_id": {"decision": {
+            "decision_protocol": "chat_json",
+            "auth_mode": "managed_identity" if fault == "direct-provider" else "gateway_route",
+        }},
+    }
+    serialized = json.dumps(document, separators=(",", ":"), sort_keys=True)
+    entity = {
+        "PartitionKey": "model-router-prepared|v1" if fault == "prepared" else "model-router|v1",
+        "RowKey": router_row_key("unit-router"),
+        "SchemaVersion": 2, "Status": "prepared" if fault == "prepared" else "published",
+        "Document": serialized,
+        "Sha256": ("0" * 64 if fault == "digest"
+               else hashlib.sha256(serialized.encode()).hexdigest()),
+    }
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(native_router_expressions()["routerNativeDocumentReady"]),
+        "body": "{}", "subscription": True, "variables": {
+            "routerCachedEntityJson": json.dumps(entity),
+            "routerLookupRowKey": router_row_key("unit-router"),
+        },
+    }])[0]
+    assert result is (fault is None)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status_code,outcome", [
+    (200, "succeeded"), (429, "rate_limited"), (504, "timeout"),
+])
+def test_native_router_model_decision_rewrites_only_to_an_eligible_gateway_alias(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, stream: bool,
+    status_code: int, outcome: str,
+) -> None:
+    from tests.platform.api.test_model_router_api import model_based_definition
+
+    first, second, decision = (UUID(int=value) for value in (901, 902, 903))
+    definition = model_based_definition(decision, first, second)
+    definition["nodes"] = [node for node in definition["nodes"] if node["type"] != "fallback"]
+    definition["edges"] = [edge for edge in definition["edges"]
+                           if edge["source"] != "fallback" and edge["target"] != "fallback"]
+    candidates = {str(model_id): {
+        "model_id": str(model_id), "apim_alias": alias, "display_name": alias,
+        "provider_name": "Unit", "runtime_name": "Unit", "profile": "openai-v1",
+        "capabilities": [], "context_window": 16384,
+        "input_cost_per_million": 1.0, "output_cost_per_million": 2.0,
+        "effective_cost_per_million": 2.0,
+    } for model_id, alias in ((first, "candidate-a"), (second, "candidate-b"))}
+    document = {
+        "router_id": str(UUID(int=904)), "router_name": "unit-router", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "status": "published", "owner_email": "offline@example.test",
+        "assigned_user_ids": [], "allowed_subscription_ids": ["unit-subscription"],
+        "definition": definition,
+        "candidates_by_id": candidates,
+        "routing_models_by_id": {str(decision): {
+            "model_id": str(decision), "apim_alias": "decision-alias",
+            "upstream_model": "provider-deployment-not-a-public-alias",
+            "display_name": "Decision", "provider_name": "Unit", "runtime_name": "Unit",
+            "decision_protocol": "chat_json", "auth_mode": "gateway_route",
+            "capabilities": [], "max_tokens_field": "max_completion_tokens",
+            "input_cost_per_million": 1.0, "output_cost_per_million": 2.0,
+        }},
+    }
+    body = json.dumps({
+        "model": "unit-router", "messages": [{"role": "user", "content": "Select candidate B"}],
+        "stream": stream, "router_context": {"task_type": "unit"},
+    })
+    expressions = native_router_expressions()
+    variables = {
+        "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+        "routerOriginalRequestBody": body,
+        "routerCallerRequestId": str(UUID(int=906)),
+        "routerRequestedModel": "unit-router",
+        "routerDecisionRequestId": str(UUID(int=905)),
+        "routerDecisionHttp": {
+            "__response": True, "status": 200, "headers": {}, "body": json.dumps({
+                "choices": [{"message": {"content": json.dumps({
+                    "model_id": str(second), "rationale": "Eligible candidate B",
+                })}}], "usage": {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+            }),
+        },
+    }
+    case: dict[str, Any] = {"body": body, "subscription": True, "operation": "chat-completions",
+            "variables": variables, "steps": [{
+                "variable": "routerPlanState",
+                "expression": expression_id(expressions["routerPlanState"]),
+            }]}
+    request, routed = run_cases(compiled_expressions, tmp_path, [
+        {**case, "expression": expression_id(expressions["routerDecisionBody"])},
+        {**case, "steps": [*case["steps"], {
+            "variable": "routerPlanState",
+            "expression": expression_id(expressions["routerDecisionResult"]),
+        }], "expression": expression_id(expressions["routerCandidateBody"])},
+    ])
+    decision_body = json.loads(request)
+    assert decision_body["model"] == "decision-alias" and decision_body["stream"] is False
+    result = json.loads(routed)
+    assert result["model"] == "candidate-b" and result["stream"] is stream
+    assert "router_context" not in result
+    assert result["messages"] == json.loads(body)["messages"]
+    completion_steps = [*case["steps"], {
+        "variable": "routerPlanState",
+        "expression": expression_id(expressions["routerDecisionResult"]),
+    }]
+    if status_code >= 400 and "routerFailedAttempt" in expressions:
+        completion_steps.append({
+            "variable": "routerPlanState",
+            "expression": expression_id(expressions["routerFailedAttempt"]),
+        })
+    completion_case = {**case, "response_status": status_code, "steps": [*completion_steps, {
+        "variable": "routerOutboundCompleted",
+        "expression": expression_id(expressions["routerOutboundCompleted"]),
+    }], "expression": expression_id(expressions["routerTraceBody"])}
+    entity = json.loads(run_cases(compiled_expressions, tmp_path, [completion_case])[0])
+    trace = json.loads(entity["Document"])
+    assert trace["native_usage_recorded"] is True
+    assert trace["selected_model_id"] == str(second)
+    assert len(trace["attempts"]) == 2
+    decision_attempt, candidate_attempt = trace["attempts"]
+    assert decision_attempt["attempt_role"] == "routing_decision"
+    assert decision_attempt["outcome"] == "succeeded"
+    assert candidate_attempt["attempt_role"] == "candidate"
+    assert candidate_attempt["model_id"] == str(second)
+    assert candidate_attempt["model_name"] == "candidate-b"
+    assert candidate_attempt["status_code"] == status_code
+    assert candidate_attempt["outcome"] == outcome
+    assert candidate_attempt["sequence"] == 2
+
+
+def test_native_router_keeps_other_owner_name_access_after_stale_backfill(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    router_repository: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.platform.api.test_model_router_api import same_name_router_backfill_scenario
+
+    before, after, second_id = same_name_router_backfill_scenario(router_repository, monkeypatch)
+    expressions = native_router_expressions()
+    body = json.dumps({
+        "model": "Shared owner backfill", "messages": [{"role": "user", "content": "Hello"}],
+    })
+    cases = [{
+        "expression": expression_id(expressions["routerPlanState"]),
+        "body": body, "subscription": True, "operation": "chat-completions", "variables": {
+            "routerCachedEntityJson": json.dumps(entity),
+            "routerOriginalRequestBody": body,
+            "routerRequestedModel": "Shared owner backfill",
+            "routerCallerRequestId": str(UUID(int=907)),
+        },
+    } for entity in (before, after)]
+    for result in run_cases(compiled_expressions, tmp_path, cases):
+        planned = json.loads(result)
+        assert not planned.get("access_denied", False)
+        assert planned["router_id"] == str(second_id)
+        assert planned["selected_candidate"]["model_id"]
+
+
 @pytest.mark.parametrize("mode,version,subscription,person,allowed", [
     ("active", 2, False, False, True), ("active", 1, False, False, False),
     ("paused", 2, False, True, False), ("paused", 2, True, False, False),
@@ -237,6 +444,7 @@ def compiled_expressions(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path
         if name.isupper() and isinstance(value, str) and value.startswith("@")
     }
     expressions.update(application_tpm_expressions().values())
+    expressions.update(native_router_expressions().values())
     expressions.update(value for name, value in vars(availability).items()
                        if name.isupper() and isinstance(value, str) and value.startswith("@"))
     expressions.add(storage_routes.READ_FIXED_CONTENT)

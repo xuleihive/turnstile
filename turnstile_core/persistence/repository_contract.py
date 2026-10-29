@@ -251,8 +251,14 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def publish_model_router(
-        self, router_id: UUID, owner_id: UUID, published_by: str
+        self, router_id: UUID, owner_id: UUID, published_by: str,
+        *, before_record: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def project_published_model_router(
+        self, router_id: UUID, version: int, project: Callable[[dict[str, Any]], bool],
+    ) -> bool: ...
 
     @abstractmethod
     def disable_model_router(

@@ -143,6 +143,7 @@ class FixedProgramVerifier:
         for capability, enabled in {
             "OAuth": installed.oauth_enabled, "Pool": installed.pool_enabled,
             "Decision": installed.decision_enabled,
+            "Router": installed.router_enabled,
             "ModelAdditions": installed.model_additions_enabled,
             "NativeGatewayScope": installed.native_gateway_scope,
         }.items():
@@ -290,6 +291,7 @@ class FixedRouteBinding(RouteModel):
     image_limits: ImageGenerationLimits | None = None
     oauth_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     pool_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
+    router_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     decision_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     model_additions_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     native_gateway_scope: bool = Field(default=False, exclude_if=lambda value: value is False)
@@ -1177,6 +1179,8 @@ def fixed_reader(binding: FixedRouteBinding) -> ET.Element:
         "routeRequestAdapters": json.dumps(binding.supported_adapters, separators=(",", ":")),
     }.items():
         variable(branch, name, value)
+    if binding.router_enabled:
+        variable(branch, "routeRouterEnabled", "@(true)")
     if binding.native_gateway_scope:
         variable(branch, "routeNativeGatewayScopeEnabled", "@(true)")
     if binding.decision_enabled:
@@ -1819,6 +1823,16 @@ def fixed_operation(operation: str, binding: FixedRouteBinding) -> str:
         raise PolicyCompilationError("Unsupported fixed route operation")
     root = ET.Element("policies")
     inbound = ET.SubElement(root, "inbound")
+    router_outbound = None
+    if binding.router_enabled and operation == "chat-completions":
+        from .apim_router_global_policy import fixed_router_operation_stages
+
+        router_inbound, router_outbound = fixed_router_operation_stages(
+            binding.ledger_table_endpoint, binding.ledger_table_name, binding.scope.api_id,
+            binding.scope.target_id,
+        )
+        variable(inbound, "turnstileRouterEngineVersion", "@(2)")
+        inbound.append(router_inbound)
     ET.SubElement(inbound, "base")
     if operation == "images-generations" and binding.image_limits is None:
         deny(inbound, "@(true)", "route_image_capacity_unavailable")
@@ -1968,6 +1982,8 @@ def fixed_operation(operation: str, binding: FixedRouteBinding) -> str:
     )
     outbound = ET.SubElement(root, "outbound")
     ET.SubElement(outbound, "base")
+    if router_outbound is not None:
+        outbound.extend(list(router_outbound))
     if operation == "anthropic-messages":
         from .apim_policy_compiler import ApimPolicyCompiler
 
@@ -2737,6 +2753,7 @@ def installed_route_binding(
     values = installation.model_dump(mode="python", include={
         "publisher_subscription_id", "supported_profiles", "image_limits", "oauth_enabled",
         "pool_enabled", "decision_enabled", "model_additions_enabled", "native_gateway_scope",
+        "router_enabled",
         "legacy_program_sha256", "predecessor_program_sha256", "supported_adapters",
         "trusted_vault_origins", "retired_operations",
     })
@@ -2753,17 +2770,37 @@ def installed_route_binding(
     })
 
 
-def upgrade_fixed_pool_program(source: str, binding: FixedRouteBinding) -> FixedRouteProgram:
+def upgrade_fixed_pool_program(
+    source: str, binding: FixedRouteBinding, *, enable_router: bool = False,
+) -> FixedRouteProgram:
+    from copy import deepcopy
+
     root = parse_policy(source)
-    predecessors = root.findall(".//set-variable[@name='routePredecessorPrograms']")
-    if not binding.predecessor_program_sha256 and predecessors:
-        if len(predecessors) != 1 or predecessors[0].get("value") != "[]":
-            raise PolicyCompilationError("Pool upgrade predecessor history changed")
-        owner = next(node for node in root.iter() if predecessors[0] in list(node))
-        owner.remove(predecessors[0])
-        source = serialize_policy(root)
+    identities = root.findall(".//set-variable[@name='routeProgram']")
+    if len(identities) != 1:
+        raise PolicyCompilationError("Program upgrade identity is ambiguous")
+    reader = next(node for node in root.iter() if identities[0] in list(node))
+    expected_reader = fixed_reader(binding).find("when")
+    assert expected_reader is not None
+    history = {"routeLegacyProgram", "routePredecessorPrograms"}
+    for name in history:
+        expected = expected_reader.find(f"set-variable[@name='{name}']")
+        observed = reader.findall(f"set-variable[@name='{name}']")
+        if expected is not None:
+            if len(observed) != 1 or observed[0].attrib != expected.attrib:
+                raise PolicyCompilationError("Program upgrade predecessor history changed")
+        elif observed and (len(observed) != 1 or observed[0].get("value") != "[]"):
+            raise PolicyCompilationError("Program upgrade predecessor history changed")
+        for node in observed:
+            reader.remove(node)
+    for index, node in enumerate(expected_reader):
+        if node.tag == "set-variable" and node.get("name") in history:
+            reader.insert(index, deepcopy(node))
+    source = serialize_policy(root)
     baseline = _without_fixed_route_parent(source, binding)
-    enabled = binding.model_copy(update={"pool_enabled": True})
+    enabled = binding.model_copy(update={
+        "pool_enabled": True, **({"router_enabled": True} if enable_router else {}),
+    })
     root = parse_policy(source)
     inbound = root.find("inbound")
     assert inbound is not None
@@ -3006,6 +3043,7 @@ class FixedRouteProgram:
             image_limits=self.binding.image_limits,
             oauth_enabled=self.binding.oauth_enabled,
             pool_enabled=self.binding.pool_enabled,
+            router_enabled=self.binding.router_enabled,
             decision_enabled=self.binding.decision_enabled,
             model_additions_enabled=self.binding.model_additions_enabled,
             native_gateway_scope=self.binding.native_gateway_scope,

@@ -18,10 +18,12 @@ from ..domain.enterprise import enterprise_catalog
 from ..domain.model_router import ModelRouter
 from ..domain.models import ModelPrice, TokenUsageRecord
 from .reconciliation import ManagedIdentityTokenProvider
+from .table_batch import TableBatchConflict, conditional_batch, validate_batch_response
 
 logger = logging.getLogger(__name__)
 
 ROUTER_CATALOG_PARTITION = "model-router|v1"
+ROUTER_PREPARED_PARTITION = "model-router-prepared|v1"
 ROUTER_STICKY_PARTITION_PREFIX = "model-router-sticky|"
 ROUTER_TRACE_PARTITION = "model-router-trace|v1"
 
@@ -180,6 +182,7 @@ def build_router_table_document(
                     rt_cfg.get("auth_strategy") or rt_cfg.get("auth_mode") or ""
                 ).strip().lower()
                 auth_mode = (
+                    "gateway_route" if rt_cfg.get("control_plane_managed") is True else
                     "managed_identity"
                     if is_system_one or raw_auth in {"", "managed_identity"}
                     else "gateway_route"
@@ -301,6 +304,11 @@ def build_router_table_document(
             }
         ),
     }
+    model_ids = set(candidates_by_id) | set(routing_models_by_id)
+    gateway_ids = {str(runtimes_by_id.get(str(models_by_id[model_id].get("runtime_id")), {}).get(
+        "gateway_profile_id", "",
+    )) for model_id in model_ids}
+    doc_payload["gateway_profile_id"] = next(iter(gateway_ids)) if len(gateway_ids) == 1 else ""
     return doc_payload
 
 
@@ -459,6 +467,35 @@ class RouterTableProjector:
                 pass
         return list(docs_by_id.values())
 
+    def prepare_router(
+        self,
+        router: ModelRouter,
+        registry: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        assigned_user_ids: Sequence[str] = (),
+        allowed_subscription_ids: Sequence[str] | None = None,
+    ) -> bool:
+        document = build_router_table_document(
+            router, registry, assigned_user_ids=assigned_user_ids,
+            allowed_subscription_ids=allowed_subscription_ids,
+        )
+        if document is None:
+            return False
+        serialized = json.dumps(document, separators=(",", ":"), sort_keys=True)
+        payload: dict[str, Any] = {
+            "PartitionKey": ROUTER_PREPARED_PARTITION,
+            "RowKey": router_row_key(str(router.id)), "Status": "prepared",
+            "RouterId": str(router.id), "RouterVersion": router.version,
+            "Document": serialized, "Sha256": _sha256_hex(serialized),
+        }
+        with httpx.Client(timeout=self._timeout) as client:
+            response = client.put(
+                self._entity_url(ROUTER_PREPARED_PARTITION, payload["RowKey"]),
+                headers=self._headers(write=True), json=payload,
+            )
+            response.raise_for_status()
+        return True
+
     def upsert_router(
         self,
         router: ModelRouter,
@@ -466,7 +503,6 @@ class RouterTableProjector:
         *,
         assigned_user_ids: Sequence[str] = (),
         allowed_subscription_ids: Sequence[str] | None = None,
-        active_router_ids: set[str] | None = None,
     ) -> bool:
         doc = build_router_table_document(
             router,
@@ -495,36 +531,30 @@ class RouterTableProjector:
                 "Document": doc_json,
                 "Sha256": doc_sha,
             }
-            id_resp = client.put(
-                self._entity_url(ROUTER_CATALOG_PARTITION, id_rk),
-                headers=self._headers(write=True),
-                json=id_payload,
-            )
-            id_resp.raise_for_status()
-
             for attempt in range(3):
-                existing_resp = client.get(
-                    self._entity_url(ROUTER_CATALOG_PARTITION, name_rk),
-                    headers=self._headers(),
-                )
-                if existing_resp.status_code not in {200, 404}:
-                    existing_resp.raise_for_status()
-
+                existing: dict[str, tuple[dict[str, Any], str | None]] = {}
+                for row_key in dict.fromkeys((id_rk, name_rk)):
+                    response = client.get(
+                        self._entity_url(ROUTER_CATALOG_PARTITION, row_key),
+                        headers=self._headers(),
+                    )
+                    if response.status_code == 404:
+                        existing[row_key] = ({}, None)
+                        continue
+                    response.raise_for_status()
+                    entity = response.json()
+                    for current in self._parse_entity_documents(entity):
+                        if (str(current.get("router_id", "")).lower() == target_id
+                                and int(current["router_version"]) > router.version):
+                            return False
+                    existing[row_key] = (entity, self._extract_etag(response, entity))
                 other_docs: list[dict[str, Any]] = []
-                etag = "*"
-                if existing_resp.status_code == 200:
-                    entity = existing_resp.json()
-                    etag = self._extract_etag(existing_resp, entity)
-                    for existing_doc in self._parse_entity_documents(entity):
+                if existing[name_rk][0]:
+                    for existing_doc in self._parse_entity_documents(existing[name_rk][0]):
                         existing_id = (
                             str(existing_doc.get("router_id") or "").strip().lower()
                         )
                         if not existing_id or existing_id == target_id:
-                            continue
-                        if (
-                            active_router_ids is not None
-                            and existing_id not in active_router_ids
-                        ):
                             continue
                         other_docs.append(existing_doc)
 
@@ -544,22 +574,28 @@ class RouterTableProjector:
                     name_payload["AlternateDocuments"] = json.dumps(
                         other_docs, separators=(",", ":"), sort_keys=True
                     )
-                if existing_resp.status_code == 200:
-                    name_resp = client.put(
-                        self._entity_url(ROUTER_CATALOG_PARTITION, name_rk),
-                        headers={**self._headers(write=True), "If-Match": etag},
-                        json=name_payload,
+                payloads = {id_rk: id_payload, name_rk: name_payload}
+                content_type, body = conditional_batch(
+                    self._endpoint, self._table, ROUTER_CATALOG_PARTITION,
+                    [(row_key, payload, existing[row_key][1])
+                     for row_key, payload in payloads.items()],
+                )
+                response = client.post(
+                    self._endpoint + "/$batch",
+                    headers={**self._headers(write=True), "Content-Type": content_type},
+                    content=body,
+                )
+                response.raise_for_status()
+                try:
+                    validate_batch_response(
+                        response.status_code, response.headers.get("Content-Type", ""),
+                        response.content, len(payloads),
                     )
-                else:
-                    name_resp = client.post(
-                        f"{self._endpoint}/{self._table}",
-                        headers=self._headers(write=True),
-                        json=name_payload,
-                    )
-                if name_resp.status_code in {409, 412} and attempt < 2:
-                    continue
-                name_resp.raise_for_status()
-                break
+                except TableBatchConflict:
+                    if attempt < 2:
+                        continue
+                    raise
+                return True
         return True
 
     def delete_router(self, router_id: UUID | str, router_name: str | None = None) -> None:
@@ -644,15 +680,11 @@ class RouterTableProjector:
                     del_resp.raise_for_status()
                 return
 
-    def sync_all_published_routers(self, repository: Any) -> int:
+    def sync_all_published_routers(
+        self, repository: Any, *, gateway_profile_id: UUID | None = None,
+    ) -> int:
         registry = repository.registry()
         published_rows = list(repository.list_published_model_routers())
-        active_row_keys: set[str] = set()
-        active_router_ids = {
-            str(row["id"]).strip().lower()
-            for row in published_rows
-            if row.get("id") is not None
-        }
         projected = 0
         list_assignees = getattr(repository, "list_model_router_assignees", None)
         for row in published_rows:
@@ -665,30 +697,26 @@ class RouterTableProjector:
             allowed_subs = _resolve_allowed_subscription_ids_for_router(
                 router, assignees, repository
             )
-            if self.upsert_router(
-                router,
-                registry,
-                assigned_user_ids=assignees,
-                allowed_subscription_ids=allowed_subs,
-                active_router_ids=active_router_ids,
+            if gateway_profile_id is not None:
+                document = build_router_table_document(router, registry)
+                if (document is None
+                    or document.get("gateway_profile_id") != str(gateway_profile_id)):
+                    continue
+
+            def project(
+                current: dict[str, Any],
+                assigned: Sequence[str] = assignees,
+                subscriptions: Sequence[str] = allowed_subs,
+            ) -> bool:
+                return self.upsert_router(
+                    ModelRouter.model_validate(current), registry,
+                    assigned_user_ids=assigned, allowed_subscription_ids=subscriptions,
+                )
+
+            if repository.project_published_model_router(
+                router.id, router.version, project,
             ):
-                active_row_keys.add(router_row_key(router.name))
-                active_row_keys.add(router_row_key(str(router.id)))
                 projected += 1
-        with httpx.Client(timeout=self._timeout) as client:
-            filter_q = quote(f"PartitionKey eq '{ROUTER_CATALOG_PARTITION}'")
-            resp = client.get(
-                f"{self._endpoint}/{self._table}()?$filter={filter_q}",
-                headers=self._headers(),
-            )
-            if resp.status_code == 200:
-                for entity in resp.json().get("value", []):
-                    rk = str(entity.get("RowKey") or "")
-                    if rk and rk not in active_row_keys:
-                        client.delete(
-                            self._entity_url(ROUTER_CATALOG_PARTITION, rk),
-                            headers={**self._headers(), "If-Match": "*"},
-                        )
         return projected
 
     def _sync_entity_doc(
@@ -757,7 +785,8 @@ class RouterTableProjector:
                 selected_model_name=selected_model_name,
                 attempts=attempts,
             )
-            for usage_item in doc.get("usage_records") or []:
+            for usage_item in (() if doc.get("native_usage_recorded") is True
+                               else doc.get("usage_records") or []):
                 if str(usage_item.get("request_id") or "") == req_id:
                     continue
                 ts_val = (
@@ -990,9 +1019,14 @@ def project_router_to_table_if_configured(
     *,
     deleted_id: UUID | None = None,
     deleted_name: str | None = None,
+    required: bool = False,
+    use_published_snapshot: bool = True,
+    prepare_only: bool = False,
 ) -> None:
     settings = get_settings()
     if not settings.ledger_table_endpoint or not settings.ledger_table_name:
+        if required:
+            raise RuntimeError("Native Router projection storage is unavailable")
         return
     try:
         projector = RouterTableProjector(
@@ -1003,7 +1037,8 @@ def project_router_to_table_if_configured(
             projector.delete_router(deleted_id, deleted_name)
         elif router is not None:
             if router.status == "published":
-                published_row = repository.get_published_model_router(router.id)
+                published_row = (repository.get_published_model_router(router.id)
+                                 if use_published_snapshot else None)
                 effective = (
                     ModelRouter.model_validate(published_row)
                     if published_row is not None
@@ -1020,15 +1055,26 @@ def project_router_to_table_if_configured(
                 allowed_subs = _resolve_allowed_subscription_ids_for_router(
                     effective, assignees, repository
                 )
-                projector.upsert_router(
-                    effective,
-                    repository.registry(),
-                    assigned_user_ids=assignees,
-                    allowed_subscription_ids=allowed_subs,
-                )
+                registry = repository.registry()
+                if prepare_only:
+                    projected = projector.prepare_router(
+                        effective, registry, assigned_user_ids=assignees,
+                        allowed_subscription_ids=allowed_subs,
+                    )
+                else:
+                    projected = repository.project_published_model_router(
+                        effective.id, effective.version, lambda current: projector.upsert_router(
+                            ModelRouter.model_validate(current), registry,
+                            assigned_user_ids=assignees, allowed_subscription_ids=allowed_subs,
+                        ),
+                    )
+                if required and not projected:
+                    raise RuntimeError("Native Router projection is incomplete")
             else:
                 projector.delete_router(router.id, router.name)
     except Exception:
+        if required:
+            raise
         logger.warning("Router Table Storage projection deferred", exc_info=True)
 
 

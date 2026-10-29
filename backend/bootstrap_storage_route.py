@@ -135,6 +135,7 @@ def installation_record(
         credential_vault_origin=binding.trusted_vault_origins[0],
         image_limits=binding.image_limits,
         pool_enabled=binding.pool_enabled,
+        router_enabled=binding.router_enabled,
         oauth_enabled=binding.oauth_enabled,
         decision_enabled=binding.decision_enabled,
         model_additions_enabled=binding.model_additions_enabled,
@@ -536,7 +537,7 @@ def bootstrap(descriptor: FixedInstallationDescriptor, settings: Settings) -> di
 def prepare_budget_delegation_upgrade(
     installed: FixedProgramInstallation, publication_id: str, candidate: str,
     operations: dict[str, tuple[str, str, str]],
-    *, enable_pool: bool = False,
+    *, enable_pool: bool = False, enable_router: bool = False,
 ) -> tuple[FixedProgramUpgrade, str]:
     contracts = fixed_operation_contracts(
         installed.operation_contracts["models"][1],
@@ -549,9 +550,9 @@ def prepare_budget_delegation_upgrade(
         raise RuntimeError("Budget delegation program identity is missing")
     predecessor = installed.program.program_sha256
     legacy = installed.legacy_program_sha256 or predecessor
-    predecessors = tuple(sorted({
+    predecessors = tuple(value for value in (
         *installed.predecessor_program_sha256, predecessor,
-    } - {legacy}))
+    ) if value != legacy)
     owner = next(node for node in root.iter() if marker in list(node))
     for name, value in {
         "routeLegacyProgram": legacy,
@@ -578,7 +579,8 @@ def prepare_budget_delegation_upgrade(
             "predecessor_program_sha256": predecessors,
             **({"pool_enabled": True, "operation_policies_sha256": {
                 name: fixed_policy_digest(operation[2]) for name, operation in operations.items()
-            }} if enable_pool else {}),
+            }} if enable_pool or enable_router else {}),
+            **({"router_enabled": True} if enable_router else {}),
         }),
     )
     upgrade.require_previous(publication_id, installed)
@@ -617,23 +619,26 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
             parent = checkpoint["parent_policy"]
         candidate = bind_budget_delegation(parent, trust, gateway_profile_id=target_id)
         enable_pool = not installed.pool_enabled
-        if candidate == parent and not enable_pool:
+        enable_router = not installed.router_enabled
+        if candidate == parent and not (enable_pool or enable_router):
             if recovering:
                 raise RuntimeError("Budget delegation current approved parent changed")
             return
         candidate = compact_fixed_policy(candidate)
-        if fixed_policy_digest(candidate) == installed.parent_policy_sha256 and not enable_pool:
+        if fixed_policy_digest(candidate) == installed.parent_policy_sha256 and not (
+            enable_pool or enable_router
+        ):
             if recovering:
                 raise RuntimeError("Budget delegation current approved parent changed")
             return
         operations = management.route_program_operations(installed.program.api_revision)
         operation_policies = None
         operation_etags = None
-        if enable_pool:
+        if enable_pool or enable_router:
             pool_program = upgrade_fixed_pool_program(candidate, installed_route_binding(
                 installed, settings.ledger_table_endpoint, settings.ledger_table_name,
                 settings.apim_usage_observer_key_named_value,
-            ))
+            ), enable_router=enable_router)
             candidate = pool_program.parent_policy
             operation_policies = dict(pool_program.operation_policies)
             operations = {name: (method, template, operation_policies[name])
@@ -643,6 +648,7 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
             ).headers.get("ETag") for name in operation_policies}
         upgrade, candidate = prepare_budget_delegation_upgrade(
             installed, str(previous["id"]), candidate, operations, enable_pool=enable_pool,
+            enable_router=enable_router,
         )
         pending = {
             "previous_publication_id": str(previous["id"]),

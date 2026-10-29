@@ -279,7 +279,8 @@ def _validate_program_cutover(
         table_name=config.settings.ledger_table_name,
     )
     operations = management.route_program_operations(previous.program.api_revision)
-    enables_pool = installed.pool_enabled and not previous.pool_enabled
+    enables_pool = ((installed.pool_enabled and not previous.pool_enabled)
+                    or (installed.router_enabled and not previous.router_enabled))
     if (set(operations) != set(previous.operation_contracts)
             or any((method, path) != previous.operation_contracts[name]
                    or fixed_policy_digest(policy) not in {
@@ -441,7 +442,10 @@ def register_verified_program_upgrade(
                         native_digest != installed.parent_policy_sha256
                         and native_digest == fixed_policy_digest(normalized)
                     )
-                    enables_pool = installed.pool_enabled and not previous_installation.pool_enabled
+                    enables_pool = (
+                        installed.pool_enabled and not previous_installation.pool_enabled
+                        or installed.router_enabled and not previous_installation.router_enabled
+                    )
                     native_operations = management.route_program_operations(
                         previous_installation.program.api_revision,
                     ) if enables_pool and operation_policies else {}

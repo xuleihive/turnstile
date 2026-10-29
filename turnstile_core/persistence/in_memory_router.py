@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -180,7 +180,8 @@ class InMemoryRouterRepositoryMixin:
         return model_router_view(row)
 
     def publish_model_router(
-        self, router_id: UUID, owner_id: UUID, published_by: str
+        self, router_id: UUID, owner_id: UUID, published_by: str,
+        *, before_record: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
         row = next(
             (
@@ -197,6 +198,12 @@ class InMemoryRouterRepositoryMixin:
         now = datetime.now(UTC)
         version = int(row["version"]) + 1
         published_config = deepcopy(row["draft_config"])
+        if before_record is not None:
+            before_record(model_router_view({
+                **row, "status": "published", "version": version,
+                "published_config": published_config, "published_at": now,
+                "updated_at": now, "updated_by": published_by,
+            }))
         self.model_router_revisions.append(
             {
                 "router_id": router_id,
@@ -252,6 +259,14 @@ class InMemoryRouterRepositoryMixin:
         now = datetime.now(UTC)
         row.update(deleted_at=now, updated_at=now)
         return True
+
+    def project_published_model_router(
+        self, router_id: UUID, version: int, project: Callable[[dict[str, Any]], bool],
+    ) -> bool:
+        row = self.get_published_model_router(router_id)
+        if row is None or int(row["version"]) != version:
+            return False
+        return project(row)
 
     def list_assigned_model_routers(self, user_id: str) -> list[dict[str, Any]]:
         folded_user = user_id.strip().casefold()

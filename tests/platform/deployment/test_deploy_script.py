@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -756,6 +757,8 @@ def test_initial_fixed_program_binds_compiled_policies_before_registration(
     assert descriptor.api_name == "control-test"
     assert descriptor.expected_server == "unit-server.postgres.database.azure.com"
     parent = parse_policy(parameters["parentPolicy"]["value"])
+    router_marker = parent.find(".//set-variable[@name='routeRouterEnabled']")
+    assert router_marker is not None and router_marker.get("value") == "@(true)"
     assert descriptor.binding.pool_enabled is True
     pool_marker = parent.find(".//set-variable[@name='routePoolEnabled']")
     assert pool_marker is not None and pool_marker.get("value") == "@(true)"
@@ -1093,6 +1096,7 @@ def test_existing_program_delegation_uses_guarded_cutover(
     "deployment_source_descriptor", "deployment_path", "deployment_unknown", "deployment_mismatch",
     "deployment_healthy", "deployment_incomplete_target",
     "pool_upgrade", "pool_partial", "pool_written", "pool_operation_drift", "pool_registered",
+    "router_upgrade", "router_registered",
 ])
 def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_state: str,
@@ -1150,10 +1154,13 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         )
         old_parent = parameters["parentPolicy"]["value"]
         trust = runtime.call_args.args[7]
-        if native_state.startswith("pool_"):
+        if native_state.startswith(("pool_", "router_")):
             previous_program = compiler._mock_wraps(
                 compiler.call_args.args[0],
-                compiler.call_args.args[1].model_copy(update={"pool_enabled": False}),
+                compiler.call_args.args[1].model_copy(update=(
+                    {"router_enabled": False} if native_state.startswith("router_")
+                    else {"pool_enabled": False}
+                )),
                 **compiler.call_args.kwargs,
             )
             old_parent = previous_program.parent_policy
@@ -1207,7 +1214,7 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     )
     prior_config: dict[str, Any] = {}
     current_installation = previous
-    if native_state == "pool_registered":
+    if native_state in {"pool_registered", "router_registered"}:
         from turnstile_core.integrations.apim_budget_execution import bind_budget_delegation
 
         prior_upgrade, old_parent = bootstrap.prepare_budget_delegation_upgrade(
@@ -1215,8 +1222,19 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
                 old_parent, settings.budget_delegation_trust[target], gateway_profile_id=target,
             ), operations,
         )
+        if native_state == "router_registered":
+            prior_config["fixed_route_program_upgrade_history"] = [
+                prior_upgrade.model_dump(mode="json"),
+            ]
+            prior_upgrade, old_parent = bootstrap.prepare_budget_delegation_upgrade(
+                prior_upgrade.installation, str(UUID(int=75)), bind_budget_delegation(
+                    old_parent, settings.budget_delegation_trust[target].model_copy(update={
+                        "client_ids": (UUID(int=95),),
+                    }), gateway_profile_id=target,
+                ), operations,
+            )
         current_installation = prior_upgrade.installation
-        prior_config = {"fixed_route_program_upgrade": prior_upgrade.model_dump(mode="json")}
+        prior_config["fixed_route_program_upgrade"] = prior_upgrade.model_dump(mode="json")
         repository.get_gateway_profiles.return_value[0]["config"] = dict(prior_config)
         management._read_policy.return_value = (
             httpx.Response(200, headers={"ETag": '"old"'}), old_parent,
@@ -1398,7 +1416,7 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     monkeypatch.setattr(bootstrap, "register_verified_program_upgrade", entry_registration)
     monkeypatch.setattr(bootstrap, "apim_target_client_config_resolver", lambda *_: configurations)
     def cutover() -> None:
-        if entry or native_state.startswith("pool_"):
+        if entry or native_state.startswith(("pool_", "router_")):
             bootstrap.configure_budget_delegation(repository, settings, target)
             return
         routes.register_verified_program_upgrade(
@@ -1690,7 +1708,9 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     assert len(recorded) == 1
     assert fixed_policy_digest(current["parent"]) == upgrade.installation.parent_policy_sha256
     assert len(writes) == (
-        len(operations) + 1 if native_state in {"pool_upgrade", "pool_registered"} else
+        len(operations) + 1 if native_state in {
+            "pool_upgrade", "pool_registered", "router_upgrade", "router_registered",
+        } else
         len(operations) + 2 if native_state == "pool_partial" else
         2 * len(operations) + 1 if native_state == "pool_written" else
         0 if already_written else 2 if native_state == "entry_normalized" else 1
@@ -1698,6 +1718,9 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     if native_state.startswith("pool_"):
         assert upgrade.installation.pool_enabled is True
         assert previous.pool_enabled is False
+    if native_state.startswith("router_"):
+        assert upgrade.installation.router_enabled is True
+        assert previous.router_enabled is False
     if entry:
         assert entry_registration.call_count == 2
         first, second = entry_registration.call_args_list
@@ -2371,9 +2394,10 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     staged.mkdir()
     (staged / "requirements.txt").write_text("fastapi==0.139.2\n", encoding="utf-8")
 
-    command = pip_linux_dependency_command(staged, "/usr/bin/pip3")
+    command = pip_linux_dependency_command(staged, sys.executable)
 
-    assert command[:2] == ["/usr/bin/pip3", "install"]
+    assert command[:5] == [sys.executable, "-I", "-m", "pip", "install"]
+    assert "--no-compile" in command
     assert "manylinux_2_28_x86_64" in command
     assert "manylinux_2_17_x86_64" in command
     assert "manylinux2014_x86_64" in command
@@ -2381,6 +2405,89 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     assert "--only-binary=:all:" in command
     assert "--requirement" in command
     assert command[command.index("--constraint") + 1] == str(staged / "constraints.txt")
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_pip_fallback_installs_cross_target_wheel_without_host_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback: bool,
+) -> None:
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"}
+    }
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PIP_NO_INDEX"] = "1"
+    virtualenv = tmp_path / "clean-venv"
+    subprocess.run(
+        ["uv", "venv", "--offline", "--python", sys.executable,
+         str(virtualenv)],
+        env=environment, capture_output=True, text=True, check=True, timeout=30,
+    )
+    python = str(virtualenv / "bin/python")
+    probe = [python, "-I", "-c", "import importlib.util; print(importlib.util.find_spec('pip'))"]
+    before = subprocess.run(probe, env=environment, capture_output=True, text=True, check=True)
+    assert before.stdout.strip() == "None"
+
+    lock_bytes = (REPOSITORY_ROOT / "uv.lock").read_bytes()
+    lock = tomllib.loads(lock_bytes.decode())
+    package = next(item for item in lock["package"] if item["name"] == "pycparser")
+    version = package["version"]
+    wheel = tmp_path / f"pycparser-{version}-py3-none-any.whl"
+    source = "def select(value):\n    match value:\n        case 1:\n            return True\n"
+    metadata = f"pycparser-{version}.dist-info"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("pycparser/__init__.py", source)
+        archive.writestr(
+            f"{metadata}/METADATA",
+            f"Metadata-Version: 2.1\nName: pycparser\nVersion: {version}\n"
+            "Requires-Python: >=3.11\n",
+        )
+        archive.writestr(
+            f"{metadata}/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{metadata}/RECORD", "")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    for name in ("requirements.txt", "constraints.txt"):
+        (staged / name).write_text(f"pycparser=={version}\n", encoding="utf-8")
+    commands: list[list[str]] = []
+    runner = CommandRunner()
+
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = list(command)
+        commands.append(command)
+        if command[:2] == ["uv", "export"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:3] == ["uv", "pip", "install"] and fallback:
+            raise subprocess.CalledProcessError(1, command)
+        if command[:3] == ["uv", "pip", "install"] or "pip" in command:
+            command.extend(["--no-index", "--find-links", str(tmp_path), "--no-deps"])
+        return subprocess.run(
+            command, env=environment, capture_output=True, text=True, check=True, timeout=30,
+        )
+
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr("scripts.deploy.sys.executable", python)
+    _install_linux_dependencies(runner, staged)
+    installed = staged / ".python_packages/lib/site-packages"
+    assert (installed / "pycparser/__init__.py").read_text() == source
+    assert not list(installed.rglob("*.pyc"))
+    assert not list(installed.rglob("__pycache__"))
+    assert not (installed / "pip").exists()
+    manifest = json.loads((staged / "dependency-manifest.json").read_text())
+    assert manifest["packages"] == {"pycparser": version}
+    assert manifest["lock_sha256"] == hashlib.sha256(lock_bytes).hexdigest()
+    assert any("ensurepip" in command for command in commands) is fallback
+    if fallback:
+        origin = subprocess.run(
+            [python, "-I", "-c", "import pip; print(pip.__file__)"],
+            env=environment, capture_output=True, text=True, check=True,
+        )
+        assert Path(origin.stdout.strip()).is_relative_to(virtualenv)
+    else:
+        after = subprocess.run(probe, env=environment, capture_output=True, text=True, check=True)
+        assert after.stdout.strip() == "None"
 
 
 @pytest.mark.parametrize("fallback", [False, True])
@@ -2406,10 +2513,14 @@ def test_linux_install_locks_primary_and_fallback_dependencies(
     monkeypatch.setattr(runner, "run", run)
     monkeypatch.setattr("scripts.deploy.shutil.which", lambda _: "/usr/bin/pip3")
     _install_linux_dependencies(runner, staged)
+    if fallback:
+        assert commands[-2] == [sys.executable, "-I", "-m", "ensurepip", "--upgrade"]
+        assert commands[-1][:5] == [sys.executable, "-I", "-m", "pip", "install"]
+        assert "--no-compile" in commands[-1]
     assert commands[0][:3] == ["uv", "export", "--locked"]
     assert "--no-dev" in commands[0] and "--no-emit-project" in commands[0]
     assert commands[0][-1] == str(staged / "constraints.txt")
-    for command in commands[1:]:
+    for command in (item for item in commands[1:] if "install" in item):
         assert command[command.index("--constraint") + 1] == str(staged / "constraints.txt")
     manifest = json.loads((staged / "dependency-manifest.json").read_text())
     assert manifest["packages"] == {"fastapi": "0.139.2"}
@@ -2428,7 +2539,7 @@ def test_packaged_dependencies_reject_versions_outside_the_lock(
 
 
 def test_linux_fallback_accepts_locked_pillow_and_older_binary_wheels(tmp_path: Path) -> None:
-    command = pip_linux_dependency_command(tmp_path / "staged", "/usr/bin/pip3")
+    command = pip_linux_dependency_command(tmp_path / "staged", sys.executable)
     platforms = [command[index + 1] for index, value in enumerate(command) if value == "--platform"]
     compatible = set(cpython_tags(python_version=(3, 11), abis=["cp311"], platforms=platforms))
     lock = tomllib.loads((REPOSITORY_ROOT / "uv.lock").read_text(encoding="utf-8"))

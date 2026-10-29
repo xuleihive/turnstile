@@ -836,13 +836,17 @@ def linux_dependency_command(staged: Path) -> list[str]:
     ]
 
 
-def pip_linux_dependency_command(staged: Path, pip: str) -> list[str]:
+def pip_linux_dependency_command(staged: Path, python: str) -> list[str]:
     target = staged / ".python_packages" / "lib" / "site-packages"
     target.mkdir(parents=True, exist_ok=True)
     return [
-        pip,
+        python,
+        "-I",
+        "-m",
+        "pip",
         "install",
         "--disable-pip-version-check",
+        "--no-compile",
         "--only-binary=:all:",
         "--platform",
         "manylinux_2_28_x86_64",
@@ -904,14 +908,13 @@ def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
     try:
         runner.run(linux_dependency_command(staged), cwd=REPOSITORY_ROOT)
     except subprocess.CalledProcessError:
-        pip = shutil.which("pip3")
-        if pip is None:
-            raise DeploymentError(
-                "uv could not install Linux dependencies and pip3 is unavailable for fallback"
-            ) from None
         print("uv dependency installation failed; retrying with pip.")
         runner.run(
-            pip_linux_dependency_command(staged, pip),
+            [sys.executable, "-I", "-m", "ensurepip", "--upgrade"],
+            cwd=REPOSITORY_ROOT,
+        )
+        runner.run(
+            pip_linux_dependency_command(staged, sys.executable),
             cwd=REPOSITORY_ROOT,
         )
     validate_packaged_dependencies(staged)
@@ -2020,6 +2023,7 @@ def initialize_fixed_program(
         observer_key_named_value=_output_string(outputs, "observerAdapterKeyNamedValueName"),
         model_additions_enabled=True,
         pool_enabled=True,
+        router_enabled=True,
         native_gateway_scope=native_gateway_scope_for_capability(
             self_hosted_gateway_capability_for_tier(service.json()["sku"]["name"]),
         ),

@@ -2314,6 +2314,588 @@ def test_subscription_key_exposes_routers_in_models_and_invokes_chat_completions
         app.dependency_overrides.pop(require_authenticated_session, None)
 
 
+def test_fixed_router_component_keeps_native_admission_and_no_replay() -> None:
+    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+
+    inbound, outbound = fixed_router_operation_stages(
+        "https://unitstore.table.core.windows.net", "Ledger", "unit-api", str(OWNER_ID),
+    )
+    requests = {node.get("response-variable-name") for node in inbound.iter("send-request")}
+    assert requests == {"routerLookupRead", "routerStickyTableResp", "routerDecisionHttp"}
+    decision = inbound.find(".//send-request[@response-variable-name='routerDecisionHttp']")
+    assert decision is not None
+    assert decision.find("authentication-managed-identity") is None
+    assert decision.find("set-header[@name='Ocp-Apim-Subscription-Key']") is not None
+    assert "context.Request.OriginalUrl.Host" in decision.findtext("set-url", "")
+    assert inbound.find(".//cache-lookup-value") is None
+    assert outbound.find(".//send-request[@response-variable-name='routerFallbackHttp']") is None
+    proof = inbound.find(".//set-variable[@name='routerNativeDocumentReady']")
+    assert proof is not None
+    assert "Sha256" in proof.get("value", "") and str(OWNER_ID) in proof.get("value", "")
+    trace = outbound.find(
+        ".//send-request[@response-variable-name='routerOutboundTraceWrite']/set-body",
+    )
+    assert trace is not None and 'trace["native_usage_recorded"] = true' in (trace.text or "")
+
+
+def router_table_transport(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from email import policy
+    from email.parser import BytesParser
+    from types import SimpleNamespace
+    from urllib.parse import unquote
+
+    import httpx
+
+    from tests.backend.model_platform.test_storage_route_projection import batch_result
+    from turnstile_core.config import Settings
+
+    state = SimpleNamespace(entities={}, etags={}, requests=[], fail_name_read=False,
+                            fail_batch=False, fail_prepare=False, sequence=0)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        state.requests.append(request)
+        if request.url.path == "/$batch":
+            message = BytesParser(policy=policy.default).parsebytes(
+                b"Content-Type: " + request.headers["Content-Type"].encode()
+                + b"\r\n\r\n" + request.content,
+            )
+            mutations = []
+            for part in message.walk():
+                if part.get_content_type() != "application/http":
+                    continue
+                raw = part.get_payload(decode=True)
+                assert isinstance(raw, bytes)
+                head, body = raw.split(b"\r\n\r\n", 1)
+                _, headers = head.split(b"\r\n", 1)
+                values = json.loads(body)
+                mutation_key = (values["PartitionKey"], values["RowKey"])
+                parsed_headers = BytesParser(policy=policy.default).parsebytes(headers)
+                etag = parsed_headers.get("If-Match")
+                if etag and state.etags.get(mutation_key) != etag:
+                    return batch_result(412)
+                if not etag and mutation_key in state.entities:
+                    return batch_result(409)
+                mutations.append((mutation_key, values))
+            if state.fail_batch:
+                return batch_result(503)
+            for mutation_key, values in mutations:
+                state.sequence += 1
+                state.entities[mutation_key] = values
+                state.etags[mutation_key] = f'W/"{state.sequence}"'
+            return batch_result(operations=len(mutations))
+        address = unquote(str(request.url))
+        key: tuple[str, str] | None = None
+        if "PartitionKey='" in address:
+            key = (address.split("PartitionKey='", 1)[1].split("'", 1)[0],
+                   address.split("RowKey='", 1)[1].split("'", 1)[0])
+        if request.method == "GET":
+            if key is None:
+                return httpx.Response(200, json={"value": list(state.entities.values())})
+            if state.fail_name_read and key[1] == state.name_key:
+                return httpx.Response(503)
+            if key not in state.entities:
+                return httpx.Response(404)
+            return httpx.Response(200, json=state.entities[key],
+                                  headers={"ETag": state.etags[key]})
+        if request.method in {"PUT", "POST"}:
+            values = json.loads(request.content)
+            key = (values["PartitionKey"], values["RowKey"])
+            if state.fail_prepare and values.get("Status") == "prepared":
+                return httpx.Response(503)
+            state.sequence += 1
+            state.entities[key] = values
+            state.etags[key] = f'W/"{state.sequence}"'
+            return httpx.Response(204, headers={"ETag": state.etags[key]})
+        if request.method == "DELETE":
+            state.entities.pop(key, None)
+            return httpx.Response(204)
+        raise AssertionError(f"Unexpected Table request: {request.method} {request.url}")
+
+    original_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: original_client(
+        transport=httpx.MockTransport(handle),
+    ))
+    monkeypatch.setattr(
+        "turnstile_core.integrations.router_table_projection.ManagedIdentityTokenProvider",
+        lambda: SimpleNamespace(token=lambda _: "offline-table-token"),
+    )
+    settings = Settings.model_construct(
+        ledger_table_endpoint="https://unitstore.table.core.windows.net",
+        ledger_table_name="Ledger",
+    )
+    monkeypatch.setattr("turnstile_core.config.get_settings", lambda: settings)
+    monkeypatch.setattr("turnstile_core.integrations.router_table_projection.get_settings",
+                        lambda: settings)
+    return state
+
+
+def test_router_failed_sql_commit_never_activates_table_documents(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from turnstile_core.integrations.router_table_projection import ROUTER_CATALOG_PARTITION
+
+    repository, _ = router_repository
+    table = router_table_transport(monkeypatch)
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Commit boundary", "definition": valid_definition(enabled_model_ids(repository)[0]),
+    })
+    assert created.status_code == 201
+    router_id = UUID(created.json()["id"])
+    publish = repository.publish_model_router
+
+    def fail_commit(*args: Any, before_record: Any, **kwargs: Any) -> Any:
+        def prepare(candidate: dict[str, Any]) -> None:
+            before_record(candidate)
+            raise RuntimeError("Injected SQL commit failure")
+        return publish(*args, before_record=prepare, **kwargs)
+
+    monkeypatch.setattr(repository, "publish_model_router", fail_commit)
+    with pytest.raises(RuntimeError, match="SQL commit failure"):
+        client.post(f"/api/v1/model-routers/{router_id}/publish")
+    current = client.get(f"/api/v1/model-routers/{router_id}").json()
+    assert current["status"] == "draft" and current["version"] == 0
+    assert repository.model_router_revisions == []
+    assert table.entities
+    assert all(key[0] != ROUTER_CATALOG_PARTITION for key in table.entities)
+    assert all(entity["Status"] == "prepared" for entity in table.entities.values())
+
+
+@pytest.mark.parametrize("fault", ["prepare", "name-read", "batch"])
+@pytest.mark.parametrize("previously_published", [False, True])
+def test_router_table_activation_failure_preserves_previous_entries(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch, fault: str, previously_published: bool,
+) -> None:
+    import httpx
+
+    from turnstile_core.integrations.router_table_projection import (
+        ROUTER_CATALOG_PARTITION,
+        router_row_key,
+    )
+
+    repository, _ = router_repository
+    table = router_table_transport(monkeypatch)
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Atomic activation",
+        "definition": valid_definition(enabled_model_ids(repository)[0]),
+    })
+    router_id = UUID(created.json()["id"])
+    if previously_published:
+        assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    before = client.get(f"/api/v1/model-routers/{router_id}").json()
+    active_before = {key: value.copy() for key, value in table.entities.items()
+                     if key[0] == ROUTER_CATALOG_PARTITION}
+    table.name_key = router_row_key("Atomic activation")
+    table.fail_prepare = fault == "prepare"
+    table.fail_name_read = fault == "name-read"
+    table.fail_batch = fault == "batch"
+    if fault == "prepare":
+        with pytest.raises(httpx.HTTPStatusError):
+            client.post(f"/api/v1/model-routers/{router_id}/publish")
+        assert client.get(f"/api/v1/model-routers/{router_id}").json() == before
+    else:
+        response = client.post(f"/api/v1/model-routers/{router_id}/publish")
+        assert response.status_code == 200
+        assert response.json()["version"] == before["version"] + 1
+    assert {key: value for key, value in table.entities.items()
+            if key[0] == ROUTER_CATALOG_PARTITION} == active_before
+    if fault != "prepare":
+        from turnstile_core.integrations.router_table_projection import RouterTableProjector
+
+        table.fail_name_read = table.fail_batch = False
+        model_id = enabled_model_ids(repository)[0]
+        model = next(row for row in repository.models if row["id"] == model_id)
+        runtime = next(row for row in repository.runtimes if row["id"] == model["runtime_id"])
+        projector = RouterTableProjector("https://unitstore.table.core.windows.net", "Ledger")
+        assert projector.sync_all_published_routers(
+            repository, gateway_profile_id=runtime["gateway_profile_id"],
+        ) == 1
+        active = [value for key, value in table.entities.items()
+                  if key[0] == ROUTER_CATALOG_PARTITION]
+        assert len(active) == 2
+        assert all(value["RouterVersion"] == before["version"] + 1 for value in active)
+
+
+def test_router_backfill_cannot_overwrite_a_newer_active_version(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from turnstile_core.integrations.router_table_projection import (
+        ROUTER_CATALOG_PARTITION,
+        RouterTableProjector,
+    )
+
+    repository, _ = router_repository
+    table = router_table_transport(monkeypatch)
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Monotonic activation",
+        "definition": valid_definition(enabled_model_ids(repository)[0]),
+    })
+    router_id = UUID(created.json()["id"])
+    assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    previous = repository.list_published_model_routers()
+    assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    active_before = {key: value.copy() for key, value in table.entities.items()
+                     if key[0] == ROUTER_CATALOG_PARTITION}
+    assert len(active_before) == 2
+    assert all(value["RouterVersion"] == 2 for value in active_before.values())
+    monkeypatch.setattr(repository, "list_published_model_routers", lambda: previous)
+    projector = RouterTableProjector("https://unitstore.table.core.windows.net", "Ledger")
+    from turnstile_core.domain.model_router import ModelRouter
+
+    assert not projector.upsert_router(
+        ModelRouter.model_validate(previous[0]), repository.registry(),
+    )
+    assert projector.sync_all_published_routers(repository) == 0
+    current = repository.get_published_model_router(router_id)
+    assert current is not None and current["version"] == 2
+    assert {key: value for key, value in table.entities.items()
+            if key[0] == ROUTER_CATALOG_PARTITION} == active_before
+
+
+def same_name_router_backfill_scenario(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, Any], dict[str, Any], UUID]:
+    from tests.backend.telemetry.test_atomic_ledger import TARGET
+    from turnstile_core.integrations.router_table_projection import (
+        ROUTER_CATALOG_PARTITION,
+        RouterTableProjector,
+        router_row_key,
+    )
+
+    repository, current = router_repository
+    table = router_table_transport(monkeypatch)
+    model_id = enabled_model_ids(repository)[0]
+    model = next(row for row in repository.models if row["id"] == model_id)
+    runtime = next(row for row in repository.runtimes if row["id"] == model["runtime_id"])
+    runtime["gateway_profile_id"] = TARGET
+    model["family_key"] = "gpt"
+    model["display_name"] = "Shared candidate"
+    monkeypatch.setattr(
+        "turnstile_core.integrations.router_table_projection."
+        "_resolve_allowed_subscription_ids_for_router",
+        lambda router, *_: (["unit-subscription"]
+                   if router.created_by == "second-owner@contoso.com" else ["owner-a"]),
+    )
+    payload: dict[str, Any] = {
+        "name": "Shared owner backfill", "definition": valid_definition(model_id),
+    }
+    first = client.post("/api/v1/model-routers", json=payload)
+    assert first.status_code == 201
+    assert client.post(f"/api/v1/model-routers/{first.json()['id']}/publish").status_code == 200
+    snapshot = repository.list_published_model_routers()
+    current["identity"] = identity(MEMBER_ID, "second-owner@contoso.com")
+    second = client.post("/api/v1/model-routers", json=payload)
+    assert second.status_code == 201
+    second_id = UUID(second.json()["id"])
+    assert client.post(f"/api/v1/model-routers/{second_id}/publish").status_code == 200
+    key = (ROUTER_CATALOG_PARTITION, router_row_key(payload["name"]))
+    before = table.entities[key].copy()
+    monkeypatch.setattr(repository, "list_published_model_routers", lambda: snapshot)
+    projector = RouterTableProjector("https://unitstore.table.core.windows.net", "Ledger")
+    assert projector.sync_all_published_routers(repository, gateway_profile_id=TARGET) == 1
+    assert repository.get_published_model_router(second_id) is not None
+    assert (ROUTER_CATALOG_PARTITION, router_row_key(str(second_id))) in table.entities
+    return before, table.entities[key], second_id
+
+
+def test_router_stale_backfill_preserves_other_owner_name_entry(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from turnstile_core.integrations.router_table_projection import RouterTableProjector
+
+    before, after, second_id = same_name_router_backfill_scenario(router_repository, monkeypatch)
+    for entity in (before, after):
+        documents = RouterTableProjector._parse_entity_documents(entity)
+        assert len(documents) == 2
+        assert str(second_id) in {document["router_id"] for document in documents}
+
+
+@pytest.mark.parametrize("action", ["disable", "delete"])
+def test_router_stale_backfill_cannot_reactivate_revoked_router(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    from turnstile_core.integrations.router_table_projection import (
+        ROUTER_CATALOG_PARTITION,
+        RouterTableProjector,
+    )
+
+    repository, _ = router_repository
+    table = router_table_transport(monkeypatch)
+    model_id = enabled_model_ids(repository)[0]
+    model = next(row for row in repository.models if row["id"] == model_id)
+    runtime = next(row for row in repository.runtimes if row["id"] == model["runtime_id"])
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Revocation race", "definition": valid_definition(model_id),
+    })
+    router_id = UUID(created.json()["id"])
+    assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    snapshot = repository.list_published_model_routers()
+    list_published = repository.list_published_model_routers
+    if action == "disable":
+        assert client.post(f"/api/v1/model-routers/{router_id}/disable").status_code == 200
+    else:
+        assert client.delete(f"/api/v1/model-routers/{router_id}").status_code == 204
+    assert list_published() == []
+    assert all(key[0] != ROUTER_CATALOG_PARTITION for key in table.entities)
+    monkeypatch.setattr(repository, "list_published_model_routers", lambda: snapshot)
+    projector = RouterTableProjector("https://unitstore.table.core.windows.net", "Ledger")
+    assert projector.sync_all_published_routers(
+        repository, gateway_profile_id=runtime["gateway_profile_id"],
+    ) == 0
+    monkeypatch.setattr(repository, "list_published_model_routers", list_published)
+    assert projector.sync_all_published_routers(
+        repository, gateway_profile_id=runtime["gateway_profile_id"],
+    ) == 0
+    assert all(key[0] != ROUTER_CATALOG_PARTITION for key in table.entities)
+
+
+def test_native_router_trace_does_not_duplicate_formal_usage() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from turnstile_core.integrations.router_table_projection import RouterTableProjector
+
+    repository = Mock()
+    projector = RouterTableProjector("https://unitstore.table.core.windows.net", "Ledger")
+    record: dict[str, Any] = {
+        "request_id": "native-router-accounted-request", "router_id": str(OWNER_ID),
+        "router_name": "Native test", "router_version": 1,
+        "native_usage_recorded": True, "attempts": [],
+        "usage_records": [{"request_id": "already-formal-decision", "input_tokens": 9}],
+    }
+    metadata = SimpleNamespace(id="unit", name="Unit")
+    for _ in range(2):
+        assert projector._sync_entity_doc(
+            record["request_id"], json.dumps(record), repository,
+            default_org=metadata, default_dept=metadata, default_proj=metadata,
+            default_agent=metadata, default_provider="Unit", default_runtime="Unit",
+        )
+    assert repository.save_model_router_invocation.call_count == 2
+    repository.write_token_usage.assert_not_called()
+
+
+@pytest.mark.parametrize("state", [
+    "missing-capability", "expired-proof", "unsupported-fallback", "ready",
+    "projection-error-draft", "projection-error-published",
+    "projection-error-fallback",
+    "multiple-gateways",
+])
+def test_fixed_native_router_ui_publication_preserves_legacy_contract(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    from time import time
+    from unittest.mock import Mock
+
+    from turnstile_core.config import Settings
+    from turnstile_core.domain.storage_routes import (
+        FixedProgramInstallation,
+        ProgramCapabilityProof,
+        ProgramIdentity,
+        RouteScope,
+    )
+
+    repository, _ = router_repository
+    first, second = enabled_model_ids(repository)[:2]
+    model = next(row for row in repository.models if row["id"] == first)
+    runtime = next(row for row in repository.runtimes if row["id"] == model["runtime_id"])
+    target = runtime["gateway_profile_id"]
+    installed = FixedProgramInstallation(
+        program=ProgramIdentity(
+            scope=RouteScope(target_id=str(target), api_id="unit-api", gateway_id="managed"),
+            api_revision="1", instance_id="managed", program_sha256="a" * 64,
+            trust_binding_sha256="b" * 64,
+        ),
+        target_identity_sha256="c" * 64,
+        storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
+        gateway_endpoint="https://unit.azure-api.net/turnstile", publisher_subscription_id="unit",
+        parent_policy_sha256="d" * 64, operation_policies_sha256={"models": "e" * 64},
+        operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
+        router_enabled=state != "missing-capability",
+    )
+    monkeypatch.setattr(repository, "effective_gateway_publication", lambda _: {
+        "id": OWNER_ID, "status": "active",
+        "resource_manifest": {"fixed_route_program": installed.model_dump(mode="json")},
+    })
+    for row in repository.models:
+        if row["id"] in {first, second}:
+            row["family_key"] = "gpt"
+            row["capabilities"] = ["chat"]
+            selected = next(item for item in repository.runtimes if item["id"] == row["runtime_id"])
+            selected["gateway_profile_id"] = target
+            selected["config"].update(control_plane_managed=True, api_format="openai_chat")
+    if state == "multiple-gateways":
+        from uuid import uuid4
+
+        second_model = next(row for row in repository.models if row["id"] == second)
+        second_runtime = next(row for row in repository.runtimes
+                              if row["id"] == second_model["runtime_id"])
+        separate_runtime = {
+            **second_runtime, "id": uuid4(), "gateway_profile_id": uuid4(),
+        }
+        repository.runtimes.append(separate_runtime)
+        second_model["runtime_id"] = separate_runtime["id"]
+    now = int(time())
+    proof = ProgramCapabilityProof(
+        proof_id=str(UUID(int=912)), identity=installed.program, supported_profiles=("openai-v1",),
+        issued_epoch=now - 121 if state == "expired-proof" else now - 1,
+        expires_epoch=now - 1 if state == "expired-proof" else now + 119,
+    )
+    projection = Mock()
+    projection.read_program_proof.return_value = (proof, 'W/"proof"')
+    monkeypatch.setattr(
+        "turnstile_core.integrations.storage_route_projection.TableRouteProjection",
+        Mock(return_value=projection),
+    )
+    settings = Settings.model_construct(
+        ledger_table_endpoint="https://unitstore.table.core.windows.net",
+        ledger_table_name="Ledger",
+    )
+    monkeypatch.setattr(
+        "turnstile_core.integrations.router_table_projection.get_settings", lambda: settings,
+    )
+    monkeypatch.setattr("turnstile_core.config.get_settings", lambda: settings)
+    projected = Mock()
+    projected.prepare_router.return_value = True
+    projected.upsert_router.return_value = True
+    monkeypatch.setattr("turnstile_core.integrations.router_table_projection.RouterTableProjector",
+                        Mock(return_value=projected))
+    definition = (fallback_definition(first, second) if state in {
+        "unsupported-fallback", "projection-error-fallback",
+    }
+                  else model_based_definition(first, first, second))
+    if state not in {"unsupported-fallback", "projection-error-fallback"}:
+        definition["nodes"] = [node for node in definition["nodes"] if node["type"] != "fallback"]
+        definition["edges"] = [edge for edge in definition["edges"]
+                               if edge["source"] != "fallback" and edge["target"] != "fallback"]
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Missing native program", "definition": definition,
+    })
+    assert created.status_code == 201
+    router_id = created.json()["id"]
+    if state.startswith("projection-error"):
+        if state == "projection-error-published":
+            initial = client.post(f"/api/v1/model-routers/{router_id}/publish")
+            assert initial.status_code == 200
+        before = client.get(f"/api/v1/model-routers/{router_id}").json()
+        revisions = len(repository.model_router_revisions)
+        projected.prepare_router.side_effect = RuntimeError("Injected Router projection failure")
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="Router projection failure"):
+                client.post(f"/api/v1/model-routers/{router_id}/publish")
+            after = client.get(f"/api/v1/model-routers/{router_id}").json()
+            assert after == before
+            assert len(repository.model_router_revisions) == revisions
+        return
+    response = client.post(f"/api/v1/model-routers/{router_id}/publish")
+    if state in {
+        "ready", "unsupported-fallback", "multiple-gateways", "missing-capability", "expired-proof",
+    }:
+        assert response.status_code == 200 and response.json()["status"] == "published"
+        projected.upsert_router.assert_called_once()
+        if state == "ready":
+            republished = client.post(f"/api/v1/model-routers/{router_id}/publish")
+            assert republished.status_code == 200
+            assert republished.json()["version"] == 2
+            assert projected.upsert_router.call_count == 2
+            assert projected.upsert_router.call_args.args[0].version == 2
+    projection.read_program_proof.assert_not_called()
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_router_postgresql_projection_holds_current_published_row_lock(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch, present: bool,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from turnstile_core.persistence.repository_router import PostgreSqlRouterRepositoryMixin
+
+    repository, _ = router_repository
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Projection lock", "definition": valid_definition(enabled_model_ids(repository)[0]),
+    })
+    router_id = UUID(created.json()["id"])
+    assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    raw = repository.model_routers[0]
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    connection.execute.return_value.fetchone.return_value = raw if present else None
+    transaction = connection.transaction.return_value
+    postgres = PostgreSqlRouterRepositoryMixin()
+    monkeypatch.setattr(postgres, "_connection", lambda: connection)
+
+    def project(current: dict[str, Any]) -> bool:
+        transaction.__enter__.assert_called_once()
+        transaction.__exit__.assert_not_called()
+        assert current["id"] == router_id and current["version"] == 1
+        return True
+
+    writer = Mock(side_effect=project)
+    assert postgres.project_published_model_router(router_id, 1, writer) is present
+    assert writer.call_count == int(present)
+    sql, parameters = connection.execute.call_args.args
+    assert parameters == (router_id, 1)
+    assert "FOR UPDATE" in sql and "version = %s" in sql
+    assert "status = 'published'" in sql and "deleted_at IS NULL" in sql
+    transaction.__exit__.assert_called_once_with(None, None, None)
+
+
+@pytest.mark.parametrize("projection_fails", [False, True])
+def test_router_postgresql_publish_projects_before_transaction_exit(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    monkeypatch: pytest.MonkeyPatch, projection_fails: bool,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from turnstile_core.persistence.repository_router import PostgreSqlRouterRepositoryMixin
+
+    repository, _ = router_repository
+    model_id = enabled_model_ids(repository)[0]
+    created = client.post("/api/v1/model-routers", json={
+        "name": "Transactional Router", "definition": valid_definition(model_id),
+    })
+    assert created.status_code == 201
+    current = repository.model_routers[0]
+    pending = {
+        **current, "status": "published", "version": 1,
+        "published_config": current["draft_config"], "published_at": datetime.now(UTC),
+    }
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    connection.execute.return_value.fetchone.side_effect = [current, pending]
+    transaction = connection.transaction.return_value
+    postgres = PostgreSqlRouterRepositoryMixin()
+    monkeypatch.setattr(postgres, "_connection", lambda: connection)
+
+    def project(candidate: dict[str, Any]) -> None:
+        transaction.__enter__.assert_called_once()
+        transaction.__exit__.assert_not_called()
+        assert candidate["status"] == "published"
+        assert candidate["version"] == 1
+        if projection_fails:
+            raise RuntimeError("Injected Router projection failure")
+
+    if projection_fails:
+        with pytest.raises(RuntimeError, match="Router projection failure"):
+            postgres.publish_model_router(
+                current["id"], OWNER_ID, "owner@contoso.com", before_record=project,
+            )
+        assert transaction.__exit__.call_args.args[0] is RuntimeError
+    else:
+        published = postgres.publish_model_router(
+            current["id"], OWNER_ID, "owner@contoso.com", before_record=project,
+        )
+        assert published is not None and published["version"] == 1
+        transaction.__exit__.assert_called_once_with(None, None, None)
+    assert "FOR UPDATE" in connection.execute.call_args_list[0].args[0]
+
+
 def test_router_table_projection_and_apim_global_policy_are_decoupled_and_parameterized(
     router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
 ) -> None:
@@ -3925,6 +4507,38 @@ def test_router_security_audit_spoofing_failclosed_and_same_name_isolation(
         nonlocal etag_seq, stale_etag_remaining
         from urllib.parse import unquote
 
+        if request.url.path == "/$batch":
+            from email import policy
+            from email.parser import BytesParser
+
+            from tests.backend.model_platform.test_storage_route_projection import batch_result
+
+            message = BytesParser(policy=policy.default).parsebytes(
+                b"Content-Type: " + request.headers["Content-Type"].encode()
+                + b"\r\n\r\n" + request.content,
+            )
+            before_store, before_etags = table_store.copy(), table_etags.copy()
+            operations = 0
+            for part in message.walk():
+                if part.get_content_type() != "application/http":
+                    continue
+                raw = part.get_payload(decode=True)
+                assert isinstance(raw, bytes)
+                head, body = raw.split(b"\r\n\r\n", 1)
+                first, headers = head.split(b"\r\n", 1)
+                method, address, _ = first.decode().split()
+                parsed_headers = BytesParser(policy=policy.default).parsebytes(headers)
+                result = table_handler(httpx.Request(
+                    method, address, headers=dict(parsed_headers.items()), content=body,
+                ))
+                if result.status_code >= 400:
+                    table_store.clear()
+                    table_store.update(before_store)
+                    table_etags.clear()
+                    table_etags.update(before_etags)
+                    return batch_result(result.status_code)
+                operations += 1
+            return batch_result(operations=operations)
         url_str = unquote(str(request.url))
         rk = ""
         if "RowKey='" in url_str:
@@ -4019,9 +4633,10 @@ def test_router_security_audit_spoofing_failclosed_and_same_name_isolation(
 
         # 2) If all 3 attempts hit stale ETag (412), PUT fails with 412 and does not overwrite
         stale_etag_remaining = 3
-        with pytest.raises(httpx.HTTPStatusError) as stale_exc:
+        from turnstile_core.integrations.table_batch import TableBatchConflict
+
+        with pytest.raises(TableBatchConflict):
             projector.upsert_router(owner_router, repository.registry())
-        assert stale_exc.value.response.status_code == 412
         assert table_store[shared_rk]["RouterId"] == str(second_router.id)
 
         # Transient 503 on name_rk GET: neither upsert_router nor delete_router may blind-PUT/DELETE

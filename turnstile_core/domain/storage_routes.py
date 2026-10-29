@@ -446,6 +446,7 @@ class FixedProgramInstallation(RouteModel):
     image_limits: ImageGenerationLimits | None = None
     oauth_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     pool_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
+    router_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     decision_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     model_additions_enabled: bool = Field(default=False, exclude_if=lambda value: value is False)
     native_gateway_scope: bool = Field(default=False, exclude_if=lambda value: value is False)
@@ -535,6 +536,8 @@ class FixedProgramUpgrade(RouteModel):
                    "predecessor_program_sha256"}
         if current.pool_enabled and not previous.pool_enabled:
             changed.add("pool_enabled")
+        if current.router_enabled and not previous.router_enabled:
+            changed.add("router_enabled")
         if current.decision_enabled and not previous.decision_enabled:
             if (current.operation_contracts != {
                 **previous.operation_contracts,

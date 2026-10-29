@@ -4114,6 +4114,10 @@ schemas:
         type: boolean
         title: Pool Enabled
         default: false
+      router_enabled:
+        type: boolean
+        title: Router Enabled
+        default: false
       decision_enabled:
         type: boolean
         title: Decision Enabled

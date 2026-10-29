@@ -471,6 +471,15 @@ def publish_gateway_changes(timer: func.TimerRequest) -> None:
                 initialization.configure_budget_delegation(
                     repository, target_config.settings, target_id,
                 )
+                if target_config.settings.ledger_table_endpoint:
+                    from turnstile_core.integrations.router_table_projection import (
+                        RouterTableProjector,
+                    )
+
+                    RouterTableProjector(
+                        target_config.settings.ledger_table_endpoint,
+                        target_config.settings.ledger_table_name,
+                    ).sync_all_published_routers(repository, gateway_profile_id=target_id)
         publisher = AzureApimPublisherClientResolver(configurations)
         cipher = CredentialCipher.from_settings(settings)
         client = resources.enter_context(httpx.Client(timeout=10.0, follow_redirects=False))

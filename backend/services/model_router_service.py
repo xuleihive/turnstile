@@ -321,7 +321,23 @@ class _ModelRouterLifecycleService(ABC):
         assignees = list(self._repository.list_model_router_assignees(router_id))
         for assignee in assignees:
             self._assert_assignee_models(router.definition, assignee)
-        row = self._repository.publish_model_router(router_id, owner_id, user_email)
+        def project_before_commit(candidate: dict[str, Any]) -> None:
+            from turnstile_core.config import get_settings
+
+            settings = get_settings()
+            project_router_to_table_if_configured(
+                ModelRouter.model_validate(candidate), self._repository,
+                required=bool(
+                    settings.ledger_table_endpoint and settings.ledger_table_name
+                ),
+                use_published_snapshot=False,
+                prepare_only=True,
+            )
+
+        row = self._repository.publish_model_router(
+            router_id, owner_id, user_email,
+            before_record=project_before_commit,
+        )
         if row is None:
             raise ModelRouterNotFoundError("Model router not found")
         published = ModelRouter.model_validate(row)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Any
 from uuid import UUID, uuid4
@@ -157,7 +157,8 @@ class PostgreSqlRouterRepositoryMixin:
         return model_router_view(row) if row is not None else None
 
     def publish_model_router(
-        self, router_id: UUID, owner_id: UUID, published_by: str
+        self, router_id: UUID, owner_id: UUID, published_by: str,
+        *, before_record: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
         with self._connection() as connection, connection.transaction():
             current = connection.execute(
@@ -187,7 +188,23 @@ class PostgreSqlRouterRepositoryMixin:
                    RETURNING *""",
                 (version, published_by, router_id, owner_id),
             ).fetchone()
+            if row is not None and before_record is not None:
+                before_record(model_router_view(row))
         return model_router_view(row) if row is not None else None
+
+    def project_published_model_router(
+        self, router_id: UUID, version: int, project: Callable[[dict[str, Any]], bool],
+    ) -> bool:
+        with self._connection() as connection, connection.transaction():
+            row = connection.execute(
+                """SELECT * FROM model_router
+                   WHERE id = %s AND version = %s
+                     AND status = 'published' AND deleted_at IS NULL
+                     AND published_config IS NOT NULL
+                   FOR UPDATE""",
+                (router_id, version),
+            ).fetchone()
+            return project(published_model_router_view(row)) if row is not None else False
 
     def disable_model_router(
         self, router_id: UUID, owner_id: UUID, changed_by: str
