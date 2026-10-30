@@ -118,6 +118,7 @@ docs/             Maintainer and operator documentation
 - Node.js 20.19.x or 22.12+ and npm
 - PostgreSQL 16+
 - Azure CLI with Bicep for Azure deployment
+- For Azure deployment, outbound HTTPS from the deployment workstation to Azure, PyPI, and the npm registry (packaging downloads Linux Python wheels and frontend packages); set `HTTPS_PROXY` if a proxy is required
 - An Azure subscription where you can create the platform resources
 - Optional: a multi-tenant Microsoft Entra SPA registration
 - Optional after deployment: an existing Azure AI Foundry project or another supported provider
@@ -195,7 +196,7 @@ The Bicep templates create Turnstile platform resources such as PostgreSQL, Even
 For **Turnstile v1.3**, choose the matching deployment path:
 
 - **Upgrading an existing installation:** review the [infrastructure and protocol upgrade requirements](docs/deployment.md#prepare-for-v12). Keep the original state, database, ledger, APIM, identities and history; apply pending migrations and the required infrastructure changes as well as the application packages.
-- **Installing from zero:** follow the [fresh-install guide](docs/deployment.md#deploy-v11-from-zero). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
+- **Installing from zero:** follow the step-by-step [website deployment guide](https://turn-stile.com/docs/deployment) (repository reference: [fresh-install guide](docs/deployment.md#deploy-v11-from-zero)). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
 
 StandardV2 does not support self-hosted gateways. That optional feature requires a compatible
 Developer or classic Premium APIM instance and its matching network configuration. Developer is
@@ -211,6 +212,8 @@ mkdir -p .turnstile
 cp infra/main.parameters.example.json .turnstile/main.parameters.json
 ```
 
+Also add `"gatewayApplicationProvisioningEnabled": { "value": true }` to `parameters` if Turnstile will create Application subscriptions. The example omits it and the template default is `false`: **Add subscription** then returns “Application subscription provisioning is not enabled in this environment.” Set it before the first deployment: rerunning a completed installation does not apply a later change, and there is currently no verified way to change it afterwards. The deploy command sets `provisionControlPlane`, `controlPlaneEnabled`, `gatewayReleaseWorkerEnabled`, and `gatewayApplicationKeyManagementEnabled` itself; the `false` values in the example are not applied.
+
 2. Sign in to Azure, select a subscription, and run the repository deployment command:
 
 ```bash
@@ -221,7 +224,7 @@ uv run python -m scripts.deploy deploy \
    --parameters .turnstile/main.parameters.json
 ```
 
-The command prompts for the initial Owner password, runs a subscription-scope what-if, and requires the exact confirmation `deploy`. It stops on any Delete change. It then provisions the platform and observer, builds immutable Linux x86-64 packages, deploys the API and Functions, installs the initial fixed routing program, and enables workers after their dependencies exist. Completion checks include the expected frontend version, Function indexing, password Owner login, and the initial model-publication baseline. These startup checks do not replace provider, routing, or financial acceptance tests in your environment. Generated secrets are stored only in `.turnstile/deployments/<resource-group>.json` with mode `0600`; back up that ignored file in an approved secret store.
+The command prompts for the initial Owner password, runs a subscription-scope what-if, and requires the exact confirmation `deploy`. It stops on any Delete change. The what-if is printed only as counts per change type (for example `What-if: Create=130, Unsupported=9` for a new installation); `Unsupported` entries are role assignments for managed identities created by the same deployment. The template also assigns `API Management Service Contributor` to the API and Control-plane managed identities at subscription scope. It then provisions the platform and observer, builds immutable Linux x86-64 packages, deploys the API and Functions, installs the initial fixed routing program, and enables workers after their dependencies exist. Completion checks include the expected frontend version, Function indexing, password Owner login, and the initial model-publication baseline. These startup checks do not replace provider, routing, or financial acceptance tests in your environment. Generated secrets are stored only in `.turnstile/deployments/<resource-group>.json` with mode `0600`; back up that ignored file in an approved secret store.
 
 For automation, copy `infra/owner.credentials.example.json` to `.turnstile/owner.credentials.json`, set the same email as `bootstrapOwnerEmail`, choose the password, run `chmod 600` on the file, and add `--owner-credentials .turnstile/owner.credentials.json`. Plaintext never enters Bicep or deployment state; only its scrypt hash is deployed.
 
@@ -245,7 +248,7 @@ Turnstile never creates or modifies the customer Foundry project. The Azure user
 - No prompt or completion content is persisted in telemetry.
 - Credentials are encrypted before database storage.
 - Azure-hosted components use managed identity where supported.
-- APIM roles are scoped to the smallest practical resource and action set.
+- APIM roles are scoped to the smallest practical resource and action set, except `API Management Service Contributor`, which the API and Control-plane managed identities receive at subscription scope.
 - Secret-bearing responses use `Cache-Control: no-store` and are never query-cached.
 - Production cookies set the `HttpOnly` and `Secure` attributes and are role-bound.
 - Local and generated configuration is excluded by `.gitignore`.
@@ -261,7 +264,7 @@ Review [Security](docs/security.md) before deployment.
 
 ## Troubleshooting
 
-See [Troubleshooting](docs/troubleshooting.md) for startup, authentication, database, APIM, observer, and telemetry diagnostics. Deployment failures are resumable: correct the reported cause and rerun the same `scripts.deploy deploy` command with the original private state file.
+See [Troubleshooting](docs/troubleshooting.md) for startup, authentication, database, APIM, observer, and telemetry diagnostics. Deployment failures are resumable: correct the reported cause and rerun the same `scripts.deploy deploy` command with the original private state file. For Azure CLI steps whose output it captures, such as what-if and template deployments, the command does not print the Azure CLI error output: if a step fails with only `Command '[az, …]' returned non-zero exit status 1`, check Azure CLI and Bicep directly (for example `az bicep build --file infra/main.bicep`) and the workstation proxy settings before rerunning. If the final readiness check fails with `The read operation timed out`, rerun the same command; the rerun rebuilds and redeploys every package.
 
 ## Documentation
 
