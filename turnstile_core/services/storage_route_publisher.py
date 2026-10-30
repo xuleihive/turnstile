@@ -4113,12 +4113,16 @@ class FixedRoutePublisherFactory:
                 if (declared_secret is not None
                     and materialized_secret not in {None, declared_secret}):
                     raise PolicyCompilationError("Fixed route declared credential version changed")
+                # Activation records the credential, so a never-activated connection has none yet.
+                accepted_secrets = (
+                    {declared_secret} if declared_secret is not None
+                    else {None, materialized_secret}
+                )
                 if (
                     runtime_config.get("control_plane_managed") is not True
                     or not self._runtime_destination_matches(publication, binding, runtime_config)
                     or runtime_config.get("auth_strategy") != binding.auth_strategy.value
-                    or runtime_config.get("key_vault_secret_id")
-                    != (declared_secret or materialized_secret)
+                    or runtime_config.get("key_vault_secret_id") not in accepted_secrets
                     or binding.api_format is not ApiFormat.MICROSOFT_DECISION
                     and runtime_config.get("managed_identity_resource")
                     != binding.managed_identity_resource

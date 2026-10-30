@@ -1917,11 +1917,14 @@ def test_fixed_route_program_promotion_once_never_replays_started_intent() -> No
 @pytest.mark.parametrize("auth_strategy", [
     AuthStrategy.NAMED_VALUE_API_KEY, AuthStrategy.NAMED_VALUE_BEARER,
 ])
-@pytest.mark.parametrize("fault", [
-    None, "runtime-version", "missing-mapping", "mapped-version", "declared-conflict",
+@pytest.mark.parametrize("published,fault", [
+    *((True, fault) for fault in (
+        None, "runtime-version", "missing-mapping", "mapped-version", "declared-conflict",
+    )),
+    (False, None), (False, "missing-mapping"), (False, "declared-conflict"),
 ])
 def test_connection_renewal_uses_activated_materialized_credential(
-    pool_enabled: bool, auth_strategy: AuthStrategy, fault: str | None,
+    pool_enabled: bool, auth_strategy: AuthStrategy, published: bool, fault: str | None,
 ) -> None:
     from tests.backend.model_platform.test_storage_route_projection import snapshot_fixture
     from turnstile_core.persistence.repository_support import _activated_runtime_credentials
@@ -1970,9 +1973,11 @@ def test_connection_renewal_uses_activated_materialized_credential(
     )
     assert activated["key_vault_secret_id"] == secret_id
     assert binding.key_vault_secret_id is None
+    current = activated if published else dict(runtime_config)
+    assert (current.get("key_vault_secret_id") is not None) is published
     changed_secret = secret_id[:-32] + "b" * 32
     if fault == "runtime-version":
-        activated["key_vault_secret_id"] = changed_secret
+        current["key_vault_secret_id"] = changed_secret
     elif fault == "missing-mapping":
         manifest = {"route_credentials": {"version": 1, "bindings": {}}}
     elif fault == "mapped-version":
@@ -2018,7 +2023,7 @@ def test_connection_renewal_uses_activated_materialized_credential(
     )
     registry = {"runtimes": [{
         "id": binding.runtime_id, "enabled": True,
-        "gateway_profile_id": target, "config": activated,
+        "gateway_profile_id": target, "config": current,
     }]}
     prepare_connection = factory._connection_preparer(
         publication, installation, configuration, management, "unit-worker", lambda: None,
