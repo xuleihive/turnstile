@@ -25,6 +25,7 @@ from ..domain.storage_routes import (
     ActiveRouteHead,
     Digest,
     FixedProgramInstallation,
+    FixedProgramUpgrade,
     Identifier,
     ModelRouteHead,
     ProgramCapabilityProof,
@@ -32,6 +33,7 @@ from ..domain.storage_routes import (
     RouteModel,
     RouteScope,
     canonical_document,
+    document_digest,
     text_digest,
 )
 from .apim_control_plane_contract import PolicyCompilationError
@@ -1816,7 +1818,10 @@ def observer_headers(parent: ET.Element) -> None:
         )
 
 
-def fixed_operation(operation: str, binding: FixedRouteBinding) -> str:
+def fixed_operation(
+    operation: str, binding: FixedRouteBinding, *, logger_id: str = "__LOGGER_ID__",
+    usage_identity: str = "__ROUTER_USAGE_IDENTITY__",
+) -> str:
     if operation not in FIXED_OPERATIONS or (
         operation == "microsoft-decision" and not binding.decision_enabled
     ):
@@ -1829,7 +1834,7 @@ def fixed_operation(operation: str, binding: FixedRouteBinding) -> str:
 
         router_inbound, router_outbound = fixed_router_operation_stages(
             binding.ledger_table_endpoint, binding.ledger_table_name, binding.scope.api_id,
-            binding.scope.target_id,
+            binding.scope.target_id, logger_id=logger_id, usage_identity=usage_identity,
         )
         variable(inbound, "turnstileRouterEngineVersion", "@(2)")
         inbound.append(router_inbound)
@@ -2371,6 +2376,7 @@ def fixed_probe(parent: ET.Element, *, configuration: bool) -> None:
 
 
 def _baseline_root(source: str, binding: FixedRouteBinding | None = None) -> ET.Element:
+    from .apim_budget_execution import eventhub_logger_id
     from .apim_model_availability import (
         _admission_locations,
         admission_guard,
@@ -2392,7 +2398,9 @@ def _baseline_root(source: str, binding: FixedRouteBinding | None = None) -> ET.
         raise PolicyCompilationError("Fixed route ABI cannot be composed twice")
     if binding is not None and binding.native_gateway_scope:
         for branch, anchor in _admission_locations(root):
-            guard = serialize_policy(admission_guard(native_gateway_scope=True))
+            guard = serialize_policy(admission_guard(
+                native_gateway_scope=True, logger_id=eventhub_logger_id(root),
+            ))
             for parameter, value in (
                 ("__GATEWAY_PROFILE_ID__", binding.scope.target_id),
                 ("__LEDGER_TABLE_ENDPOINT__", binding.ledger_table_endpoint),
@@ -2410,6 +2418,7 @@ def upgrade_fixed_program_parent(
     from copy import deepcopy
 
     from .apim_budget_execution import _admission, _completion, budget_execution_fence
+    from .apim_model_availability import _admission_locations, admission_guard
     from .apim_policy_components import compose_image_parent_policy
 
     if policy_document_digest(source) != previous_document_sha256:
@@ -2420,6 +2429,10 @@ def upgrade_fixed_program_parent(
     loggers = {node.get("logger-id", "") for node in root.iter("log-to-eventhub")}
     if len(loggers) != 1 or not next(iter(loggers)):
         raise PolicyCompilationError("Fixed program upgrade logger identity is ambiguous")
+    for branch, anchor in _admission_locations(root):
+        branch[list(branch).index(anchor) + 1] = admission_guard(
+            logger_id=next(iter(loggers)),
+        )
     markers = root.findall(".//set-variable[@name='executionModelId']")
     if len(markers) != 1:
         raise PolicyCompilationError("Fixed program upgrade admission is ambiguous")
@@ -2516,25 +2529,90 @@ def upgrade_fixed_program_parent(
     return candidate
 
 
+def prepare_budget_delegation_upgrade(
+    installed: FixedProgramInstallation, publication_id: str, candidate: str,
+    operations: dict[str, tuple[str, str, str]],
+    *, enable_pool: bool = False, enable_router: bool = False,
+) -> tuple[FixedProgramUpgrade, str]:
+    contracts = fixed_operation_contracts(
+        installed.operation_contracts["models"][1],
+        installed.operation_contracts["anthropic-messages"][1],
+        installed.retired_operations, decision_enabled=installed.decision_enabled,
+    )
+    root = parse_policy(compact_fixed_policy(candidate))
+    marker = root.find(".//set-variable[@name='routeProgram']")
+    if marker is None:
+        raise RuntimeError("Budget delegation program identity is missing")
+    predecessor = installed.program.program_sha256
+    legacy = installed.legacy_program_sha256 or predecessor
+    predecessors = tuple(value for value in (
+        *installed.predecessor_program_sha256, predecessor,
+    ) if value != legacy)
+    owner = next(node for node in root.iter() if marker in list(node))
+    history = owner.find("set-variable[@name='routeLegacyProgram']")
+    if history is None:
+        history = ET.Element("set-variable", {"name": "routeLegacyProgram"})
+        owner.insert(list(owner).index(marker), history)
+    history.set("value", legacy)
+    # Match fixed_reader: predecessors follow the legacy marker and are omitted when empty.
+    for node in owner.findall("set-variable[@name='routePredecessorPrograms']"):
+        owner.remove(node)
+    if predecessors:
+        owner.insert(list(owner).index(history) + 1, ET.Element("set-variable", {
+            "name": "routePredecessorPrograms",
+            "value": json.dumps(predecessors, separators=(",", ":")),
+        }))
+    digest = fixed_program_digest(
+        serialize_policy(root), {name: operation[2] for name, operation in operations.items()},
+        tuple((name, *contract) for name, contract in contracts.items()),
+    )
+    marker.set("value", digest)
+    candidate = serialize_policy(root)
+    upgrade = FixedProgramUpgrade(
+        previous_publication_id=publication_id,
+        previous_installation_sha256=document_digest(installed),
+        installation=installed.model_copy(update={
+            "program": installed.program.model_copy(update={"program_sha256": digest}),
+            "parent_policy_sha256": fixed_policy_digest(candidate),
+            "legacy_program_sha256": legacy,
+            "predecessor_program_sha256": predecessors,
+            "operation_policies_sha256": {
+                name: fixed_policy_digest(operation[2]) for name, operation in operations.items()
+            },
+            **({"pool_enabled": True} if enable_pool or enable_router else {}),
+            **({"router_enabled": True} if enable_router else {}),
+        }),
+    )
+    upgrade.require_previous(publication_id, installed)
+    return upgrade, candidate
+
+
 def refresh_fixed_budget_execution_policy(
     source: str, binding: FixedRouteBinding, canonical_parent: str,
 ) -> str:
+    from .apim_budget_execution import eventhub_logger_id
     from .apim_model_availability import _admission_locations, admission_guard
 
     current = refresh_fixed_connection_approval_policy(source, binding)
     root = _without_fixed_route_parent(current, binding)
     if binding.native_gateway_scope:
-        guards = [serialize_policy(admission_guard(native_gateway_scope=native))
+        guards = [serialize_policy(admission_guard(
+            native_gateway_scope=native, logger_id=eventhub_logger_id(root),
+        ))
                   for native in (True, False)]
+        legacy = serialize_policy(admission_guard(native_gateway_scope=True))
         for parameter, value in (
             ("__GATEWAY_PROFILE_ID__", binding.scope.target_id),
             ("__LEDGER_TABLE_ENDPOINT__", binding.ledger_table_endpoint),
             ("__LEDGER_TABLE_NAME__", binding.ledger_table_name),
         ):
             guards = [guard.replace(parameter, value) for guard in guards]
+            legacy = legacy.replace(parameter, value)
         for parent, anchor in _admission_locations(root):
             index = list(parent).index(anchor) + 1
-            if component_digest(parent[index]) != component_digest(parse_policy(guards[0])):
+            if component_digest(parent[index]) not in {
+                component_digest(parse_policy(guards[0])), component_digest(parse_policy(legacy)),
+            }:
                 raise PolicyCompilationError("Fixed native availability guard changed")
             parent[index] = parse_policy(guards[1])
     for claim in root.findall(".//validate-azure-ad-token/required-claims/claim[@name='scp']"):
@@ -2775,6 +2853,8 @@ def upgrade_fixed_pool_program(
 ) -> FixedRouteProgram:
     from copy import deepcopy
 
+    from .apim_budget_execution import eventhub_logger_id, usage_identity_expression
+
     root = parse_policy(source)
     identities = root.findall(".//set-variable[@name='routeProgram']")
     if len(identities) != 1:
@@ -2819,7 +2899,9 @@ def upgrade_fixed_pool_program(
     ).items())
     operations = {
         name: compact_fixed_policy(
-            fixed_operation(name, enabled) if name in FIXED_OPERATIONS else
+            fixed_operation(name, enabled, logger_id=eventhub_logger_id(root),
+                            usage_identity=usage_identity_expression(root))
+            if name in FIXED_OPERATIONS else
             retired_operation() if name in binding.retired_operations else auxiliary_operation()
         ) for name, _, _ in contracts
     }
@@ -3106,6 +3188,8 @@ def compile_fixed_route_program(
     *,
     canonical_parent: str,
 ) -> FixedRouteProgram:
+    from .apim_budget_execution import eventhub_logger_id, usage_identity_expression
+
     binding = FixedRouteBinding.model_validate_json(binding.model_dump_json(), strict=True)
     validate_parent_policy(baseline, canonical_parent, image_program_profiles(binding))
     baseline_root = _baseline_root(baseline)
@@ -3120,7 +3204,10 @@ def compile_fixed_route_program(
         table_name=binding.ledger_table_name,
     )
     operations = {
-        name: compact_fixed_policy(fixed_operation(name, binding)) for name in FIXED_OPERATIONS
+        name: compact_fixed_policy(fixed_operation(
+            name, binding, logger_id=eventhub_logger_id(baseline_root),
+            usage_identity=usage_identity_expression(baseline_root),
+        )) for name in FIXED_OPERATIONS
         if name != "microsoft-decision" or binding.decision_enabled
     }
     operations.update(
@@ -3158,6 +3245,8 @@ def validate_fixed_route_program(
     *,
     canonical_parent: str,
 ) -> None:
+    from .apim_budget_execution import eventhub_logger_id, usage_identity_expression
+
     validate_parent_policy(baseline, canonical_parent, image_program_profiles(expected))
     if candidate.binding != expected or candidate.baseline_sha256 != text_digest(baseline):
         raise PolicyCompilationError("Fixed program source or target binding changed")
@@ -3184,9 +3273,12 @@ def validate_fixed_route_program(
         or candidate.operation_contracts != contracts
     ):
         raise PolicyCompilationError("Fixed program operation set is incomplete or changed")
+    baseline_root = parse_policy(baseline)
     for name, policy in operations.items():
         expected_policy = (
-            fixed_operation(name, expected) if name in FIXED_OPERATIONS
+            fixed_operation(name, expected, logger_id=eventhub_logger_id(baseline_root),
+                            usage_identity=usage_identity_expression(baseline_root))
+            if name in FIXED_OPERATIONS
             else retired_operation() if name in expected.retired_operations else auxiliary_operation()
         )
         validate_executable_policy(policy)

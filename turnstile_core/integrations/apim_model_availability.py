@@ -504,7 +504,11 @@ def availability_probe_guard() -> ET.Element:
     return root
 
 
-def admission_guard(*, native_gateway_scope: bool = False) -> ET.Element:
+def admission_guard(
+    *, native_gateway_scope: bool = False, logger_id: str | None = None,
+) -> ET.Element:
+    from .apim_budget_execution import pre_dispatch_denial_event
+
     root = ET.Element("choose")
     branch = ET.SubElement(
         root,
@@ -564,6 +568,31 @@ def admission_guard(*, native_gateway_scope: bool = False) -> ET.Element:
                 "value": "@(context.RequestId.ToString())",
             },
         )
+        if disabled and logger_id is not None:
+            business = ET.SubElement(ET.SubElement(rejected, "choose"), "when", {
+                "condition": (
+                    '@(context.Variables.GetValueOrDefault<bool>('
+                    '"isInferenceOperation", false))'
+                ),
+            })
+            business.append(pre_dispatch_denial_event("403", {
+                "ingest_error": '"model_availability_pre_dispatch_denial"',
+                "model_admission": '"model_disabled"', "error_message": '"model_disabled"',
+                "model": (
+                    'context.Variables.GetValueOrDefault<string>("availabilityFixedModelAlias", '
+                    'context.Variables.GetValueOrDefault<string>("telemetryModel", "unattributed"))'
+                ),
+                "model_id": '(string)context.Variables["availabilityModelId"]',
+                "native_gateway_instance_id": (
+                    'known ? (string.IsNullOrWhiteSpace(context.Deployment.Gateway.InstanceId) '
+                    '? context.Deployment.Gateway.Id : '
+                    'context.Deployment.Gateway.InstanceId) : null'
+                ),
+                "apim_subscription_id": '(context.Subscription?.Id ?? "").Split(\'/\').Last()',
+            }, logger_id=logger_id, request_source=(
+                'context.Variables.GetValueOrDefault<string>("telemetryRequestSource", '
+                'context.Request.Headers.GetValueOrDefault("x-request-source", "unattributed"))'
+            )))
         rejected.append(availability_denial(disabled=disabled))
     if not native_gateway_scope:
         branch.append(node_admission_guard())
@@ -650,6 +679,8 @@ def _admission_locations(root: ET.Element) -> list[tuple[ET.Element, ET.Element]
 
 
 def compose_availability_parent(source: str) -> str:
+    from .apim_budget_execution import eventhub_logger_id
+
     root = parse_policy(source)
     if any(
         node.tag in {"cache-lookup", "cache-store", "cache-lookup-value", "cache-store-value"}
@@ -672,9 +703,12 @@ def compose_availability_parent(source: str) -> str:
             branch.insert(list(branch).index(authenticated) + 1, ET.Element("set-variable", {
                 "name": "availabilityLegacyAuthenticated", "value": "@(true)",
             }))
+    logger_id = eventhub_logger_id(root) if root.findall(".//log-to-eventhub") else None
     for parent, anchor in _admission_locations(root):
         parent.insert(list(parent).index(anchor), availability_probe_guard())
-        parent.insert(list(parent).index(anchor) + 1, admission_guard())
+        parent.insert(list(parent).index(anchor) + 1, admission_guard(
+            logger_id=logger_id,
+        ))
     inbound.insert(
         0,
         ET.Element(
@@ -730,6 +764,8 @@ def compose_availability_parent(source: str) -> str:
 
 
 def validate_availability_parent(root: ET.Element) -> None:
+    from .apim_budget_execution import eventhub_logger_id
+
     markers = root.findall(".//set-variable[@name='availabilityProtocolVersion']")
     if (
         len(markers) != 1
@@ -815,6 +851,7 @@ def validate_availability_parent(root: ET.Element) -> None:
         raise PolicyCompilationError("Parent cannot shadow operation availability identity")
     if len(root.findall(".//set-variable[@name='availabilityDecision']")) != 2:
         raise PolicyCompilationError("Parent availability decisions are ambiguous")
+    logger_id = eventhub_logger_id(root) if root.findall(".//log-to-eventhub") else None
     for parent, anchor in locations:
         probe_index = list(parent).index(anchor) - 1
         if probe_index < 0 or not _matches_policy_component(
@@ -824,10 +861,12 @@ def validate_availability_parent(root: ET.Element) -> None:
         ):
             raise PolicyCompilationError("Availability probe integrity or placement changed")
         index = list(parent).index(anchor) + 1
-        if index >= len(parent) or not _matches_policy_component(
-            parent[index],
-            admission_guard(),
-            bindings,
+        if index >= len(parent) or not (
+            _matches_policy_component(
+                parent[index], admission_guard(logger_id=logger_id), bindings,
+            ) or logger_id is not None and _matches_policy_component(
+                parent[index], admission_guard(), bindings,
+            )
         ):
             raise PolicyCompilationError("Availability guard integrity or placement changed")
 

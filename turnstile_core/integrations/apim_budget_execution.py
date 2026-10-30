@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from uuid import UUID
 from xml.etree import ElementTree as ET
@@ -1568,6 +1568,87 @@ def _cancel_preparing(parent: ET.Element) -> None:
     }''')
 
 
+def eventhub_logger_id(root: ET.Element) -> str:
+  events = root.findall("./outbound//log-to-eventhub") + root.findall(
+    "./on-error//log-to-eventhub",
+  )
+  loggers = {event.get("logger-id", "") for event in events}
+  if len(loggers) != 1 or not next(iter(loggers)):
+    raise PolicyCompilationError("Business denial logger identity is ambiguous")
+  return next(iter(loggers))
+
+
+def usage_identity_expression(root: ET.Element) -> str:
+  identities = root.findall("./inbound/set-variable[@name='telemetryUsageId']")
+  if len(identities) != 1 or not identities[0].get("value"):
+    raise PolicyCompilationError("Business denial requires the parent usage identity")
+  return identities[0].attrib["value"]
+
+
+def pre_dispatch_denial_event(
+  status: str, fields: Mapping[str, str], *, logger_id: str = "__LOGGER_ID__",
+  gateway_profile_id: str = "__GATEWAY_PROFILE_ID__",
+  request_source: str | None = None,
+) -> ET.Element:
+    values = {
+        "id": "id", "event_schema_version": "known ? 2 : 1",
+        "usage_id": "known ? id : null", "usage_event_source": '"apim"',
+        "request_id": 'context.Variables.GetValueOrDefault<string>("callerRequestId", context.RequestId.ToString())',
+        "correlation_id": "context.RequestId.ToString()", "ts": 'DateTime.UtcNow.ToString("o")',
+        "turn_index": "1",
+        "latency_ms": '(long)(DateTime.UtcNow - context.Variables.GetValueOrDefault<DateTime>("requestStarted", context.Variables.GetValueOrDefault<DateTime>("executionFenceStarted", DateTime.UtcNow))).TotalMilliseconds',
+        "status": "status.ToString()", "status_code": "status", "estimated": "true",
+        "ingest_error": '"request_pre_dispatch_denial"', "ingest_source": '"eventhub"',
+        "budget_admission": 'context.Variables.GetValueOrDefault<string>("budgetAdmission", "unattributed")',
+        "error_message": '""',
+        "provider": 'context.Variables.GetValueOrDefault<string>("providerName", "unattributed")',
+        "model": 'context.Variables.GetValueOrDefault<string>("telemetryModel", "unattributed")',
+        "model_id": 'context.Variables.GetValueOrDefault<string>("telemetryModelId", "unattributed")',
+        "user": 'context.Variables.GetValueOrDefault<string>("telemetryUser", "unattributed")',
+        "user_id": 'context.Variables.GetValueOrDefault<string>("telemetryUserId", "unattributed")',
+        "runtime": 'context.Variables.GetValueOrDefault<string>("telemetryRuntime", "unattributed")',
+    }
+    values.update(fields)
+    event = ET.Element("log-to-eventhub", {
+      "logger-id": logger_id,
+        "partition-key": '@(context.Variables.GetValueOrDefault<string>("telemetryUsageId", context.RequestId.ToString()))',
+    })
+    event.text = """@{
+      bool known = context.Variables.ContainsKey("telemetryUsageId");
+      var id = context.Variables.GetValueOrDefault<string>("telemetryUsageId", context.RequestId.ToString());
+      var status = __DENIAL_STATUS__;
+      var eventData = new JObject(__DENIAL_FIELDS__);
+      var fields = new[] { "organization", "organization_id", "department", "department_id", "project", "project_id", "agent", "agent_id", "workflow", "run_id", "request_source" };
+      var variables = new[] { "telemetryOrganization", "telemetryOrganizationId", "telemetryDepartment", "telemetryDepartmentId", "telemetryProject", "telemetryProjectId", "telemetryAgent", "telemetryAgentId", "telemetryWorkflow", "telemetryRunId", "telemetryRequestSource" };
+      for (int index = 0; index < fields.Length; index++) {
+        eventData[fields[index]] = context.Variables.GetValueOrDefault<string>(variables[index], "unattributed");
+      }
+      __DENIAL_SOURCE__
+      eventData["team"] = eventData["department"];
+      if (known) {
+        eventData["gateway_profile_id"] = "__GATEWAY_PROFILE_ID__";
+        eventData["native_gateway_id"] = context.Deployment.Gateway.Id;
+        eventData["gateway_is_managed"] = context.Deployment.Gateway.IsManaged;
+        eventData["apim_service_id"] = context.Deployment.ServiceId;
+        eventData["apim_region"] = string.IsNullOrWhiteSpace(context.Deployment.Region) ? "unattributed" : context.Deployment.Region;
+        eventData["api_revision"] = context.Api.Revision;
+      }
+      var subscription = context.Variables.GetValueOrDefault<string>("telemetryApimSubscriptionId", "");
+      if (!string.IsNullOrEmpty(subscription)) { eventData["apim_subscription_id"] = subscription; }
+      return eventData.ToString(Newtonsoft.Json.Formatting.None);
+    }""".replace(
+      "__DENIAL_SOURCE__",
+      f'eventData["request_source"] = {request_source};' if request_source is not None else "",
+    ).replace("__GATEWAY_PROFILE_ID__", gateway_profile_id).replace(
+      "__DENIAL_STATUS__", status,
+    ).replace(
+        "__DENIAL_FIELDS__", ",\n        ".join(
+            f"new JProperty({json.dumps(name)}, {value})" for name, value in values.items()
+        ),
+    )
+    return event
+
+
 def _deny(
     parent: ET.Element, condition: str, code: str, *, cancel_preparing: bool = False,
 ) -> None:
@@ -1618,51 +1699,11 @@ def _deny(
         new JProperty("ledger_version", snapshot["version"]), new JProperty("ledger_updated_at", snapshot["updated_at"]));
     }""",
     )
-    event = ET.SubElement(
-        branch,
-        "log-to-eventhub",
-        {
-            "logger-id": "__LOGGER_ID__",
-            "partition-key": '@(context.Variables.GetValueOrDefault<string>("telemetryUsageId", context.RequestId.ToString()))',
-        },
-    )
-    event.text = """@{
-      bool known = context.Variables.ContainsKey("telemetryUsageId");
-      var id = context.Variables.GetValueOrDefault<string>("telemetryUsageId", context.RequestId.ToString());
-      var status = (int)context.Variables["executionStatus"];
-      var eventData = new JObject(new JProperty("id", id), new JProperty("event_schema_version", known ? 2 : 1),
-        new JProperty("usage_id", known ? id : null), new JProperty("usage_event_source", "apim"),
-        new JProperty("request_id", context.Variables.GetValueOrDefault<string>("callerRequestId", context.RequestId.ToString())),
-        new JProperty("correlation_id", context.RequestId.ToString()), new JProperty("ts", DateTime.UtcNow.ToString("o")),
-        new JProperty("turn_index", 1), new JProperty("latency_ms", (long)(DateTime.UtcNow - context.Variables.GetValueOrDefault<DateTime>("requestStarted", context.Variables.GetValueOrDefault<DateTime>("executionFenceStarted", DateTime.UtcNow))).TotalMilliseconds), new JProperty("status", status.ToString()),
-        new JProperty("status_code", status), new JProperty("estimated", true),
-        new JProperty("ingest_error", "budget_pre_dispatch_denial"), new JProperty("ingest_source", "eventhub"),
-        new JProperty("budget_admission", (string)context.Variables["executionError"]),
-        new JProperty("error_message", ((JObject)context.Variables["executionDecision"]).ToString(Newtonsoft.Json.Formatting.None)),
-        new JProperty("provider", context.Variables.GetValueOrDefault<string>("providerName", "unattributed")),
-        new JProperty("model", context.Variables.GetValueOrDefault<string>("telemetryModel", "unattributed")),
-        new JProperty("model_id", context.Variables.GetValueOrDefault<string>("telemetryModelId", "unattributed")),
-        new JProperty("user", context.Variables.GetValueOrDefault<string>("telemetryUser", "unattributed")),
-        new JProperty("user_id", context.Variables.GetValueOrDefault<string>("telemetryUserId", "unattributed")),
-        new JProperty("runtime", context.Variables.GetValueOrDefault<string>("telemetryRuntime", "unattributed")));
-      var fields = new[] { "organization", "organization_id", "department", "department_id", "project", "project_id", "agent", "agent_id", "workflow", "run_id", "request_source" };
-      var variables = new[] { "telemetryOrganization", "telemetryOrganizationId", "telemetryDepartment", "telemetryDepartmentId", "telemetryProject", "telemetryProjectId", "telemetryAgent", "telemetryAgentId", "telemetryWorkflow", "telemetryRunId", "telemetryRequestSource" };
-      for (int index = 0; index < fields.Length; index++) {
-        eventData[fields[index]] = context.Variables.GetValueOrDefault<string>(variables[index], "unattributed");
-      }
-      eventData["team"] = eventData["department"];
-      if (known) {
-        eventData["gateway_profile_id"] = "__GATEWAY_PROFILE_ID__";
-        eventData["native_gateway_id"] = context.Deployment.Gateway.Id;
-        eventData["gateway_is_managed"] = context.Deployment.Gateway.IsManaged;
-        eventData["apim_service_id"] = context.Deployment.ServiceId;
-        eventData["apim_region"] = string.IsNullOrWhiteSpace(context.Deployment.Region) ? "unattributed" : context.Deployment.Region;
-        eventData["api_revision"] = context.Api.Revision;
-      }
-      var subscription = context.Variables.GetValueOrDefault<string>("telemetryApimSubscriptionId", "");
-      if (!string.IsNullOrEmpty(subscription)) { eventData["apim_subscription_id"] = subscription; }
-      return eventData.ToString(Newtonsoft.Json.Formatting.None);
-    }"""
+    branch.append(pre_dispatch_denial_event('(int)context.Variables["executionStatus"]', {
+        "ingest_error": '"budget_pre_dispatch_denial"',
+        "budget_admission": '(string)context.Variables["executionError"]',
+        "error_message": '((JObject)context.Variables["executionDecision"]).ToString(Newtonsoft.Json.Formatting.None)',
+    }))
     if cancel_preparing:
       _cancel_preparing(branch)
     response = ET.SubElement(branch, "return-response")

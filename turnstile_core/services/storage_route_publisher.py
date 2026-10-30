@@ -261,13 +261,22 @@ def _validate_program_cutover(
     installed: FixedProgramInstallation, config: ApimTargetClientConfig,
     management: AzureApimPublisherClient,
     operation_policies: Mapping[str, str] | None = None,
+    *, previous_publication_id: str | None = None, original_parent_policy: str | None = None,
 ) -> None:
+    from ..integrations.apim_budget_execution import (
+        bind_budget_delegation,
+        eventhub_logger_id,
+        usage_identity_expression,
+    )
     from ..integrations.apim_storage_routes import (
         FixedRouteBinding,
         auxiliary_operation,
         fixed_operation,
         installed_route_binding,
+        prepare_budget_delegation_upgrade,
+        refresh_fixed_budget_execution_policy,
         retired_operation,
+        upgrade_fixed_pool_program,
     )
 
     validate_policy_upload(
@@ -281,11 +290,12 @@ def _validate_program_cutover(
     operations = management.route_program_operations(previous.program.api_revision)
     enables_pool = ((installed.pool_enabled and not previous.pool_enabled)
                     or (installed.router_enabled and not previous.router_enabled))
+    refreshes = original_parent_policy is not None
     if (set(operations) != set(previous.operation_contracts)
             or any((method, path) != previous.operation_contracts[name]
                    or fixed_policy_digest(policy) not in {
                        previous.operation_policies_sha256[name],
-                       installed.operation_policies_sha256[name] if enables_pool
+                       installed.operation_policies_sha256[name] if (enables_pool or refreshes)
                        and operation_policies else previous.operation_policies_sha256[name],
                    }
                    for name, (method, path, policy) in operations.items())):
@@ -300,17 +310,58 @@ def _validate_program_cutover(
         installed, config.settings.ledger_table_endpoint, config.settings.ledger_table_name,
         config.settings.apim_usage_observer_key_named_value,
     ) if enables_pool else None
+    refreshed_operations = None
+    if original_parent_policy is not None:
+        from ..integrations.apim_model_availability import compose_availability_parent
+        from ..integrations.apim_onboarding_policy import onboarding_canonical_parent
+        from ..services.apim_onboarding import onboarding_template_path
+
+        if (previous_publication_id is None
+                or fixed_policy_digest(original_parent_policy) != previous.parent_policy_sha256):
+            raise PolicyCompilationError("Program refresh requires its approved original parent")
+        binding = installed_route_binding(
+            previous, config.settings.ledger_table_endpoint, config.settings.ledger_table_name,
+            config.settings.apim_usage_observer_key_named_value,
+        )
+        canonical = compose_availability_parent(onboarding_canonical_parent(
+            onboarding_template_path(config.settings).read_text(encoding="utf-8"),
+            binding.scope.api_id,
+        ))
+        canonical = bind_budget_delegation(
+            canonical, config.settings.budget_delegation_trust.get(config.gateway_profile_id),
+            gateway_profile_id=config.gateway_profile_id,
+        )
+        refreshed = upgrade_fixed_pool_program(
+            refresh_fixed_budget_execution_policy(original_parent_policy, binding, canonical),
+            binding,
+        )
+        refreshed_operations = dict(refreshed.operation_policies)
+        expected, expected_parent = prepare_budget_delegation_upgrade(
+            previous, previous_publication_id, refreshed.parent_policy,
+            {name: (method, path, refreshed_operations[name])
+             for name, method, path in refreshed.operation_contracts},
+        )
+        if expected.installation != installed or fixed_policy_digest(expected_parent) != (
+            installed.parent_policy_sha256
+        ):
+            raise PolicyCompilationError("Program refresh changed its compiler-bound artifact")
     if operation_policies:
+        parent = parse_policy(parent_policy)
         if set(operation_policies) != set(contracts):
             raise PolicyCompilationError("Program cutover operation set changed")
         for name, policy in operation_policies.items():
-            if pool_binding is not None:
+            if refreshed_operations is not None:
+                original = parse_policy(refreshed_operations[name])
+            elif pool_binding is not None:
                 original = parse_policy(
                     retired_operation() if name in installed.retired_operations else
                     auxiliary_operation() if name in {
                         "models", "storage-route-program-probe",
                         "storage-route-configuration-probe",
-                    } else fixed_operation(name, pool_binding)
+                    } else fixed_operation(
+                        name, pool_binding, logger_id=eventhub_logger_id(parent),
+                        usage_identity=usage_identity_expression(parent),
+                    )
                 )
             elif name not in selected:
                 if (name != "microsoft-decision" or previous.decision_enabled
@@ -330,7 +381,10 @@ def _validate_program_cutover(
                     "oauth_enabled": installed.oauth_enabled, "decision_enabled": True,
                     "observer_key_named_value": config.settings.apim_usage_observer_key_named_value,
                 })
-                original = parse_policy(fixed_operation(name, binding))
+                original = parse_policy(fixed_operation(
+                    name, binding, logger_id=eventhub_logger_id(parent),
+                    usage_identity=usage_identity_expression(parent),
+                ))
             else:
                 original = parse_policy(selected[name])
             for guard in original.findall(".//set-variable[@name='routeDispatchReady']"):
@@ -357,6 +411,7 @@ def register_verified_program_upgrade(
     parent_policy: str | None = None, expected_parent_etag: str | None = None,
     operation_policies: Mapping[str, str] | None = None,
     expected_operation_etags: Mapping[str, str | None] | None = None,
+    original_parent_policy: str | None = None,
 ) -> None:
     from ..persistence.repository_support import (
         _fixed_program_upgrade_config,
@@ -446,9 +501,12 @@ def register_verified_program_upgrade(
                         installed.pool_enabled and not previous_installation.pool_enabled
                         or installed.router_enabled and not previous_installation.router_enabled
                     )
+                    rewrites_operations = (
+                        enables_pool or original_parent_policy is not None
+                    ) and bool(operation_policies)
                     native_operations = management.route_program_operations(
                         previous_installation.program.api_revision,
-                    ) if enables_pool and operation_policies else {}
+                    ) if rewrites_operations else {}
                     written_operations = any(
                         fixed_policy_digest(value[2]) == (
                             installed.operation_policies_sha256.get(name)
@@ -464,7 +522,7 @@ def register_verified_program_upgrade(
                         raise PolicyCompilationError(
                             "Program cutover native parent is not an approved candidate",
                         )
-                    if recovering and operation_policies and not enables_pool:
+                    if recovering and operation_policies and not rewrites_operations:
                         raise PolicyCompilationError(
                             "Program cutover partial Operations require explicit recovery",
                         )
@@ -495,6 +553,8 @@ def register_verified_program_upgrade(
                     _validate_program_cutover(
                         parent_policy, previous_installation, installed, config, management,
                         operation_policies,
+                        previous_publication_id=upgrade.previous_publication_id,
+                        original_parent_policy=original_parent_policy,
                     )
                     observed_parent = management._request("HEAD", path)
                     if (observed_parent.status_code != 200
@@ -3955,6 +4015,7 @@ class FixedRoutePublisherFactory:
             _binding_route_contract,
             _binding_route_origin,
             binding_public_count_path,
+            route_credential_source,
         )
 
         runtimes = (registry if registry is not None else self._repository.registry())["runtimes"]
@@ -4041,12 +4102,23 @@ class FixedRoutePublisherFactory:
                 baseline is not None or initial_migration or addition is not None
             )
             if renew:
+                declared_secret = (str(binding.key_vault_secret_id)
+                                   if binding.key_vault_secret_id else None)
+                materialized_secret = (
+                    self._credential_bindings(publication).get(route_credential_source(binding))
+                    if binding.auth_strategy in {
+                        AuthStrategy.NAMED_VALUE_API_KEY, AuthStrategy.NAMED_VALUE_BEARER,
+                    } else None
+                )
+                if (declared_secret is not None
+                    and materialized_secret not in {None, declared_secret}):
+                    raise PolicyCompilationError("Fixed route declared credential version changed")
                 if (
                     runtime_config.get("control_plane_managed") is not True
                     or not self._runtime_destination_matches(publication, binding, runtime_config)
                     or runtime_config.get("auth_strategy") != binding.auth_strategy.value
                     or runtime_config.get("key_vault_secret_id")
-                    != (str(binding.key_vault_secret_id) if binding.key_vault_secret_id else None)
+                    != (declared_secret or materialized_secret)
                     or binding.api_format is not ApiFormat.MICROSOFT_DECISION
                     and runtime_config.get("managed_identity_resource")
                     != binding.managed_identity_resource

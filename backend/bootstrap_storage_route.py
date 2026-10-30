@@ -26,7 +26,6 @@ from turnstile_core.domain.gateway_targets import (
 from turnstile_core.domain.storage_routes import (
     ConfigurationApproval,
     Digest,
-    FixedProgramUpgrade,
     ProgramIdentity,
     RouteSnapshot,
     canonical_document,
@@ -36,16 +35,18 @@ from turnstile_core.domain.storage_routes import (
     text_digest,
 )
 from turnstile_core.integrations.apim_budget_execution import bind_budget_delegation
-from turnstile_core.integrations.apim_policy_components import parse_policy, serialize_policy
 from turnstile_core.integrations.apim_publisher_client import AzureApimPublisherClient
 from turnstile_core.integrations.apim_storage_routes import (
     FixedRouteBinding,
     compact_fixed_policy,
     fixed_operation_contracts,
     fixed_policy_digest,
-    fixed_program_digest,
     installed_route_binding,
+    refresh_fixed_budget_execution_policy,
     upgrade_fixed_pool_program,
+)
+from turnstile_core.integrations.apim_storage_routes import (
+    prepare_budget_delegation_upgrade as prepare_budget_delegation_upgrade,
 )
 from turnstile_core.integrations.apim_target_client_factory import (
     apim_target_client_config_resolver,
@@ -534,57 +535,8 @@ def bootstrap(descriptor: FixedInstallationDescriptor, settings: Settings) -> di
             owner.execute("SELECT pg_advisory_unlock(hashtextextended(%s,0))", (lock,))
 
 
-def prepare_budget_delegation_upgrade(
-    installed: FixedProgramInstallation, publication_id: str, candidate: str,
-    operations: dict[str, tuple[str, str, str]],
-    *, enable_pool: bool = False, enable_router: bool = False,
-) -> tuple[FixedProgramUpgrade, str]:
-    contracts = fixed_operation_contracts(
-        installed.operation_contracts["models"][1],
-        installed.operation_contracts["anthropic-messages"][1],
-        installed.retired_operations, decision_enabled=installed.decision_enabled,
-    )
-    root = parse_policy(compact_fixed_policy(candidate))
-    marker = root.find(".//set-variable[@name='routeProgram']")
-    if marker is None:
-        raise RuntimeError("Budget delegation program identity is missing")
-    predecessor = installed.program.program_sha256
-    legacy = installed.legacy_program_sha256 or predecessor
-    predecessors = tuple(value for value in (
-        *installed.predecessor_program_sha256, predecessor,
-    ) if value != legacy)
-    owner = next(node for node in root.iter() if marker in list(node))
-    for name, value in {
-        "routeLegacyProgram": legacy,
-        "routePredecessorPrograms": json.dumps(predecessors, separators=(",", ":")),
-    }.items():
-        node = root.find(f".//set-variable[@name='{name}']")
-        if node is None:
-            node = ET.Element("set-variable", {"name": name})
-            owner.insert(list(owner).index(marker), node)
-        node.set("value", value)
-    digest = fixed_program_digest(
-        serialize_policy(root), {name: operation[2] for name, operation in operations.items()},
-        tuple((name, *contract) for name, contract in contracts.items()),
-    )
-    marker.set("value", digest)
-    candidate = serialize_policy(root)
-    upgrade = FixedProgramUpgrade(
-        previous_publication_id=publication_id,
-        previous_installation_sha256=document_digest(installed),
-        installation=installed.model_copy(update={
-            "program": installed.program.model_copy(update={"program_sha256": digest}),
-            "parent_policy_sha256": fixed_policy_digest(candidate),
-            "legacy_program_sha256": legacy,
-            "predecessor_program_sha256": predecessors,
-            **({"pool_enabled": True, "operation_policies_sha256": {
-                name: fixed_policy_digest(operation[2]) for name, operation in operations.items()
-            }} if enable_pool or enable_router else {}),
-            **({"router_enabled": True} if enable_router else {}),
-        }),
-    )
-    upgrade.require_previous(publication_id, installed)
-    return upgrade, candidate
+# Inputs of each target's last no-op refresh in this process; matching ticks skip recompiling.
+_CONVERGED_REFRESH: dict[UUID, tuple[str, ...]] = {}
 
 
 def configure_budget_delegation(repository: Any, settings: Settings, target_id: UUID) -> None:
@@ -620,10 +572,43 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
         candidate = bind_budget_delegation(parent, trust, gateway_profile_id=target_id)
         enable_pool = not installed.pool_enabled
         enable_router = not installed.router_enabled
+        refreshed_program = None
         if candidate == parent and not (enable_pool or enable_router):
-            if recovering:
-                raise RuntimeError("Budget delegation current approved parent changed")
-            return
+            from turnstile_core.integrations.apim_model_availability import (
+                compose_availability_parent,
+            )
+            from turnstile_core.integrations.apim_onboarding_policy import (
+                onboarding_canonical_parent,
+            )
+            from turnstile_core.services.apim_onboarding import onboarding_template_path
+
+            binding = installed_route_binding(
+                installed, settings.ledger_table_endpoint, settings.ledger_table_name,
+                settings.apim_usage_observer_key_named_value,
+            )
+            template = onboarding_template_path(settings).read_text(encoding="utf-8")
+            converged = (
+                native_digest, document_digest(installed), binding.model_dump_json(),
+                text_digest(template), trust.model_dump_json(),
+            )
+            if not recovering and _CONVERGED_REFRESH.get(target_id) == converged:
+                return
+            canonical = compose_availability_parent(onboarding_canonical_parent(
+                template, binding.scope.api_id,
+            ))
+            canonical = bind_budget_delegation(canonical, trust, gateway_profile_id=target_id)
+            refreshed_program = upgrade_fixed_pool_program(
+                refresh_fixed_budget_execution_policy(parent, binding, canonical), binding,
+            )
+            candidate = refreshed_program.parent_policy
+            if (fixed_policy_digest(candidate) == installed.parent_policy_sha256
+                    and {name: fixed_policy_digest(policy)
+                         for name, policy in refreshed_program.operation_policies}
+                    == installed.operation_policies_sha256):
+                if recovering:
+                    raise RuntimeError("Budget delegation current approved parent changed")
+                _CONVERGED_REFRESH[target_id] = converged
+                return
         candidate = compact_fixed_policy(candidate)
         if fixed_policy_digest(candidate) == installed.parent_policy_sha256 and not (
             enable_pool or enable_router
@@ -634,11 +619,13 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
         operations = management.route_program_operations(installed.program.api_revision)
         operation_policies = None
         operation_etags = None
-        if enable_pool or enable_router:
-            pool_program = upgrade_fixed_pool_program(candidate, installed_route_binding(
-                installed, settings.ledger_table_endpoint, settings.ledger_table_name,
-                settings.apim_usage_observer_key_named_value,
-            ), enable_router=enable_router)
+        if enable_pool or enable_router or refreshed_program is not None:
+            pool_program = refreshed_program or upgrade_fixed_pool_program(
+                candidate, installed_route_binding(
+                    installed, settings.ledger_table_endpoint, settings.ledger_table_name,
+                    settings.apim_usage_observer_key_named_value,
+                ), enable_router=enable_router,
+            )
             candidate = pool_program.parent_policy
             operation_policies = dict(pool_program.operation_policies)
             operations = {name: (method, template, operation_policies[name])
@@ -679,6 +666,7 @@ def configure_budget_delegation(repository: Any, settings: Settings, target_id: 
             upgrade, document_digest(config), parent_policy=candidate,
             expected_parent_etag=response.headers.get("ETag"),
             operation_policies=operation_policies, expected_operation_etags=operation_etags,
+            original_parent_policy=parent if refreshed_program is not None else None,
         )
 
 

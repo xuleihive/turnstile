@@ -229,6 +229,176 @@ def native_router_expressions() -> dict[str, str]:
     return result
 
 
+def business_denial_expressions() -> dict[str, str]:
+    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+
+    source = parse_policy((ROOT / "infra/policies/foundry-finops-policy.xml").read_text())
+    identity = source.find("./inbound/set-variable[@name='telemetryUsageId']")
+    assert identity is not None
+    model = availability.admission_guard(logger_id="__LOGGER_ID__")
+    router, _ = fixed_router_operation_stages(
+        "https://unitstore.table.core.windows.net", "Ledger", "unit-turnstile",
+        "90000000-0000-4000-8000-000000000002",
+        usage_identity=identity.attrib["value"],
+    )
+    result = {"usageIdentity": identity.attrib["value"]}
+    for name, guard in (("model_disabled", model), ("router_configuration_unavailable", router)):
+        event = guard.find(".//log-to-eventhub")
+        assert event is not None
+        result[name] = event.text or ""
+        if name == "model_disabled":
+            owner = next(node for node in guard.iter() if event in list(node))
+            result["availabilityEventAllowed"] = owner.attrib["condition"]
+    inference = source.find("./inbound/set-variable[@name='isInferenceOperation']")
+    assert inference is not None
+    result["isInferenceOperation"] = inference.attrib["value"]
+    return result
+
+
+def test_model_disabled_denial_emits_before_early_return() -> None:
+    guard = availability.admission_guard(logger_id="__LOGGER_ID__")
+    response = next(node for node in guard.iter("return-response")
+                    if node.find("set-status[@code='403']") is not None)
+    owners = {child: owner for owner in guard.iter() for child in owner}
+    denied = owners[response]
+    events = denied.findall(".//log-to-eventhub")
+    assert len(events) == 1
+    sender = next(node for node in denied if events[0] in node.iter())
+    assert list(denied).index(sender) < list(denied).index(response)
+    assert events[0].attrib["logger-id"] == "__LOGGER_ID__"
+    assert '"correlation_id"' in (events[0].text or "")
+    assert '"prompt_tokens"' not in (events[0].text or "")
+
+
+def test_native_router_configuration_denial_emits_before_early_return() -> None:
+    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+
+    guard, _ = fixed_router_operation_stages(
+        "https://unitstore.table.core.windows.net", "Ledger", "unit-turnstile",
+        "90000000-0000-4000-8000-000000000002",
+    )
+    response = next(node for node in guard.iter("return-response")
+                    if '"router_configuration_unavailable"' in (node.findtext("set-body") or ""))
+    owners = {child: owner for owner in guard.iter() for child in owner}
+    denied = owners[response]
+    events = denied.findall(".//log-to-eventhub")
+    assert len(events) == 1
+    sender = next(node for node in denied if events[0] in node.iter())
+    assert list(denied).index(sender) < list(denied).index(response)
+    assert events[0].attrib["logger-id"] == "__LOGGER_ID__"
+    assert '"correlation_id"' in (events[0].text or "")
+    assert '"prompt_tokens"' not in (events[0].text or "")
+
+
+@pytest.mark.parametrize("surface,status_code", [
+    ("model_disabled", 403), ("router_configuration_unavailable", 503),
+])
+@pytest.mark.parametrize("known", [False, True])
+@pytest.mark.parametrize("gateway", ["managed", "unit-self-hosted"])
+@pytest.mark.parametrize("request_source", [None, "unit-client", "copilot-assistant-tool"])
+def test_business_denial_event_is_ingested_without_usage_or_sensitive_content(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, surface: str,
+    status_code: int, known: bool, gateway: str, request_source: str | None,
+) -> None:
+    from tests.backend.telemetry.test_processor import RecordingRepository
+    from turnstile_core.domain.gateway_targets import canonical_usage_id_v2
+    from turnstile_core.domain.models import UsageEvent
+    from turnstile_core.ingestion.processor import CoefficientResolver, UsageProcessor
+
+    target = UUID("90000000-0000-4000-8000-000000000002")
+    correlation = "11111111-2222-3333-4444-555555555555"
+    request_id = "22222222-3333-4444-5555-666666666666"
+    usage_id = canonical_usage_id_v2(target, "unit-service", gateway, correlation)
+    variables: dict[str, Any] = {
+        "callerRequestId": request_id, "routerCallerRequestId": request_id,
+        "availabilityModelId": "90000000-0000-4000-8000-000000000003",
+        "availabilityFixedModelAlias": "unit-model", "routerRequestedModel": "unit-router",
+    }
+    if known:
+        variables["telemetryUsageId"] = usage_id
+    expressions = business_denial_expressions()
+    has_identity = known or surface == "router_configuration_unavailable"
+    payload = json.loads(run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(expressions[surface]),
+        "body": json.dumps({"messages": [{"role": "user", "content": "unit-private-prompt"}]}),
+        "headers": {"Ocp-Apim-Subscription-Key": "unit-private-key",
+                    "x-user-id": "forged-person@example.test",
+                    **({"x-request-source": request_source} if request_source else {})},
+        "operation": "chat-completions", "subscription": True,
+        "gateway": gateway, "instance": gateway, "variables": variables,
+        "steps": [{"variable": "telemetryUsageId",
+               "expression": expression_id(expressions["usageIdentity"])}]
+        if surface == "router_configuration_unavailable" else [],
+    }])[0])
+    assert payload["request_id"] == request_id
+    assert payload["correlation_id"] == correlation
+    assert payload["status_code"] == status_code
+    assert payload["event_schema_version"] == (2 if has_identity else 1)
+    assert payload["model_admission"] == surface
+    assert payload["model"] == ("unit-model" if surface == "model_disabled" else "unit-router")
+    if has_identity:
+        assert payload["id"] == usage_id
+        assert payload["gateway_profile_id"] == str(target)
+        assert payload["native_gateway_id"] == gateway
+        assert payload["native_gateway_instance_id"] == gateway
+        assert payload["gateway_is_managed"] is (gateway == "managed")
+    else:
+        assert all(payload.get(name) is None for name in (
+            "gateway_profile_id", "native_gateway_id", "native_gateway_instance_id",
+            "gateway_is_managed", "apim_service_id", "apim_region", "api_revision",
+        ))
+    assert payload["apim_subscription_id"] == "unit-subscription"
+    assert payload["user_id"] == "unattributed"
+    assert payload["request_source"] == (request_source or "unattributed")
+    assert not {"input_tokens", "cached_tokens", "output_tokens", "tokens_consumed",
+                "budget_execution", "budget_terminal", "usd_cost"} & payload.keys()
+    assert "unit-private-prompt" not in json.dumps(payload)
+    assert "unit-private-key" not in json.dumps(payload)
+    assert "forged-person@example.test" not in json.dumps(payload)
+    parsed = UsageEvent.model_validate(payload)
+    assert parsed.budget_execution == []
+    assert parsed.usage_complete is False
+    repository = RecordingRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    assert processor.process(payload) is True
+    assert len(repository.records) == 1
+    record = repository.records[0]
+    assert record.request_id == request_id
+    assert record.status_code == status_code
+    assert record.model_admission == surface
+    assert record.usage_domain == (
+        "github_copilot" if request_source == "copilot-assistant-tool" else "apim"
+    )
+    assert record.estimated is True
+    assert record.usd_cost is None
+    assert repository.execution_writes == []
+    if has_identity:
+        assert repository.gateway_attributions[0].apim_target_id == target
+    else:
+        assert repository.gateway_attributions == []
+
+
+@pytest.mark.parametrize("operation,allowed", [
+    ("chat-completions", True), ("responses", True), ("responses-compact", True),
+    ("anthropic-messages", True), ("images-generations", True),
+    ("anthropic-count-tokens", False), ("models", False), ("unknown", False),
+])
+def test_business_denial_event_preserves_non_inference_exclusions(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, operation: str, allowed: bool,
+) -> None:
+    expressions = business_denial_expressions()
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(expressions["availabilityEventAllowed"]),
+        "body": "{}", "operation": operation,
+        "variables": {"isImagesOperation": operation == "images-generations",
+                      "isResponsesOperation": operation in {"responses", "responses-compact"}},
+        "steps": [{"variable": "isInferenceOperation",
+                   "expression": expression_id(expressions["isInferenceOperation"])}],
+    }])[0]
+    assert result is allowed
+    assert availability.availability_probe_guard().find(".//log-to-eventhub") is None
+
+
 @pytest.mark.parametrize("fault", [
     None, "digest", "target", "unpublished", "direct-provider", "fallback",
     "prepared", "multiple-gateways",
@@ -445,6 +615,7 @@ def compiled_expressions(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path
     }
     expressions.update(application_tpm_expressions().values())
     expressions.update(native_router_expressions().values())
+    expressions.update(business_denial_expressions().values())
     expressions.update(value for name, value in vars(availability).items()
                        if name.isupper() and isinstance(value, str) and value.startswith("@"))
     expressions.add(storage_routes.READ_FIXED_CONTENT)

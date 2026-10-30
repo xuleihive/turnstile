@@ -987,7 +987,12 @@ def test_existing_program_delegation_uses_guarded_cutover(
     monkeypatch.setattr(bootstrap, "AzureApimPublisherClient", Mock(return_value=management))
     register = Mock()
     monkeypatch.setattr(bootstrap, "register_verified_program_upgrade", register)
-    settings = Settings.model_construct(budget_delegation_trust={target_id: trust})
+    settings = Settings.model_construct(
+        budget_delegation_trust={target_id: trust},
+        ledger_table_endpoint=descriptor.binding.ledger_table_endpoint,
+        ledger_table_name=descriptor.binding.ledger_table_name,
+        apim_usage_observer_key_named_value=descriptor.binding.observer_key_named_value,
+    )
     if phase in {"changed_target", "checkpoint_conflict"}:
         message = ("Gateway configuration changed" if phase == "checkpoint_conflict"
                    else "approved parent changed")
@@ -1048,11 +1053,15 @@ def test_existing_program_delegation_uses_guarded_cutover(
                     assert granted is not None
                     granted.set("value", "@(false)")
                 elif tampered in {"legacy", "predecessor"}:
-                    name = (
-                        "routeLegacyProgram" if tampered == "legacy" else "routePredecessorPrograms"
-                    )
-                    history = candidate.find(f".//set-variable[@name='{name}']")
+                    history = candidate.find(".//set-variable[@name='routeLegacyProgram']")
                     assert history is not None
+                    if tampered == "predecessor":
+                        owner = next(node for node in candidate.iter() if history in list(node))
+                        index = list(owner).index(history) + 1
+                        history = owner.makeelement(
+                            "set-variable", {"name": "routePredecessorPrograms"},
+                        )
+                        owner.insert(index, history)
                     history.set("value", "f" * 64 if tampered == "legacy"
                                 else json.dumps(["f" * 64]))
                 elif tampered == "unregistered":
@@ -1097,11 +1106,14 @@ def test_existing_program_delegation_uses_guarded_cutover(
     "deployment_healthy", "deployment_incomplete_target",
     "pool_upgrade", "pool_partial", "pool_written", "pool_operation_drift", "pool_registered",
     "router_upgrade", "router_registered",
+    "trace_upgrade", "trace_current", "trace_candidate_operation", "trace_etag", "trace_partial",
+    "trace_written",
 ])
 def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_state: str,
 ) -> None:
     from contextlib import nullcontext
+    from dataclasses import replace
     from types import SimpleNamespace
     from typing import Any, cast
     from uuid import UUID
@@ -1130,9 +1142,11 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         configuration_manifests,
         document_digest,
     )
+    from turnstile_core.integrations.apim_control_plane_contract import PolicyCompilationError
     from turnstile_core.integrations.apim_storage_routes import (
         compile_fixed_route_program,
         fixed_policy_digest,
+        fixed_program_digest,
     )
     from turnstile_core.integrations.storage_route_projection import RouteProjectionConflict
     from turnstile_core.persistence.in_memory import InMemoryRepository
@@ -1140,6 +1154,7 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
 
     runtime = Mock(wraps=runtime_release_parameters)
     monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
+    monkeypatch.setattr(bootstrap, "_CONVERGED_REFRESH", {})
     with monkeypatch.context() as setup:
         compiler = Mock(wraps=compile_fixed_route_program)
         setup.setattr(deploy, "compile_fixed_route_program", compiler)
@@ -1154,6 +1169,60 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         )
         old_parent = parameters["parentPolicy"]["value"]
         trust = runtime.call_args.args[7]
+        if native_state.startswith("trace_") and native_state != "trace_current":
+            from turnstile_core.integrations.apim_model_availability import admission_guard
+            from turnstile_core.integrations.apim_policy_components import (
+                parse_policy,
+                serialize_policy,
+            )
+
+            original = compiler._mock_wraps(*compiler.call_args.args, **compiler.call_args.kwargs)
+            parent = parse_policy(original.parent_policy)
+            owners = {child: owner for owner in parent.iter() for child in owner}
+            for marker in parent.findall(".//set-variable[@name='availabilityBindingValid']"):
+                guard = owners[owners[marker]]
+                legacy = serialize_policy(admission_guard(
+                    native_gateway_scope=original.binding.native_gateway_scope,
+                ))
+                for parameter, value in (
+                    ("__GATEWAY_PROFILE_ID__", original.binding.scope.target_id),
+                    ("__LEDGER_TABLE_ENDPOINT__", original.binding.ledger_table_endpoint),
+                    ("__LEDGER_TABLE_NAME__", original.binding.ledger_table_name),
+                ):
+                    legacy = legacy.replace(parameter, value)
+                owner = owners[guard]
+                owner[list(owner).index(guard)] = parse_policy(legacy)
+            policies = dict(original.operation_policies)
+            chat = parse_policy(policies["chat-completions"])
+            denied = next(node for node in chat.iter("when") if node.get("condition") ==
+                          '@(!(bool)context.Variables["routerNativeDocumentReady"])')
+            for node in list(denied):
+                if node.tag == "log-to-eventhub" or node.get("name") == "telemetryUsageId":
+                    denied.remove(node)
+            policies["chat-completions"] = serialize_policy(chat)
+            digest = fixed_program_digest(
+                serialize_policy(parent), policies, original.operation_contracts,
+            )
+            program_marker = parent.find(".//set-variable[@name='routeProgram']")
+            assert program_marker is not None
+            program_marker.set("value", digest)
+            previous_program = replace(
+                original, binding=original.binding.model_copy(update={"program_sha256": digest}),
+                parent_policy=serialize_policy(parent), operation_policies=tuple(policies.items()),
+            )
+            old_parent = previous_program.parent_policy
+            assert previous_program.binding.pool_enabled and previous_program.binding.router_enabled
+            parameters = {**parameters, "fixedOperations": {"value": [
+                {"name": name, "method": method, "path": path, "policy": policies[name]}
+                for name, method, path in previous_program.operation_contracts
+            ]}}
+            descriptor = descriptor.model_copy(update={
+                "binding": previous_program.binding,
+                "parent_policy_sha256": fixed_policy_digest(old_parent),
+                "operation_policies_sha256": {
+                    name: fixed_policy_digest(policy) for name, policy in policies.items()
+                },
+            })
         if native_state.startswith(("pool_", "router_")):
             previous_program = compiler._mock_wraps(
                 compiler.call_args.args[0],
@@ -1207,7 +1276,8 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     )
     management.route_program_operations.return_value = operations
     settings = Settings.model_construct(
-        budget_delegation_trust={target: trust.model_copy(update={"client_ids": (UUID(int=94),)})},
+        budget_delegation_trust={target: trust if native_state.startswith("trace_") else
+                                trust.model_copy(update={"client_ids": (UUID(int=94),)})},
         ledger_table_endpoint=descriptor.binding.ledger_table_endpoint,
         ledger_table_name=descriptor.binding.ledger_table_name,
         apim_usage_observer_key_named_value=descriptor.binding.observer_key_named_value,
@@ -1244,6 +1314,13 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         capture.setattr(bootstrap, "register_verified_program_upgrade", registration)
         capture.setattr(bootstrap, "apim_target_client_config_resolver", Mock())
         bootstrap.configure_budget_delegation(repository, settings, target)
+    if native_state == "trace_current":
+        registration.assert_not_called()
+        management.route_program_operations.assert_not_called()
+        management._request.assert_not_called()
+        return
+    if native_state.startswith("trace_"):
+        registration.assert_called_once()
     upgrade = registration.call_args.args[2]
     candidate = registration.call_args.kwargs["parent_policy"]
     repository.get_gateway_profiles.return_value = [{"id": target, "config": dict(prior_config)}]
@@ -1298,11 +1375,16 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
                     if native_state == "proof_expired" else {}),
         })
     writes: list[str] = []
-    interrupt_pool = [native_state == "pool_partial"]
+    interrupt_pool = [native_state in {"pool_partial", "trace_partial"}]
+    operation_heads: dict[str, int] = {}
     deployment_events: list[str] = []
     cutover_inputs: list[Any] = []
     arm_history_reads: list[str] = []
     def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+        if native_state == "trace_etag" and method == "HEAD" and "/operations/" in path:
+            operation_heads[path] = operation_heads.get(path, 0) + 1
+            if operation_heads[path] > 1:
+                return httpx.Response(200, headers={"ETag": '"concurrent"'})
         if method == "PUT":
             assert kwargs["extra_headers"] == {"If-Match": current["etag"]}
             stored = ET.tostring(ET.fromstring(
@@ -1328,8 +1410,9 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     management.revision_api_policy.side_effect = lambda *_: current["parent"]
     entry = native_state.startswith("entry_")
     registration_failure = [native_state in {"entry_proof_written", "entry_proof_expired"}]
-    reject = [native_state in {"interrupted", "deployment_write_failure", "pool_written"}
-              or entry and not registration_failure[0]]
+    reject = [native_state in {
+        "interrupted", "deployment_write_failure", "pool_written", "trace_written",
+    } or entry and not registration_failure[0]]
     def probe(request: httpx.Request) -> httpx.Response:
         if request.url.host == "management.azure.com":
             if request.method == "GET":
@@ -1393,7 +1476,10 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
             apim_probe_subscription_key=SecretStr("unit-key"),
             ledger_table_endpoint=descriptor.binding.ledger_table_endpoint,
             ledger_table_name=descriptor.binding.ledger_table_name,
-            apim_usage_observer_key_named_value=descriptor.binding.observer_key_named_value),
+            apim_usage_observer_key_named_value=descriptor.binding.observer_key_named_value,
+            control_plane_parent_policy_path=Path(__file__).resolve().parents[3]
+            / "infra/policies/foundry-finops-policy.xml",
+            budget_delegation_trust=settings.budget_delegation_trust),
     )
     recorded: list[Any] = []
     def record(value: Any, digest: str, **options: Any) -> None:
@@ -1409,20 +1495,48 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(
         **kwargs, transport=httpx.MockTransport(probe),
     ))
-    entry_registration = Mock(side_effect=lambda *args, **kwargs: (
+    def register_from_entry(*args: Any, **kwargs: Any) -> None:
+        if native_state == "trace_candidate_operation":
+            from turnstile_core.integrations.apim_policy_components import (
+                parse_policy,
+                serialize_policy,
+            )
+
+            candidate_operations = dict(kwargs["operation_policies"])
+            operation = parse_policy(candidate_operations["chat-completions"])
+            inbound = operation.find("inbound")
+            assert inbound is not None
+            header = ET.Element("set-header", {"name": "x-user-id", "exists-action": "override"})
+            ET.SubElement(header, "value").text = "forged-person@example.test"
+            inbound.insert(0, header)
+            candidate_operations["chat-completions"] = serialize_policy(operation)
+            changed, changed_parent = bootstrap.prepare_budget_delegation_upgrade(
+                current_installation, str(source.id), kwargs["parent_policy"],
+                {name: (method, path, candidate_operations[name])
+                 for name, (method, path, _) in operations.items()},
+            )
+            args = (*args[:2], changed, *args[3:])
+            kwargs = {**kwargs, "parent_policy": changed_parent,
+                      "operation_policies": candidate_operations}
         routes.register_verified_program_upgrade(*args, **kwargs, clock=lambda: 1100)
-    ))
+    entry_registration = Mock(side_effect=register_from_entry)
     monkeypatch.setattr(bootstrap, "AzureApimPublisherClient", Mock(return_value=management))
     monkeypatch.setattr(bootstrap, "register_verified_program_upgrade", entry_registration)
     monkeypatch.setattr(bootstrap, "apim_target_client_config_resolver", lambda *_: configurations)
     def cutover() -> None:
-        if entry or native_state.startswith(("pool_", "router_")):
+        if entry or native_state.startswith(("pool_", "router_", "trace_")):
             bootstrap.configure_budget_delegation(repository, settings, target)
             return
         routes.register_verified_program_upgrade(
             repository, configurations, upgrade, document_digest({}), clock=lambda: 1100,
             parent_policy=candidate, expected_parent_etag=current["etag"],
         )
+    if native_state in {"trace_candidate_operation", "trace_etag"}:
+        with pytest.raises(PolicyCompilationError):
+            cutover()
+        assert not writes and not recorded
+        assert repository.effective_gateway_publication.return_value == original_publication
+        return
     if deployment:
         import getpass
 
@@ -1637,9 +1751,9 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
             cutover()
         assert not writes and not recorded
         return
-    if native_state in {"pool_partial", "pool_written"}:
+    if native_state in {"pool_partial", "pool_written", "trace_partial", "trace_written"}:
         with pytest.raises(ValueError, match=(
-            "Pool operation interruption" if native_state == "pool_partial"
+            "Pool operation interruption" if native_state.endswith("_partial")
             else "authenticated probe"
         )):
             cutover()
@@ -1710,9 +1824,10 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
     assert len(writes) == (
         len(operations) + 1 if native_state in {
             "pool_upgrade", "pool_registered", "router_upgrade", "router_registered",
+            "trace_upgrade",
         } else
-        len(operations) + 2 if native_state == "pool_partial" else
-        2 * len(operations) + 1 if native_state == "pool_written" else
+        len(operations) + 2 if native_state in {"pool_partial", "trace_partial"} else
+        2 * len(operations) + 1 if native_state in {"pool_written", "trace_written"} else
         0 if already_written else 2 if native_state == "entry_normalized" else 1
     )
     if native_state.startswith("pool_"):
@@ -1728,6 +1843,25 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         assert first.kwargs["parent_policy"] == second.kwargs["parent_policy"] == candidate
         assert first.args[3] == second.args[3]
         assert second.kwargs["expected_parent_etag"] == recovery_etag
+    from turnstile_core.persistence.repository_support import _fixed_program_upgrade_config
+
+    profile = repository.get_gateway_profiles.return_value[0]
+    profile["config"] = _fixed_program_upgrade_config(
+        repository.effective_gateway_publication.return_value, profile["config"], recorded[0],
+        document_digest(profile["config"]),
+    )
+    calls, written = entry_registration.call_count, len(writes)
+    bootstrap.configure_budget_delegation(repository, settings, target)
+    assert entry_registration.call_count == calls and len(writes) == written
+    monkeypatch.setattr(bootstrap, "refresh_fixed_budget_execution_policy", Mock(
+        side_effect=AssertionError("converged refresh recompiled"),
+    ))
+    bootstrap.configure_budget_delegation(repository, settings, target)
+    with pytest.raises(AssertionError, match="converged refresh recompiled"):
+        bootstrap.configure_budget_delegation(repository, settings.model_copy(update={
+            "apim_usage_observer_key_named_value": "changed-observer-key",
+        }), target)
+    assert entry_registration.call_count == calls and len(writes) == written
 
 
 @pytest.mark.parametrize("phase", ["complete", "failed", "running", "changed_target"])

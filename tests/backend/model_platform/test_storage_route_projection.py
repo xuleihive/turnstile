@@ -4377,7 +4377,9 @@ def test_program_upgrade_cutover_holds_proof_guard_until_registration(
         side_effect=[next_verifier, prior_verifier],
     ))
     monkeypatch.setattr(module, "TableRouteProjection", Mock(return_value=projection))
-    monkeypatch.setattr(module, "_validate_program_cutover", lambda *args: None, raising=False)
+    monkeypatch.setattr(
+        module, "_validate_program_cutover", lambda *args, **options: None, raising=False,
+    )
 
     def cutover() -> None:
         module.register_verified_program_upgrade(

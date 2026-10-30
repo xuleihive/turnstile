@@ -71,8 +71,11 @@ def _router_engine_templates(*, gateway_profile_id: str | None = None) -> tuple[
 
 def fixed_router_operation_stages(
   ledger_table_endpoint: str, ledger_table_name: str, api_id: str, gateway_profile_id: str,
+  *, logger_id: str = "__LOGGER_ID__", usage_identity: str = "__ROUTER_USAGE_IDENTITY__",
 ) -> tuple[ET.Element, ET.Element]:
   from copy import deepcopy
+
+  from .apim_budget_execution import pre_dispatch_denial_event
 
   replacements = {
     "__LEDGER_TABLE_ENDPOINT__": ledger_table_endpoint.rstrip("/"),
@@ -159,6 +162,24 @@ def fixed_router_operation_stages(
   rejected = ET.SubElement(invalid, "when", {
     "condition": '@(!(bool)context.Variables["routerNativeDocumentReady"])',
   })
+  ET.SubElement(rejected, "set-variable", {
+    "name": "telemetryUsageId", "value": usage_identity,
+  })
+  rejected.append(pre_dispatch_denial_event("503", {
+    "ingest_error": '"router_pre_dispatch_denial"',
+    "model_admission": '"router_configuration_unavailable"',
+    "error_message": '"router_configuration_unavailable"',
+    "request_id": '(string)context.Variables["routerCallerRequestId"]',
+    "model": '(string)context.Variables["routerRequestedModel"]',
+    "native_gateway_instance_id": (
+      'known ? (string.IsNullOrWhiteSpace(context.Deployment.Gateway.InstanceId) '
+      '? context.Deployment.Gateway.Id : context.Deployment.Gateway.InstanceId) : null'
+    ),
+    "apim_subscription_id": '(context.Subscription?.Id ?? "").Split(\'/\').Last()',
+  }, logger_id=logger_id, gateway_profile_id=gateway_profile_id, request_source=(
+    'context.Variables.GetValueOrDefault<string>("telemetryRequestSource", '
+    'context.Request.Headers.GetValueOrDefault("x-request-source", "unattributed"))'
+  )))
   response = ET.SubElement(rejected, "return-response")
   ET.SubElement(response, "set-status", {"code": "503", "reason": "Service Unavailable"})
   ET.SubElement(response, "set-body").text = '{"error":{"code":"router_configuration_unavailable"}}'

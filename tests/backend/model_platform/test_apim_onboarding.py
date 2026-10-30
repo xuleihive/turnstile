@@ -134,11 +134,13 @@ def test_self_hosted_capability_uses_shared_apim_tier_mapping(
     ("Developer", True),
     ("StandardV2", False),
 ])
+@pytest.mark.parametrize("logger_id", ["unit-business-events-a", "unit-business-events-b"])
+@pytest.mark.parametrize("legacy", [False, True])
 def test_onboarding_fixed_program_scope_matches_apim_tier(
-    tier: str, expected: bool,
+    tier: str, expected: bool, logger_id: str, legacy: bool,
 ) -> None:
     plan = onboarding_plan(service_tier=tier)
-    source = Path(__file__).resolve().parents[3] / "infra/policies/foundry-finops-policy.xml"
+    source = (Path(__file__).resolve().parents[3] / "infra/policies/foundry-finops-policy.xml")
     capability = self_hosted_gateway_capability_for_tier(plan.service_tier)
     program = render_onboarding_fixed_program(
         plan.request, onboarding_configuration(), source.read_text(),
@@ -146,20 +148,62 @@ def test_onboarding_fixed_program_scope_matches_apim_tier(
     )
     assert program.binding.native_gateway_scope is expected
     assert program.binding.pool_enabled is True
-    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_model_availability import (
+        _admission_locations,
+        admission_guard,
+        availability_kernel_digest,
+        compose_availability_parent,
+    )
     from turnstile_core.integrations.apim_onboarding_policy import (
         _render_onboarding_parent,
         onboarding_canonical_parent,
     )
+    from turnstile_core.integrations.apim_policy_components import (
+        policy_document_digest,
+        serialize_policy,
+    )
     from turnstile_core.integrations.apim_storage_routes import (
+        _baseline_root,
         compile_fixed_route_program,
         upgrade_fixed_pool_program,
+        upgrade_fixed_program_parent,
     )
 
     canonical = compose_availability_parent(onboarding_canonical_parent(
         source.read_text(), plan.request.api_id,
     ))
     baseline = _render_onboarding_parent(plan.request, onboarding_configuration(), canonical)
+    parent = parse_policy(baseline)
+    for event in parent.iter("log-to-eventhub"):
+        event.set("logger-id", logger_id)
+    if legacy:
+        assert availability_kernel_digest() == (
+            "83960caefc1b0f12e73e3877abb59e8ad40889e1f75c1980c761656b83d25ed9"
+        )
+        for branch, anchor in _admission_locations(parent):
+            guard = serialize_policy(admission_guard())
+            for parameter, value in (
+                ("__GATEWAY_PROFILE_ID__", program.binding.scope.target_id),
+                ("__LEDGER_TABLE_ENDPOINT__", program.binding.ledger_table_endpoint),
+                ("__LEDGER_TABLE_NAME__", program.binding.ledger_table_name),
+            ):
+                guard = guard.replace(parameter, value)
+            branch[list(branch).index(anchor) + 1] = parse_policy(guard)
+    baseline = serialize_policy(parent)
+    if legacy:
+        _baseline_root(baseline)
+        baseline = upgrade_fixed_program_parent(
+            baseline, program.binding, canonical, policy_document_digest(baseline),
+        )
+        assert len([event for event in parse_policy(baseline).iter("log-to-eventhub")
+                    if "model_availability_pre_dispatch_denial" in (event.text or "")]) == 2
+    program = compile_fixed_route_program(baseline, program.binding, canonical_parent=canonical)
+    events = [
+        event for artifact in (program.parent_policy, *dict(program.operation_policies).values())
+        for event in parse_policy(artifact).iter("log-to-eventhub")
+    ]
+    assert events
+    assert {event.attrib["logger-id"] for event in events} == {logger_id}
     previous = compile_fixed_route_program(
         baseline, program.binding.model_copy(update={"pool_enabled": False}),
         canonical_parent=canonical,
