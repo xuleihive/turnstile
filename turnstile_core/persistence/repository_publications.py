@@ -2523,7 +2523,9 @@ class PostgreSqlPublicationRepositoryMixin:
                     ).fetchone()
                 if runtime is None:
                     raise ValueError("The managed runtime no longer exists")
-                runtime_config = dict(runtime["config"] or {})
+                runtime_config = _activated_runtime_credentials(
+                    dict(runtime["config"] or {}), binding, publication["resource_manifest"],
+                )
                 if not runtime_config.get("control_plane_managed"):
                     raise ValueError("The runtime is not managed by the control plane")
                 runtime_config["named_value_name"] = binding["named_value_name"]

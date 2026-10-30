@@ -2031,7 +2031,9 @@ class InMemoryPublicationRepositoryMixin:
             )
             if runtime is None:
                 raise ValueError("The managed runtime no longer exists")
-            config = dict(runtime.get("config") or {})
+            config = _activated_runtime_credentials(
+                dict(runtime.get("config") or {}), binding, publication["resource_manifest"],
+            )
             if not config.get("control_plane_managed"):
                 raise ValueError("The runtime is not managed by the control plane")
             config["named_value_name"] = binding["named_value_name"]

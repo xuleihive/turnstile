@@ -670,6 +670,11 @@ def _default_route_clock() -> int:
 _PROGRAM_RENEW_BACKOFF_SECONDS = 300.0
 _PROGRAM_RENEW_BACKOFF_LOCK = Lock()
 _PROGRAM_RENEW_BACKOFF_UNTIL: dict[tuple[UUID, str], float] = {}
+# Releases that absorb the target's active model additions into one route set.
+_FULL_ROUTE_RELEASES = frozenset({
+    PublicationKind.ROUTE_RECONCILE, PublicationKind.MODEL_REMOVE,
+    PublicationKind.CREDENTIAL_ROTATION,
+})
 
 
 class FixedRoutePublisherFactory:
@@ -1881,10 +1886,7 @@ class FixedRoutePublisherFactory:
                 for row in self._repository.active_model_route_publications(
                     publication.gateway_profile_id,
                 )
-            ) if publication.publication_kind in {
-                PublicationKind.ROUTE_RECONCILE,
-                PublicationKind.MODEL_REMOVE,
-            } else (),
+            ) if publication.publication_kind in _FULL_ROUTE_RELEASES else (),
         )
 
     @staticmethod
@@ -1989,6 +1991,38 @@ class FixedRoutePublisherFactory:
             for prior in previous.desired_spec.bindings
         )
 
+    def _runtime_rotation_matches(
+        self, publication: GatewayPublication, binding: GatewayModelBinding,
+        config: Mapping[str, Any],
+    ) -> bool:
+        from ..services.route_publication import route_credential_source
+
+        recorded = config.get("key_vault_secret_id")
+        if (
+            recorded is None
+            or publication.publication_kind is not PublicationKind.CREDENTIAL_ROTATION
+            or publication.base_release_id is None
+        ):
+            return False
+        row = self._repository.get_gateway_publication(publication.base_release_id)
+        if row is None:
+            return False
+        previous = GatewayPublication.model_validate(row)
+        if (previous.id != publication.base_release_id
+                or previous.gateway_profile_id != publication.gateway_profile_id):
+            return False
+        inherited = self._inherited_credential_bindings(publication, previous)
+        return any(
+            prior.runtime_id == binding.runtime_id
+            and prior.auth_strategy == binding.auth_strategy
+            and prior.named_value_name == config.get("named_value_name")
+            and recorded == (
+                str(prior.key_vault_secret_id) if prior.key_vault_secret_id is not None
+                else inherited.get(route_credential_source(prior))
+            )
+            for prior in self._previous_credential_sources(publication, previous)
+        )
+
     def _preflight_dependencies(
         self, publication: GatewayPublication, installation: FixedProgramInstallation,
         registry: Mapping[str, Sequence[dict[str, Any]]] | None = None,
@@ -2080,16 +2114,30 @@ class FixedRoutePublisherFactory:
         self, publication: GatewayPublication, previous: GatewayPublication,
     ) -> dict[str, str]:
         inherited = self._credential_bindings(previous)
-        if publication.publication_kind in {
-            PublicationKind.ROUTE_RECONCILE,
-            PublicationKind.MODEL_REMOVE,
-        }:
+        if publication.publication_kind in _FULL_ROUTE_RELEASES:
             for row in self._repository.active_model_route_publications(
                 publication.gateway_profile_id,
             ):
                 if row.get("id") != publication.id:
                     inherited.update(credential_bindings(row.get("resource_manifest") or {}))
         return inherited
+
+    def _previous_credential_sources(
+        self, publication: GatewayPublication, previous: GatewayPublication,
+    ) -> tuple[GatewayModelBinding, ...]:
+        from ..services.route_publication import pool_member_bindings
+
+        releases = (previous, *(
+            GatewayPublication.model_validate(row)
+            for row in self._repository.active_model_route_publications(
+                publication.gateway_profile_id,
+            )
+            if row.get("id") != publication.id
+        )) if publication.publication_kind in _FULL_ROUTE_RELEASES else (previous,)
+        return tuple(
+            source for release in releases for binding in release.desired_spec.bindings
+            for source in pool_member_bindings(binding) or (binding,)
+        )
 
     def _prepare_credentials(
         self, publication: GatewayPublication, previous: GatewayPublication,
@@ -2111,26 +2159,7 @@ class FixedRoutePublisherFactory:
                 raise PolicyCompilationError("Route credential bindings have no source")
             return publication, {}
         inherited = self._inherited_credential_bindings(publication, previous)
-        addition_bindings = tuple(
-            source
-            for row in (
-                self._repository.active_model_route_publications(publication.gateway_profile_id)
-                if publication.publication_kind in {
-                    PublicationKind.ROUTE_RECONCILE,
-                    PublicationKind.MODEL_REMOVE,
-                } else ()
-            )
-            if row.get("id") != publication.id
-            for binding in GatewayPublication.model_validate(row).desired_spec.bindings
-            for source in pool_member_bindings(binding) or (binding,)
-        )
-        previous_bindings = (
-            *tuple(
-                source for binding in previous.desired_spec.bindings
-                for source in pool_member_bindings(binding) or (binding,)
-            ),
-            *addition_bindings,
-        )
+        previous_bindings = self._previous_credential_sources(publication, previous)
         previous_sources = {
             route_credential_source(binding) for binding in previous_bindings
             if binding.auth_strategy in {
@@ -2161,7 +2190,9 @@ class FixedRoutePublisherFactory:
                     prior.runtime_id == binding.runtime_id
                     and prior.auth_strategy == binding.auth_strategy
                     and prior.named_value_name == config.get("named_value_name")
-                    and prior.key_vault_secret_id == binding.key_vault_secret_id
+                    and (prior.key_vault_secret_id == binding.key_vault_secret_id
+                         or prior.key_vault_secret_id is not None
+                         and str(prior.key_vault_secret_id) == config.get("key_vault_secret_id"))
                     for prior in previous_bindings
                 )
             )
@@ -4122,7 +4153,10 @@ class FixedRoutePublisherFactory:
                     runtime_config.get("control_plane_managed") is not True
                     or not self._runtime_destination_matches(publication, binding, runtime_config)
                     or runtime_config.get("auth_strategy") != binding.auth_strategy.value
-                    or runtime_config.get("key_vault_secret_id") not in accepted_secrets
+                    or (runtime_config.get("key_vault_secret_id") not in accepted_secrets
+                        and not self._runtime_rotation_matches(
+                            publication, binding, runtime_config,
+                        ))
                     or binding.api_format is not ApiFormat.MICROSOFT_DECISION
                     and runtime_config.get("managed_identity_resource")
                     != binding.managed_identity_resource

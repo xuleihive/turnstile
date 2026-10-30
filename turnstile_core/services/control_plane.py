@@ -4025,9 +4025,7 @@ class GatewayControlPlaneService:
             ),
             None,
         )
-        if target is None:
-            raise ControlPlaneConflictError("The model is not managed by this gateway release")
-        if target.oauth is not None:
+        if target is not None and target.oauth is not None:
             if not self._databricks_oauth_enabled or write.oauth_client_secret is None:
                 raise ControlPlaneConflictError(
                     "OAuth rotation requires enablement and a client secret"
@@ -4061,6 +4059,25 @@ class GatewayControlPlaneService:
                 spec, PublicationKind.CREDENTIAL_ROTATION, created_by,
                 self._cipher.encrypt(write.oauth_client_secret.get_secret_value()),
             )
+        registry = self._repository.registry()
+        fixed_route = any(
+            field in previous.resource_manifest
+            for field in ("fixed_route_program", "route_configuration")
+        )
+        current = (
+            self._backend_pool_release_spec(previous, registry)
+            if fixed_route else previous.desired_spec
+        )
+        target = next(
+            (
+                binding
+                for binding in current.bindings
+                if binding.model.model_key.casefold() == write.model_key.casefold()
+            ),
+            None,
+        )
+        if target is None:
+            raise ControlPlaneConflictError("The model is not managed by this gateway release")
         if write.api_key is None:
             raise ControlPlaneConflictError("This connection requires an API key")
         if (
@@ -4070,18 +4087,25 @@ class GatewayControlPlaneService:
                 AuthStrategy.NAMED_VALUE_BEARER,
                 AuthStrategy.NAMED_VALUE_API_KEY,
             }
-            or target.key_vault_secret_id is not None
+            or target.key_vault_secret_id is not None and not fixed_route
         ):
             raise ControlPlaneConflictError(
                 "The model does not use a directly managed API key"
             )
         if self._cipher is None:
             raise ControlPlaneConflictError("Credential encryption is unavailable")
-        registry = self._repository.registry()
         connection = self._binding_connection(target, gateway_profile_id, registry)
+        # Fixed-route activation records the materialized credential on its connection.
+        recorded = (
+            (connection.get("config") or {}).get("key_vault_secret_id") if fixed_route else None
+        )
+        if target.key_vault_secret_id is not None and str(target.key_vault_secret_id) != recorded:
+            raise ControlPlaneConflictError(
+                "The model does not use a directly managed API key"
+            )
         named_value_name = f"finops-credential-{uuid4().hex[:20]}"
         updated = []
-        for binding in previous.desired_spec.bindings:
+        for binding in current.bindings:
             if (
                 binding.routing_managed
                 and self._binding_connection(binding, gateway_profile_id, registry)["id"]
@@ -4090,6 +4114,7 @@ class GatewayControlPlaneService:
                 if (
                     binding.auth_strategy is not target.auth_strategy
                     or binding.key_vault_secret_id is not None
+                    and str(binding.key_vault_secret_id) != recorded
                 ):
                     raise ControlPlaneConflictError(
                         "Connection bindings have incompatible credential ownership"
@@ -4098,6 +4123,7 @@ class GatewayControlPlaneService:
                     "runtime_id": connection["id"],
                     "provider_id": connection["provider_id"],
                     "named_value_name": named_value_name,
+                    "key_vault_secret_id": None,
                     "runtime_config": {
                         **binding.runtime_config,
                         "named_value_name": named_value_name,
@@ -4130,14 +4156,15 @@ class GatewayControlPlaneService:
         )
         bindings = [binding for binding in updated if binding is not target_binding]
         bindings.append(target_binding)
-        discovery = list(previous.desired_spec.discovery_models)
-        discovery.extend(self._existing_discovery(gateway_profile_id, registry))
+        discovery = list(current.discovery_models)
+        if not fixed_route:
+            discovery.extend(self._existing_discovery(gateway_profile_id, registry))
         unique_discovery = {item.id.casefold(): item for item in discovery}
         spec = GatewayReleaseSpec(
             gateway_profile_id=gateway_profile_id,
             discovery_models=sorted(unique_discovery.values(), key=lambda item: item.id),
             bindings=bindings,
-            gateway_deployments=previous.desired_spec.gateway_deployments,
+            gateway_deployments=current.gateway_deployments,
         )
         spec = self._refresh_release_deployments(spec)
         encrypted = self._cipher.encrypt(write.api_key.get_secret_value())
@@ -4146,6 +4173,7 @@ class GatewayControlPlaneService:
             PublicationKind.CREDENTIAL_ROTATION,
             created_by,
             encrypted,
+            expected_base_release_id=previous.id if fixed_route else None,
         )
 
     @staticmethod

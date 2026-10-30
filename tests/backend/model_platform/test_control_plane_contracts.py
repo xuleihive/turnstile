@@ -2053,6 +2053,144 @@ def test_connection_renewal_uses_activated_materialized_credential(
         )
 
 
+@pytest.mark.parametrize("variant", ["base", "addition", "forged", "reconcile", "unrelated"])
+def test_fixed_route_rotation_renews_only_from_the_connection_base_credential(
+    variant: str,
+) -> None:
+    from tests.backend.model_platform.test_storage_route_projection import snapshot_fixture
+    from turnstile_core.services.route_publication import route_credential_source
+
+    publication, _ = budget_publication_contract_fixture()
+    snapshot, program, _ = snapshot_fixture()
+    target = UUID(program.scope.target_id)
+    prior = publication.desired_spec.bindings[0].model_copy(update={
+        "runtime_id": UUID(int=923), "api_format": ApiFormat.OPENAI_CHAT,
+        "auth_strategy": AuthStrategy.NAMED_VALUE_API_KEY, "named_value_name": "unit-runtime-key",
+        "key_vault_secret_id": None,
+    })
+    assert prior.backend_url is not None
+    config = {
+        **prior.runtime_config, "control_plane_managed": True,
+        "backend_url": str(prior.backend_url), "backend_path": prior.backend_path,
+        "api_format": prior.api_format.value, "auth_strategy": prior.auth_strategy.value,
+        "managed_identity_resource": prior.managed_identity_resource,
+        "named_value_name": prior.named_value_name,
+    }
+    prior = prior.model_copy(update={"runtime_config": config})
+    rotated_name = "finops-credential-" + "c" * 20
+    rotated = prior.model_copy(update={
+        "named_value_name": rotated_name,
+        "runtime_config": {**config, "named_value_name": rotated_name},
+    })
+    vault = "https://unit-vault.vault.azure.net/secrets/"
+    recorded, materialized = vault + "runtime-key/" + "a" * 32, vault + "rotated-key/" + "b" * 32
+    # Only the base release, or a model addition pinned to the record, may prove the record.
+    routed = variant not in {"addition", "unrelated"}
+    other = prior.model_copy(update={
+        "runtime_id": UUID(int=924),
+        "model": prior.model.model_copy(update={"model_key": "unit-other-model"}),
+    })
+    base = publication.model_copy(update={
+        "id": UUID(int=931), "gateway_profile_id": target,
+        "publication_kind": PublicationKind.ROUTE_RECONCILE,
+        "resource_manifest": {"route_credentials": {"version": 1, "bindings": {
+            route_credential_source(prior): recorded,
+        } if routed else {}}},
+        "desired_spec": publication.desired_spec.model_copy(update={
+            "gateway_profile_id": target, "bindings": [prior if routed else other],
+            "discovery_models": [item.model_copy(update={"id": "unit-other-model"})
+                                 if not routed else item
+                                 for item in publication.desired_spec.discovery_models],
+        }),
+    })
+    addition = publication.model_copy(update={
+        "id": UUID(int=932), "gateway_profile_id": target, "base_release_id": base.id,
+        "publication_kind": PublicationKind.MODEL_ADD, "resource_manifest": {},
+        "desired_spec": publication.desired_spec.model_copy(update={
+            "gateway_profile_id": target,
+            "bindings": [prior.model_copy(update={"key_vault_secret_id": HttpUrl(recorded)})],
+        }),
+    })
+    rotation = publication.model_copy(update={
+        "id": UUID(int=933), "gateway_profile_id": target, "base_release_id": base.id,
+        "publication_kind": PublicationKind.ROUTE_RECONCILE if variant == "reconcile"
+        else PublicationKind.CREDENTIAL_ROTATION,
+        "resource_manifest": {},
+        "desired_spec": publication.desired_spec.model_copy(update={
+            "gateway_profile_id": target, "bindings": [rotated],
+        }),
+    })
+    installation = FixedProgramInstallation(
+        program=program, target_identity_sha256="f" * 64,
+        storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
+        gateway_endpoint="https://unit.azure-api.net/turnstile", publisher_subscription_id="unit",
+        parent_policy_sha256="a" * 64, operation_policies_sha256={"models": "b" * 64},
+        operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
+        credential_vault_origin="https://unit-vault.vault.azure.net",
+        trusted_vault_origins=("https://unit-vault.vault.azure.net",),
+    )
+    configuration = ApimTargetClientConfig(target, "f" * 64, True, Settings.model_construct(
+        azure_subscription_id=str(UUID(int=1)), apim_resource_group="unit-group",
+        apim_service_name="unit-apim", apim_api_id=program.scope.api_id,
+    ), route_target_identity_sha256=installation.target_identity_sha256)
+    cipher = CredentialCipher(Fernet.generate_key())
+    repository, configurations, management = MagicMock(), MagicMock(), MagicMock()
+    configurations.resolve.return_value = configuration
+    repository.get_gateway_publication.return_value = base.model_dump(mode="python")
+    repository.active_model_route_publications.return_value = (
+        [addition.model_dump(mode="python")] if variant == "addition" else []
+    )
+    repository.gateway_publication_credential.return_value = cipher.encrypt("unit-rotated-key")
+    repository.checkpoint_gateway_publication_credentials.return_value = True
+    repository.checkpoint_gateway_publication_preparation.return_value = True
+
+    def prepare(connection: ConnectionRevision, persist: Any,
+                *, recovery_only: bool = False) -> str:
+        persist({"unit": "connection-intent"})
+        return connection.dependency_sha256
+
+    management.prepare_route_connection.side_effect = prepare
+    management.verify_route_connection.side_effect = lambda value: value.dependency_sha256
+    factory = FixedRoutePublisherFactory(
+        repository, configurations, active_fence=MagicMock(),
+        availability_projector=MagicMock(), clock=lambda: 1100, cipher=cipher,
+    )
+    registry = {"runtimes": [{
+        "id": prior.runtime_id, "enabled": True, "gateway_profile_id": target,
+        "config": {**config, "key_vault_secret_id": (
+            recorded[:-32] + "f" * 32 if variant == "forged" else recorded
+        )},
+    }]}
+    accepted = variant in {"base", "addition"}
+    if accepted:
+        with (
+            patch("turnstile_core.services.storage_route_publisher.RouteCredentialVault") as vaults,
+            patch("turnstile_core.services.storage_route_publisher.ManagedIdentityTokenProvider"),
+        ):
+            vaults.return_value.materialize.return_value = materialized
+            rotation, keys = factory._prepare_credentials(
+                rotation, base, installation, management, "unit-worker", lambda: None,
+                registry=registry,
+            )
+        assert keys == {route_credential_source(rotated): materialized}
+    else:
+        rotation = rotation.model_copy(update={"resource_manifest": {"route_credentials": {
+            "version": 1, "bindings": {route_credential_source(rotated): materialized},
+        }}})
+    prepare_connection = factory._connection_preparer(
+        rotation, installation, configuration, management, "unit-worker", lambda: None,
+    )
+    if accepted:
+        approved = factory.approved_connections(rotation, installation, management,
+            baseline=snapshot, registry=registry, prepare_connection=prepare_connection)
+        assert approved[rotated.model.model_key].state == "approved"
+    else:
+        with pytest.raises(PolicyCompilationError, match="independent connection approval"):
+            factory.approved_connections(rotation, installation, management, baseline=snapshot,
+                registry=registry, prepare_connection=prepare_connection)
+        management.prepare_route_connection.assert_not_called()
+
+
 def test_storage_route_document_is_strict_and_canonical_with_no_duplicate_properties() -> None:
     scope = RouteScope(target_id=str(UUID(int=1)), api_id="unit-api", gateway_id="managed")
     document = canonical_document(scope)
@@ -5062,6 +5200,101 @@ def test_external_tenant_foundry_key_can_rotate_through_a_candidate_release() ->
     assert cipher.decrypt(encrypted) == "rotated-foundry-key"
     assert f"{{{{{rotated.named_value_name}}}}}" in policy
     assert "rotated-foundry-key" not in policy
+
+
+@pytest.mark.parametrize("pinned", [None, "target", "peer"])
+def test_fixed_route_key_rotation_replaces_every_route_of_its_connection(
+    pinned: str | None,
+) -> None:
+    from turnstile_core.services.route_publication import route_credential_source
+
+    repository = InMemoryRepository()
+    cipher = CredentialCipher(Fernet.generate_key())
+    service = GatewayControlPlaneService(repository, cipher)
+
+    def activate(publication_id: UUID) -> None:
+        current = "queued"
+        for status in ("validating", "provisioning", "building_revision", "verifying",
+                       "promoting"):
+            assert transition_publication(
+                repository, publication_id, current, status, {}, "worker",
+            )
+            current = status
+        activate_publication(repository, publication_id, "worker")
+
+    effective = service.publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    activate(effective.id)
+    original = effective.desired_spec.bindings[-1]
+    connection = service._binding_connection(original, APIM_ID, repository.registry())
+    runtime = next(item for item in repository.runtimes if item["id"] == connection["id"])
+    recorded = "https://unit-vault.vault.azure.net/secrets/runtime-key/" + "a" * 32
+    runtime["config"]["key_vault_secret_id"] = recorded
+    base = repository.get_gateway_publication(effective.id)
+    assert base is not None
+    base["resource_manifest"] = {"fixed_route_program": {}}
+    alias = "unit-rotation-addition"
+    spec = effective.desired_spec.model_copy(update={
+        "bindings": [original.model_copy(update={
+            "model": original.model.model_copy(update={"model_key": alias}),
+            "key_vault_secret_id": HttpUrl(
+                recorded if pinned is None else recorded[:-32] + "b" * 32,
+            ),
+        })],
+        "discovery_models": [effective.desired_spec.discovery_models[-1].model_copy(
+            update={"id": alias},
+        )],
+    })
+    payload, _ = service._release_payload(spec)
+    manifest = {"model_route_addition": {
+        "version": 1, "program_release_id": str(effective.id), "alias": alias,
+    }}
+    added = repository.create_gateway_publication(
+        APIM_ID, payload, document_digest({**manifest, "desired_spec": payload}),
+        "model_add", "unit-owner", expected_base_release_id=effective.id,
+        initial_manifest=manifest,
+    )
+    added["status"] = "active"
+    repository.gateway_publication_outbox[-1].update(status="completed")
+    write = GatewayCredentialRotation(
+        model_key=original.model.model_key if pinned == "peer" else alias,
+        api_key=SecretStr("rotated-route-key"),
+    )
+    if pinned is not None:
+        with pytest.raises(ControlPlaneConflictError, match=(
+            "credential ownership" if pinned == "peer" else "directly managed API key"
+        )):
+            service.rotate_credential(APIM_ID, write, "owner@example.com")
+        return
+
+    rotation = service.rotate_credential(APIM_ID, write, "owner@example.com")
+    rotated = rotation.desired_spec.bindings[-1]
+    routes = {item.model.model_key: item for item in rotation.desired_spec.bindings}
+    encrypted = repository.gateway_publication_credential(rotation.id)
+
+    assert rotation.publication_kind is PublicationKind.CREDENTIAL_ROTATION
+    assert rotation.base_release_id == effective.id
+    assert rotated.model.model_key == alias
+    assert rotated.named_value_name not in {None, original.named_value_name}
+    for key in (original.model.model_key, alias):
+        assert routes[key].named_value_name == rotated.named_value_name
+        assert routes[key].key_vault_secret_id is None
+    assert encrypted is not None and cipher.decrypt(encrypted) == "rotated-route-key"
+
+    materialized = recorded[:-32] + "c" * 32
+    row = repository.get_gateway_publication(rotation.id)
+    assert row is not None
+    row["resource_manifest"]["route_credentials"] = {"version": 1, "bindings": {
+        route_credential_source(rotated): materialized,
+    }}
+    activate(rotation.id)
+
+    assert runtime["config"]["key_vault_secret_id"] == materialized
+    assert runtime["config"]["named_value_name"] == rotated.named_value_name
+    assert added["status"] == "superseded"
+    assert repository.effective_gateway_releases[APIM_ID] == rotation.id
+
 
 def test_foundry_chat_policy_owns_backend_auth_path_and_deployment_mapping() -> None:
     repository = InMemoryRepository()
