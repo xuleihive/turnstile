@@ -820,6 +820,10 @@ def test_fixed_program_initialization_creates_once_and_never_replays_unknown_wri
         client.ensure_fixed_program(program, record)
         writes = sum(request.method == "PUT" for request in state.requests)
         assert len(intents) == 2 * len(program.operation_contracts) + 1
+        uploaded = state.resources[
+            state.plan.request.resource_id + client.api_resource_path + "/policies/policy"
+        ]["properties"]["value"]
+        assert len(uploaded.encode()) <= 512 * 1024 - 32 * 1024
         client.ensure_fixed_program(program, record)
         assert sum(request.method == "PUT" for request in state.requests) == writes
         missing = client.api_resource_path + "/operations/models/policies/policy"

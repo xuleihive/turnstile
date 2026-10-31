@@ -67,7 +67,11 @@ from turnstile_core.domain.storage_routes import document_digest as route_docume
 from turnstile_core.integrations.apim_budget_execution import bind_budget_delegation
 from turnstile_core.integrations.apim_model_availability import compose_availability_parent
 from turnstile_core.integrations.apim_onboarding_policy import onboarding_canonical_parent
-from turnstile_core.integrations.apim_policy_components import parse_policy, serialize_policy
+from turnstile_core.integrations.apim_policy_components import (
+    encode_policy_xml,
+    parse_policy,
+    serialize_policy,
+)
 from turnstile_core.integrations.apim_storage_routes import (
     FixedRouteBinding,
     compile_fixed_route_program,
@@ -1997,6 +2001,15 @@ def initialize_fixed_program(
                     raise DeploymentError("Previous fixed program deployment requires readback")
             elif previous.status_code != 404:
                 previous.raise_for_status()
+            # Parameters saved by earlier versions hold verbose XML that APIM rejects as oversized.
+            parameters = _arm_parameter_document({
+                **values,
+                "parentPolicy": encode_policy_xml(parse_policy(values["parentPolicy"])),
+                "fixedOperations": [
+                    {**item, "policy": encode_policy_xml(parse_policy(item["policy"]))}
+                    for item in operations
+                ],
+            })
             what_if(runner, inputs, template, parameters, name)
             deploy_template(runner, inputs, template, parameters, name)
             return pending_descriptor.model_dump(mode="json")
@@ -2083,7 +2096,7 @@ def initialize_fixed_program(
     policies = dict(program.operation_policies)
     operations = [
         {"name": name, "method": method, "path": path,
-         "policy": ET.tostring(parse_policy(policies[name]), encoding="unicode")}
+         "policy": encode_policy_xml(parse_policy(policies[name]))}
         for name, method, path in sorted(
             program.operation_contracts,
             key=lambda contract: (contract[0] not in binding.retired_operations, contract[0]),
@@ -2093,7 +2106,7 @@ def initialize_fixed_program(
         "apimResourceGroupName": core.apim_resource_group_name, "apimName": core.apim_name,
         "apiId": api_id, "sourceRevision": snapshot.revision, "revision": snapshot.revision,
         "stage": "prepare", "apiProperties": snapshot.api_properties,
-        "parentPolicy": ET.tostring(parse_policy(program.parent_policy), encoding="unicode"),
+        "parentPolicy": encode_policy_xml(parse_policy(program.parent_policy)),
         "fixedOperations": operations,
     })
     _write_outputs(inputs, {

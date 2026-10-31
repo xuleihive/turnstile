@@ -4289,6 +4289,7 @@ def test_program_upgrade_cutover_holds_proof_guard_until_registration(
                 assert fixed_policy_digest(ET.tostring(uploaded, encoding="unicode")) == (
                     fixed_policy_digest(parent)
                 )
+                assert "&quot;" not in kwargs["json_body"]["properties"]["value"]
             return Mock(status_code=200)
         if method == "GET":
             assert decision and "/operations/" not in args[0]

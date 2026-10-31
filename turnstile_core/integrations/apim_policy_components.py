@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
 from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 
 from ..domain.image_profiles import ImageGenerationProfile, validate_image_profile
 from .apim_control_plane_contract import PolicyCompilationError
@@ -254,6 +255,40 @@ def serialize_policy(root: ET.Element) -> str:
         restore(part) if index % 2 else part.replace('"', "&quot;")
         for index, part in enumerate(fragments)
     )
+
+
+def encode_policy_xml(root: ET.Element) -> str:
+    # APIM counts submitted XML bytes against its 512 KiB limit; escape only what XML requires.
+    def encode(node: ET.Element) -> str:
+        if (not isinstance(node.tag, str) or "{" in node.tag
+                or any("{" in key for key in node.attrib)):
+            raise PolicyCompilationError("Fixed policy contains unsupported XML namespaces")
+        parts = ["<" + node.tag]
+        for name, value in node.attrib.items():
+            escaped = xml_escape(value, {
+                "\r": "&#13;", "\n": "&#10;", "\t": "&#9;",
+            }).replace("&gt;", ">")
+            double = escaped.replace('"', "&quot;")
+            single = escaped.replace("'", "&apos;")
+            quoted = '"' + double + '"' if len(double) <= len(single) else "'" + single + "'"
+            parts.append(" " + name + "=" + quoted)
+        if len(node) == 0 and not node.text:
+            parts.append("/>")
+        else:
+            text = node.text or ""
+            encoded_text = xml_escape(text, {"\r": "&#13;"})
+            if "]]>" not in text and "\r" not in text and len(text) + 12 < len(encoded_text):
+                encoded_text = "<![CDATA[" + text + "]]>"
+            parts.extend([">", encoded_text])
+            parts.extend(encode(child) for child in node)
+            parts.append("</" + node.tag + ">")
+        parts.append(xml_escape(node.tail or "", {"\r": "&#13;"}))
+        return "".join(parts)
+
+    encoded = encode(root)
+    if ET.canonicalize(encoded) != ET.canonicalize(ET.tostring(root, encoding="unicode")):
+        raise PolicyCompilationError("Fixed policy XML encoding changed its parsed values")
+    return encoded
 
 
 @lru_cache(maxsize=2048)

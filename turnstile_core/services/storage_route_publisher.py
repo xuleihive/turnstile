@@ -80,6 +80,7 @@ from ..integrations.apim_control_plane_contract import (
 )
 from ..integrations.apim_policy_components import (
     component_digest,
+    encode_policy_xml,
     parse_policy,
     validate_policy_upload,
 )
@@ -584,8 +585,8 @@ def register_verified_program_upgrade(
                     if adds_operation:
                         management._request(
                             "PUT", path,
-                            json_body={"properties": {"format": "xml", "value": ET.tostring(
-                                parse_policy(parent_policy), encoding="unicode",
+                            json_body={"properties": {"format": "xml", "value": encode_policy_xml(
+                                parse_policy(parent_policy),
                             )}},
                             extra_headers={"If-Match": cast(str, expected_parent_etag)},
                         )
@@ -613,16 +614,16 @@ def register_verified_program_upgrade(
                             continue
                         management._request(
                             "PUT", operation_paths[name],
-                            json_body={"properties": {"format": "xml", "value": ET.tostring(
-                                parse_policy(policy), encoding="unicode",
+                            json_body={"properties": {"format": "xml", "value": encode_policy_xml(
+                                parse_policy(policy),
                             )}},
                             extra_headers={"If-Match": version},
                         )
                     if not adds_operation and not candidate_written:
                         management._request(
                             "PUT", path,
-                            json_body={"properties": {"format": "xml", "value": ET.tostring(
-                                parse_policy(parent_policy), encoding="unicode",
+                            json_body={"properties": {"format": "xml", "value": encode_policy_xml(
+                                parse_policy(parent_policy),
                             )}},
                             extra_headers={"If-Match": cast(str, expected_parent_etag)},
                         )

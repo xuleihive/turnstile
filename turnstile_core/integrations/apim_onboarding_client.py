@@ -27,7 +27,12 @@ from .apim_control_plane_contract import (
     missing_management_actions,
 )
 from .apim_onboarding_policy import onboarding_logger_id
-from .apim_policy_components import component_digest, parse_policy, validate_policy_upload
+from .apim_policy_components import (
+    component_digest,
+    encode_policy_xml,
+    parse_policy,
+    validate_policy_upload,
+)
 from .apim_publisher_client import AzureApimPublisherClient
 from .apim_storage_routes import (
     FixedRouteBinding,
@@ -860,7 +865,7 @@ class AzureApimOnboardingClient(AzureApimPublisherClient):
             raise PolicyCompilationError(
                 "Initialization cannot modify a policy outside its own API"
             )
-        encoded = ET.tostring(parse_policy(policy), encoding="unicode")
+        encoded = encode_policy_xml(parse_policy(policy))
         validate_policy_upload(
             encoded, gateway_profile_id=self.request.gateway_profile_id,
             api_id=self.request.api_id, api_revision=str(self._api_properties()["apiRevision"]),

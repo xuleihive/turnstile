@@ -11,7 +11,6 @@ from typing import Literal, Protocol
 from urllib.parse import quote
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as ET
-from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 from pydantic import Field, SecretStr, model_validator
@@ -40,6 +39,7 @@ from .apim_control_plane_contract import PolicyCompilationError
 from .apim_policy_components import (
     NATIVE_STREAM_REQUEST,
     component_digest,
+    encode_policy_xml,
     expression_token_spans,
     expression_tokens,
     parse_policy,
@@ -3032,34 +3032,7 @@ def compact_fixed_policy(source: str) -> str:
             node.text = compact(node.text)
         if node.tail:
             node.tail = compact(node.tail)
-    def encode(node: ET.Element) -> str:
-        if not isinstance(node.tag, str) or "{" in node.tag or any("{" in key for key in node.attrib):
-            raise PolicyCompilationError("Fixed policy contains unsupported XML namespaces")
-        parts = ["<" + node.tag]
-        for name, value in node.attrib.items():
-            escaped = xml_escape(value, {
-                "\r": "&#13;", "\n": "&#10;", "\t": "&#9;",
-            }).replace("&gt;", ">")
-            double = escaped.replace('"', "&quot;")
-            single = escaped.replace("'", "&apos;")
-            quoted = '"' + double + '"' if len(double) <= len(single) else "'" + single + "'"
-            parts.append(" " + name + "=" + quoted)
-        if len(node) == 0 and not node.text:
-            parts.append("/>")
-        else:
-            text = node.text or ""
-            encoded_text = xml_escape(text, {"\r": "&#13;"})
-            if "]]>" not in text and "\r" not in text and len(text) + 12 < len(encoded_text):
-                encoded_text = "<![CDATA[" + text + "]]>"
-            parts.extend([">", encoded_text])
-            parts.extend(encode(child) for child in node)
-            parts.append("</" + node.tag + ">")
-        parts.append(xml_escape(node.tail or "", {"\r": "&#13;"}))
-        return "".join(parts)
-
-    candidate = encode(root)
-    if ET.canonicalize(candidate) != ET.canonicalize(ET.tostring(root, encoding="unicode")):
-        raise PolicyCompilationError("Fixed policy XML encoding changed its parsed values")
+    candidate = encode_policy_xml(root)
     if component_digest(parse_policy(candidate), normalize_text_defaults=False) != before:
         raise PolicyCompilationError("Fixed policy compaction changed executable tokens")
     return candidate

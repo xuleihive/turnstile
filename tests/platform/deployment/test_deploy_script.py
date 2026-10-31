@@ -638,11 +638,13 @@ def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
     assert core.apim_resource_group_name == "turnstile-test"
 
 
+@pytest.mark.parametrize("sku", ["Developer", "StandardV2"])
 @pytest.mark.parametrize("installation_fails", [False, True])
 def test_initial_fixed_program_binds_compiled_policies_before_registration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     installation_fails: bool,
+    sku: str,
 ) -> None:
     from uuid import UUID
 
@@ -704,7 +706,7 @@ def test_initial_fixed_program_binds_compiled_policies_before_registration(
                     }
                 },
             )
-        return httpx.Response(200, json={"sku": {"name": "StandardV2"}})
+        return httpx.Response(200, json={"sku": {"name": sku}})
 
     monkeypatch.setattr(
         "scripts.deploy.httpx.Client",
@@ -742,6 +744,10 @@ def test_initial_fixed_program_binds_compiled_policies_before_registration(
     apply.assert_called_once_with(*preview.call_args.args)
     parameters = apply.call_args.args[3]["parameters"]
     operations = parameters["fixedOperations"]["value"]
+    # APIM rejects API policies above 512 KiB; keep a 32 KiB margin on every tier.
+    assert all(len(policy.encode()) <= 512 * 1024 - 32 * 1024 for policy in (
+        parameters["parentPolicy"]["value"], *(item["policy"] for item in operations),
+    ))
     assert operations[0]["name"] == "anthropic-models"
     assert operations[0]["method"] == "POST"
     assert {item["name"]: fixed_policy_digest(item["policy"]) for item in operations} == (
@@ -841,7 +847,7 @@ def test_new_fixed_program_can_be_redeployed_without_policy_writes(
     monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
     with monkeypatch.context() as initialization:
         test_initial_fixed_program_binds_compiled_policies_before_registration(
-            tmp_path, initialization, False,
+            tmp_path, initialization, False, "StandardV2",
         )
         applied = cast(Mock, deploy.deploy_template)
         inputs = applied.call_args.args[1]
@@ -927,7 +933,7 @@ def test_existing_program_delegation_uses_guarded_cutover(
     monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
     with monkeypatch.context() as initialization:
         test_initial_fixed_program_binds_compiled_policies_before_registration(
-            tmp_path, initialization, False,
+            tmp_path, initialization, False, "StandardV2",
         )
         descriptor = bootstrap.FixedInstallationDescriptor.model_validate_json(
             json.dumps(runtime.call_args.args[5]),
@@ -1159,7 +1165,7 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
         compiler = Mock(wraps=compile_fixed_route_program)
         setup.setattr(deploy, "compile_fixed_route_program", compiler)
         test_initial_fixed_program_binds_compiled_policies_before_registration(
-            tmp_path, setup, False,
+            tmp_path, setup, False, "StandardV2",
         )
         parameters = cast(Mock, deploy.deploy_template).call_args.args[3]["parameters"]
         deployment_inputs = cast(Mock, deploy.deploy_template).call_args.args[1]
@@ -1875,7 +1881,7 @@ def test_partial_fixed_installation_reuses_bound_checkpoint_without_policy_write
     monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
     with monkeypatch.context() as initialization:
         test_initial_fixed_program_binds_compiled_policies_before_registration(
-            tmp_path, initialization, False,
+            tmp_path, initialization, False, "StandardV2",
         )
         from typing import cast
 
@@ -1896,6 +1902,15 @@ def test_partial_fixed_installation_reuses_bound_checkpoint_without_policy_write
         current = initial_snapshot
     if phase == "changed_target":
         saved["pendingFixedProgramParameters"]["parameters"]["apimName"]["value"] = "other-apim"
+    if phase == "failed":
+        from xml.etree import ElementTree as ET
+
+        retained = saved["pendingFixedProgramParameters"]["parameters"]
+        retained["parentPolicy"]["value"] = ET.tostring(
+            ET.fromstring(values["parentPolicy"]), encoding="unicode",
+        )
+        for item in retained["fixedOperations"]["value"]:
+            item["policy"] = ET.tostring(ET.fromstring(item["policy"]), encoding="unicode")
     monkeypatch.setattr(AzureUpgradeBackend, "read", Mock(return_value=current))
     writes = Mock()
     monkeypatch.setattr(deploy, "what_if", writes)
@@ -1917,6 +1932,8 @@ def test_partial_fixed_installation_reuses_bound_checkpoint_without_policy_write
     else:
         assert initialize_fixed_program(runner, inputs, saved, {}) == descriptor
     assert writes.call_count == (2 if phase == "failed" else 0)
+    if phase == "failed":
+        assert writes.call_args.args[3]["parameters"] == parameters
 
 
 @pytest.mark.parametrize("wrong_binding", [False, True])
