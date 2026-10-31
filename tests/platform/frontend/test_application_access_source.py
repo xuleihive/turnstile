@@ -56,6 +56,33 @@ def test_ledger_display_uses_api_balances_and_preserves_unknown_values() -> None
             assert f'"{phrase}":' in phrases
 
 
+def test_usd_limit_editors_follow_the_api_decimal_contract() -> None:
+    from pydantic import ValidationError
+
+    from turnstile_core.domain.application_access import GatewayApplicationBudgetUpdate
+
+    validators = [
+        re.compile(pattern)
+        for path in ("pages/applications-page.tsx", "data-sources/apim/pages/budget-page.tsx")
+        for pattern in re.findall(
+            r"/(\^\\d\{1,16\}.*?\$)/\.test\(usdLimit\)",
+            (FRONTEND_SOURCE / path).read_text(encoding="utf-8"),
+        )
+    ]
+    assert len(validators) == 3
+    # Editors prefill stored limits, which the API returns at NUMERIC(30,14) scale.
+    for value in ("10", "0.01", "10.5", "10.00000000000000", "0.001", "1.005", "10.123"):
+        try:
+            GatewayApplicationBudgetUpdate.model_validate({
+                "budget_mode": "usd", "usd_limit": value, "tokens_per_minute": 1,
+                "enforce": True, "warning_threshold_percent": 80,
+            })
+            accepted = True
+        except ValidationError:
+            accepted = False
+        assert [bool(item.fullmatch(value)) for item in validators] == [accepted] * 3, value
+
+
 def test_subscriptions_are_a_model_platform_domain() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     source = (FRONTEND_SOURCE / "data-sources/apim/source.tsx").read_text(encoding="utf-8")

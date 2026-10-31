@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
+import pytest
 from cryptography.fernet import Fernet
 
 from backend.api import (
@@ -28,7 +30,12 @@ from turnstile_core.integrations.apim_control_plane_contract import ApimSubscrip
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.security import CredentialCipher
 from turnstile_core.services.application_access import ApplicationAccessService
-from turnstile_core.services.control_plane import GatewayControlPlaneService
+from turnstile_core.services.control_plane import (
+    ControlPlaneConflictError,
+    ControlPlaneNotFoundError,
+    ControlPlaneUnavailableError,
+    GatewayControlPlaneService,
+)
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 
@@ -378,6 +385,39 @@ def test_owner_can_update_application_budget_and_model_access() -> None:
     finally:
         app.dependency_overrides.pop(application_access_service, None)
         app.dependency_overrides.pop(get_repository, None)
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    [
+        (ControlPlaneConflictError("Cannot switch to USD budget"), 409),
+        (ControlPlaneUnavailableError("USD budgets require a current scope"), 503),
+        (ControlPlaneNotFoundError("Gateway application was not found"), 404),
+    ],
+)
+def test_application_budget_update_maps_service_refusals(
+    error: Exception, status_code: int,
+) -> None:
+    repository = InMemoryRepository()
+    read_service = _seed(repository)
+    application_id = repository.gateway_applications[0]["id"]
+    app.dependency_overrides[application_access_service] = lambda: read_service
+    try:
+        with patch.object(read_service, "update_application_budget", side_effect=error):
+            response = client.put(
+                f"/api/v1/application-access/applications/{application_id}/budget",
+                json={
+                    "budget_mode": "usd",
+                    "usd_limit": "10.00",
+                    "tokens_per_minute": 12_000,
+                    "enforce": True,
+                    "warning_threshold_percent": 70,
+                },
+            )
+        assert response.status_code == status_code
+        assert response.json()["detail"] == str(error)
+    finally:
+        app.dependency_overrides.pop(application_access_service, None)
 
 
 def test_owner_can_reveal_and_rotate_application_subscription_keys() -> None:

@@ -360,7 +360,7 @@ function BudgetEditor({
     const parsedLimit = Number(budgetMode === "usd" ? usdLimit : tokenLimit)
     const parsedThreshold = Number(warningThreshold)
     const validAmount = budgetMode === "usd"
-      ? /^\d{1,16}(\.\d{1,2})?$/.test(usdLimit)
+      ? /^\d{1,16}(\.\d{1,2}0*)?$/.test(usdLimit)
       : Number.isSafeInteger(parsedLimit)
     if (!validAmount || !Number.isFinite(parsedLimit) || parsedLimit < constraint.minimum) {
       setFormError(budgetMode === "usd" ? "请输入有效的 USD 金额" : `Token 预算不能低于 ${formatFullTokens(constraint.minimum)}`)
@@ -724,7 +724,7 @@ function BulkPeopleEditor({
       return
     }
     if (updateBudget && mode === "fixed" && (usdMode
-      ? !/^\d{1,16}(\.\d{1,14})?$/.test(usdLimit) || Number(usdLimit) <= 0
+      ? !/^\d{1,16}(\.\d{1,2}0*)?$/.test(usdLimit) || Number(usdLimit) <= 0
       : !Number.isSafeInteger(parsedLimit) || parsedLimit < 1)) {
       setFormError(usdMode ? "请输入有效的 USD 金额" : "请输入大于 0 的每人 Token 额度")
       return

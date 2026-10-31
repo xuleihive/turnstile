@@ -837,6 +837,40 @@ class BudgetConstraintViolation(ValueError):
     pass
 
 
+def zero_cost_budget_denial(record: Any) -> bool:
+    return bool(
+        record.ingest_source == "eventhub"
+        and record.ingest_error == "budget_pre_dispatch_denial"
+        and record.budget_admission not in (None, "ok")
+        and 400 <= record.status_code <= 599
+        and record.input_tokens == record.cached_tokens == 0
+        and record.cache_write_tokens == record.output_tokens == 0
+    )
+
+
+def budget_usage_cost_sql(usage: str, scope_type: str, scope_id: str) -> str:
+    # The same pre-dispatch budget denials that budget_switch_usage excludes cost nothing.
+    return (
+        f"CASE WHEN {usage}.ingest_source = 'eventhub' "
+        f"AND {usage}.ingest_error IS NOT DISTINCT FROM 'budget_pre_dispatch_denial' "
+        f"AND {usage}.budget_admission IS NOT NULL AND {usage}.budget_admission <> 'ok' "
+        f"AND {usage}.status_code BETWEEN 400 AND 599 "
+        f"AND {usage}.input_tokens = 0 AND {usage}.cached_tokens = 0 "
+        f"AND {usage}.cache_write_tokens = 0 AND {usage}.output_tokens = 0 "
+        "AND NOT EXISTS (SELECT 1 FROM budget_execution_attempt dispatched "
+        f"WHERE dispatched.scope_type = {scope_type} AND dispatched.scope_id = {scope_id} "
+        "AND dispatched.period_start = "
+        f"date_trunc('month', {usage}.ts AT TIME ZONE 'UTC')::date "
+        f"AND dispatched.correlation_id = {usage}.correlation_id "
+        "AND dispatched.dispatch_id IS NOT NULL) THEN 0::NUMERIC(30,14) "
+        f"ELSE budget_usage_usd_cost({usage}.usd_cost, {usage}.estimated, "
+        f"{usage}.input_tokens, {usage}.cached_tokens, {usage}.cache_write_tokens, "
+        f"{usage}.output_tokens, {usage}.input_price_per_million, "
+        f"{usage}.cached_price_per_million, {usage}.cache_write_price_per_million, "
+        f"{usage}.output_price_per_million) END"
+    )
+
+
 def proportional_budget_tree(
     budgets: Sequence[dict[str, Any]], organization_id: str,
     budget_mode: str, amount: int | Decimal, warning_threshold_percent: int,

@@ -14,6 +14,7 @@ from ..domain.application_access import (
     application_organization,
 )
 from ..domain.ledger import BudgetReservationFinalization, validate_application_snapshot
+from .repository_support import zero_cost_budget_denial
 
 
 class InMemoryApplicationRepositoryMixin:
@@ -748,7 +749,10 @@ class InMemoryApplicationRepositoryMixin:
                     if any(row.usd_cost is not None for row in records)
                     else None
                 ),
-                "unpriced_usage_count": sum(row.usd_cost is None for row in records)
+                "unpriced_usage_count": sum(
+                    row.usd_cost is None and not zero_cost_budget_denial(row)
+                    for row in records
+                )
                 + len(recovered.get(application_id, [])),
                 "last_request_at": max(
                     [row.ts for row in records]

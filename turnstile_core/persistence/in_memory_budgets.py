@@ -16,7 +16,11 @@ from ..domain.ledger import (
 )
 from ..domain.models import TokenUsageRecord
 from .in_memory_budget_evidence import InMemoryBudgetEvidenceRepositoryMixin
-from .repository_support import BudgetConstraintViolation, proportional_budget_tree
+from .repository_support import (
+    BudgetConstraintViolation,
+    proportional_budget_tree,
+    zero_cost_budget_denial,
+)
 
 
 class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
@@ -62,6 +66,8 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
                 key = (scope_type, scope_id)
                 if not strict_record:
                     totals[key] = totals.get(key, 0) + tokens
+                if zero_cost_budget_denial(record):
+                    continue
                 if record.usd_cost is None:
                     unpriced_usd[key] = unpriced_usd.get(key, 0) + 1
                 else:

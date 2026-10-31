@@ -3434,9 +3434,9 @@ _OUTBOUND_ROUTER_ENGINE_XML = r"""<outbound>
           </choose>
         </when>
         <otherwise>
-          <!-- Direct Model Call (non-router) on /chat/completions: attach turnstile_routing and x-routed-model for uniform client contract -->
+          <!-- Direct Model Call (non-router) on /chat/completions: uniform client headers on every successful response, including streams; turnstile_routing only for JSON bodies -->
           <choose>
-            <when condition="@(context.Response.StatusCode &lt; 400 &amp;&amp; (context.Subscription == null || !context.Subscription.Id.EndsWith(&quot;-publisher-probe&quot;, StringComparison.OrdinalIgnoreCase)) &amp;&amp; context.Operation.Id == &quot;chat-completions&quot; &amp;&amp; context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).StartsWith(&quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))">
+            <when condition="@(context.Response.StatusCode &lt; 400 &amp;&amp; (context.Subscription == null || !context.Subscription.Id.EndsWith(&quot;-publisher-probe&quot;, StringComparison.OrdinalIgnoreCase)) &amp;&amp; context.Operation.Id == &quot;chat-completions&quot;)">
               <set-header name="x-request-id" exists-action="override">
                 <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("routerCallerRequestId", context.RequestId.ToString()))</value>
               </set-header>
@@ -3449,6 +3449,10 @@ _OUTBOUND_ROUTER_ENGINE_XML = r"""<outbound>
               <set-header name="x-apim-subscription-id" exists-action="override">
                 <value>@(context.Subscription != null ? context.Subscription.Id : "")</value>
               </set-header>
+            </when>
+          </choose>
+          <choose>
+            <when condition="@(context.Response.StatusCode &lt; 400 &amp;&amp; (context.Subscription == null || !context.Subscription.Id.EndsWith(&quot;-publisher-probe&quot;, StringComparison.OrdinalIgnoreCase)) &amp;&amp; context.Operation.Id == &quot;chat-completions&quot; &amp;&amp; context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;).StartsWith(&quot;application/json&quot;, StringComparison.OrdinalIgnoreCase))">
               <set-body>@{
                 try {
                   var rBody = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);

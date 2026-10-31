@@ -326,7 +326,7 @@ function ApplicationBudgetDialog({ application, open, writeAvailable, onOpenChan
     },
   })
   const valid = (budgetMode === "usd"
-    ? /^\d{1,16}(\.\d{1,14})?$/.test(usdLimit) && Number(usdLimit) > 0
+    ? /^\d{1,16}(\.\d{1,2}0*)?$/.test(usdLimit) && Number(usdLimit) > 0
     : Number(tokenLimit) > 0 && Number.isSafeInteger(Number(tokenLimit)))
     && Number(tokensPerMinute) > 0
     && Number.isSafeInteger(Number(tokensPerMinute))

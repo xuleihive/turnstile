@@ -11,7 +11,11 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from ..domain.ledger import BudgetReservationAdmission, BudgetReservationFinalization
-from .repository_support import BudgetConstraintViolation, proportional_budget_tree
+from .repository_support import (
+    BudgetConstraintViolation,
+    budget_usage_cost_sql,
+    proportional_budget_tree,
+)
 
 _LEDGER_CORRELATION_BATCH_SIZE = 5000
 
@@ -126,37 +130,23 @@ class PostgreSqlBudgetRepositoryMixin:
                    WHERE scope_id <> 'unattributed'""",
                 (from_, to, from_, to, from_, to),
             ).fetchall()
+            usd_cost = budget_usage_cost_sql("token_usage", "'person'", "token_usage.user_id")
             usd_rows = connection.execute(
                 """WITH usage_scopes AS (
                       SELECT organization_id AS scope_id, 'organization'::TEXT AS scope_type,
-                          budget_usage_usd_cost(
-                            usd_cost, estimated, input_tokens, cached_tokens,
-                            cache_write_tokens, output_tokens, input_price_per_million,
-                            cached_price_per_million, cache_write_price_per_million,
-                            output_price_per_million
-                          ) AS usd_cost
+                          """ + usd_cost + """ AS usd_cost
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND organization_id <> 'unattributed'
                        UNION ALL
                                              SELECT department_id, 'department'::TEXT,
-                                                            budget_usage_usd_cost(
-                                                                usd_cost, estimated, input_tokens, cached_tokens,
-                                                                cache_write_tokens, output_tokens, input_price_per_million,
-                                                                cached_price_per_million, cache_write_price_per_million,
-                                                                output_price_per_million
-                                                            )
+                                                            """ + usd_cost + """
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND department_id <> 'unattributed'
                        UNION ALL
                                              SELECT user_id, 'user'::TEXT,
-                                                            budget_usage_usd_cost(
-                                                                usd_cost, estimated, input_tokens, cached_tokens,
-                                                                cache_write_tokens, output_tokens, input_price_per_million,
-                                                                cached_price_per_million, cache_write_price_per_million,
-                                                                output_price_per_million
-                                                            )
+                                                            """ + usd_cost + """
                        FROM token_usage
                        WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
                          AND user_id <> 'unattributed'

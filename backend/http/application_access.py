@@ -223,8 +223,12 @@ def update_gateway_application_budget(
 ) -> GatewayApplicationDetail:
     try:
         return service.update_application_budget(application_id, request, identity.email)
+    except ControlPlaneUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ControlPlaneConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.put(

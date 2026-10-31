@@ -16,6 +16,7 @@ from ..domain.application_access import (
     application_organization,
 )
 from ..domain.ledger import validate_application_snapshot
+from .repository_support import budget_usage_cost_sql
 
 
 def _json_value(value: object) -> object:
@@ -873,6 +874,7 @@ class PostgreSqlApplicationRepositoryMixin:
     ) -> Sequence[dict[str, Any]]:
         if not application_ids:
             return []
+        usd_cost = budget_usage_cost_sql("usage", "'application'", "attribution.application_id::text")
         with self._connection() as connection:
                  rows = connection.execute(
                   """WITH canonical_correlations AS (
@@ -887,15 +889,8 @@ class PostgreSqlApplicationRepositoryMixin:
                                                   usage.ts, usage.status_code,
                                                   usage.input_tokens, usage.cached_tokens,
                                                   usage.cache_write_tokens,
-                                                                                                    usage.output_tokens, usage.estimated_cost,
-                                                                                                    budget_usage_usd_cost(
-                                                                                                        usage.usd_cost, usage.estimated, usage.input_tokens,
-                                                                                                        usage.cached_tokens, usage.cache_write_tokens,
-                                                                                                        usage.output_tokens, usage.input_price_per_million,
-                                                                                                        usage.cached_price_per_million,
-                                                                                                        usage.cache_write_price_per_million,
-                                                                                                        usage.output_price_per_million
-                                                                                                    ) AS usd_cost
+                                                                                                    usage.output_tokens, usage.estimated_cost, """
+                  + usd_cost + """ AS usd_cost
                                          FROM token_usage_application_attribution attribution
                                          JOIN token_usage usage ON usage.id = attribution.usage_id
                                          WHERE attribution.application_id = ANY(%s)

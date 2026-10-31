@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -486,5 +486,52 @@ def test_publication_activation_persists_catalog_pricing_in_postgres(
         assert len(rows) == 1
         assert rows[0]["price_source"] == "manual"
         assert rows[0]["input_cost_per_million"] == 7
+    finally:
+        repository.close()
+
+
+def test_budget_usage_prices_free_pre_dispatch_denials_like_the_ledger_in_postgres(
+    pricing_postgres: tuple[str, Event],
+) -> None:
+    info, _waiting = pricing_postgres
+    repository = PostgreSqlOpsDbProxy(info)
+    try:
+        processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+        moment = datetime.now(UTC)
+        users = {"denied": f"denied-{uuid4()}", "unpriced": f"unpriced-{uuid4()}"}
+        outcomes = {
+            "denied": {
+                "status": "429", "status_code": 429,
+                "ingest_error": "budget_pre_dispatch_denial",
+                "budget_admission": "budget_exhausted",
+            },
+            "unpriced": {
+                "status": "success", "status_code": 200,
+                "input_tokens": 10, "cached_tokens": 0, "output_tokens": 1,
+            },
+        }
+        for kind, user_id in users.items():
+            attempt = str(uuid4())
+            assert processor.process({
+                "id": attempt, "request_id": attempt, "correlation_id": attempt,
+                "ts": moment.isoformat(), "provider": "Unit", "model": "unit-model",
+                "model_id": "unit-model", "user_id": user_id, "turn_index": 1,
+                "latency_ms": 1, "estimated": True, "ingest_source": "eventhub",
+                **outcomes[kind],
+            })
+        period = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        rows = {
+            row["scope_id"]: row
+            for row in repository.token_usage_by_budget_scope(
+                period, moment + timedelta(seconds=1),
+            )
+            if row["scope_type"] == "user"
+        }
+        assert rows[users["denied"]]["unpriced_usage_count"] == 0
+        assert rows[users["denied"]]["used_usd"] == 0
+        assert rows[users["unpriced"]]["unpriced_usage_count"] == 1
+        assert repository.gateway_application_usage(
+            period.date(), (period + timedelta(days=32)).date(), [uuid4()],
+        ) == []
     finally:
         repository.close()

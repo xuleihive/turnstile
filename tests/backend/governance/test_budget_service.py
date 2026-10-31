@@ -1218,6 +1218,42 @@ def test_organization_switch_rejects_unpriced_usage_or_unresolved_upper_bound_re
     assert repository.token_budgets == before
 
 
+def test_organization_switch_ignores_free_budget_pre_dispatch_denials() -> None:
+    repository = InMemoryRepository()
+    service = TokenBudgetService(repository)
+    user_id = "test.user01@contoso.com"
+    for scope_type, scope_id, tokens in (
+        ("organization", "org-contoso-global", 200_000_000),
+        ("department", "department-platform", 100_000_000),
+        ("user", user_id, 50_000_000),
+    ):
+        service.save(
+            "2026-07",
+            cast(BudgetScopeType, scope_type),
+            scope_id,
+            TokenBudgetWrite(token_limit=tokens),
+            "owner",
+        )
+    _write_usage(repository, user_id, 99)
+    repository.usage_records[-1] = repository.usage_records[-1].model_copy(update={
+        "usd_cost": None, "estimated": True, "status": "429", "status_code": 429,
+        "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "et": 0,
+        "ingest_source": "eventhub", "ingest_error": "budget_pre_dispatch_denial",
+        "budget_admission": "budget_exhausted",
+    })
+    service.save(
+        "2026-07",
+        "organization",
+        "org-contoso-global",
+        TokenBudgetWrite(budget_mode="usd", usd_limit=Decimal("1000.00")),
+        "owner",
+    )
+    organization = repository.token_budgets[
+        (date(2026, 7, 1), "organization", "org-contoso-global")
+    ]
+    assert organization["budget_mode"] == "usd"
+
+
 def test_organization_switch_ignores_cancelled_tombstones_and_allows_reverting_torn_unit() -> None:
     from uuid import UUID
 

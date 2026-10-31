@@ -2364,6 +2364,34 @@ def test_fixed_router_component_keeps_native_admission_and_no_replay() -> None:
     assert trace is not None and 'trace["native_usage_recorded"] = true' in (trace.text or "")
 
 
+def test_direct_model_streams_expose_the_trace_request_id() -> None:
+    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+
+    _, outbound = fixed_router_operation_stages(
+        "https://unitstore.table.core.windows.net", "Ledger", "unit-api", str(OWNER_ID),
+    )
+    owners = {child: owner for owner in outbound.iter() for child in owner}
+
+    def conditions(node: Any) -> str:
+        found = []
+        while node in owners:
+            node = owners[node]
+            found.append(node.get("condition", ""))
+        return " ".join(found)
+
+    header = next(
+        node for node in outbound.iter("set-header")
+        if node.get("name") == "x-request-id" and "context.RequestId" in node.findtext("value", "")
+    )
+    body = next(
+        node for node in outbound.iter("set-body") if "turnstile_routing" in (node.text or "")
+    )
+    assert "routerCallerRequestId" in header.findtext("value", "")
+    assert "chat-completions" in conditions(header)
+    assert "application/json" not in conditions(header)
+    assert "application/json" in conditions(body)
+
+
 def router_table_transport(monkeypatch: pytest.MonkeyPatch) -> Any:
     from email import policy
     from email.parser import BytesParser
