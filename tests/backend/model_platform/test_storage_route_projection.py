@@ -4630,14 +4630,17 @@ def test_empty_installation_accepts_model_additions_after_every_registered_upgra
     program = program.model_copy(update={
         "scope": program.scope.model_copy(update={"target_id": str(APIM_ID)}),
     })
+    legacy_fields: dict[str, Any] = (
+        {"model_additions_enabled": True, "legacy_program_sha256": initial_legacy}
+        if initial_legacy else {}
+    )
     installation = FixedProgramInstallation(
         program=program, target_identity_sha256="b" * 64,
         storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
         gateway_endpoint="https://unit.azure-api.net/llm", publisher_subscription_id="unit",
         parent_policy_sha256="a" * 64, operation_policies_sha256={"models": "c" * 64},
         operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
-        **({"model_additions_enabled": True, "legacy_program_sha256": initial_legacy}
-           if initial_legacy else {}),
+        **legacy_fields,
     )
     version = str(UUID(int=76))
     _, manifest, dependencies = configuration_manifests(program.scope, version, (), {}, 1100)

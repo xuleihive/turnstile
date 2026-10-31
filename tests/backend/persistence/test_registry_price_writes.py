@@ -234,7 +234,7 @@ def test_catalog_save_persists_the_accepted_baseline_and_preserves_metadata_edit
 def test_repricing_context_tiers_keeps_their_pending_review() -> None:
     """A discount moves only the charged rates; a new list price still answers the review."""
     model_id = uuid4()
-    tier = {
+    tier: dict[str, Any] = {
         "key": "short", "label": "Short", "reference": "azure_retail:A:Short:Global:*",
         "min_input_tokens": 0, "max_input_tokens": None, "input_price_per_million": 4.0,
         "output_price_per_million": 20.0, "cached_price_per_million": 4.0,

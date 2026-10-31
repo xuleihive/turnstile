@@ -2253,7 +2253,7 @@ def test_connection_discount_reprices_context_tiers_from_their_list_prices(
     from turnstile_core.domain.runtime_models import ModelConnectionUpdate
 
     service, catalog, _write, model_id = price_edit_service
-    tiers = [
+    tiers: list[dict[str, Any]] = [
         {"key": "short", "label": "Short", "reference": "azure_retail:A:Short:Global:*",
          "min_input_tokens": 0, "max_input_tokens": 272000, "input_price_per_million": 4.0,
          "output_price_per_million": 20.0, "cached_price_per_million": 4.0,
