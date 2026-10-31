@@ -19,6 +19,8 @@ from uuid import UUID
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from .pool_health import CONNECTION_HEALTH
+
 
 class AuthStore:
     def __init__(
@@ -34,7 +36,7 @@ class AuthStore:
             database_url,
             min_size=pool_min_size,
             max_size=pool_max_size,
-            kwargs={"row_factory": dict_row},
+            kwargs={"row_factory": dict_row, **CONNECTION_HEALTH},
             open=False,
         )
         self._pool_lock = threading.Lock()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from fastapi import HTTPException
+from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 from pydantic import HttpUrl
@@ -52,12 +54,30 @@ from turnstile_core.pricing.sync import plan_price_sync
 from turnstile_core.services.control_plane import GatewayControlPlaneService
 
 
+def _apply_migrations(info: str) -> None:
+    root = Path(__file__).resolve().parents[3]
+    with psycopg.connect(info, autocommit=True) as connection:
+        connection.execute((root / "migrations/001_initial_schema.up.sql").read_text())
+        connection.execute("SET search_path TO public")
+        for migration in sorted((root / "migrations").glob("*.up.sql"))[1:]:
+            connection.execute(migration.read_text())
+
+
 @pytest.fixture(scope="module")
 def pricing_postgres() -> Iterator[tuple[str, Event]]:
     initdb = shutil.which("initdb")
     postgres = shutil.which("postgres")
     if initdb is None or postgres is None:
         pytest.skip("Local initdb and postgres are required for transaction validation")
+    version = subprocess.run(
+        [postgres, "--version"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    major = re.search(r"\(PostgreSQL\) (\d+)", version)
+    if major is None or int(major.group(1)) < 15:
+        pytest.fail(
+            "The migrated schema needs PostgreSQL 15 or newer (UNIQUE NULLS NOT DISTINCT); "
+            f"the first postgres on PATH reports {version!r}"
+        )
     with TemporaryDirectory(prefix="ts-price-") as temporary:
         folder = Path(temporary)
         data = folder / "data"
@@ -94,12 +114,7 @@ def pricing_postgres() -> Iterator[tuple[str, Event]]:
             info = make_conninfo(
                 host=str(sockets), dbname="postgres", user="price_test", connect_timeout=5,
             )
-            root = Path(__file__).resolve().parents[3]
-            with psycopg.connect(info, autocommit=True) as connection:
-                connection.execute((root / "migrations/001_initial_schema.up.sql").read_text())
-                connection.execute("SET search_path TO public")
-                for migration in sorted((root / "migrations").glob("*.up.sql"))[1:]:
-                    connection.execute(migration.read_text())
+            _apply_migrations(info)
             yield info, waiting
         finally:
             if server.poll() is None:
@@ -384,6 +399,12 @@ def test_publication_activation_persists_catalog_pricing_in_postgres(
     pricing_postgres: tuple[str, Event], source: PriceSource,
 ) -> None:
     info, _waiting = pricing_postgres
+    # Each case publishes the gateway's first release, so it needs a gateway of its own.
+    database = f"activation_{source.value}"
+    with psycopg.connect(info, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+    info = make_conninfo(info, dbname=database)
+    _apply_migrations(info)
     repository = PostgreSqlOpsDbProxy(info)
     try:
         registry = repository.registry()

@@ -4,7 +4,10 @@ import inspect
 from contextlib import contextmanager
 from typing import Any
 
+from backend.data_sources.github_copilot.store import CopilotStore
 from turnstile_core.config import Settings
+from turnstile_core.persistence.auth_store import AuthStore
+from turnstile_core.persistence.pool_health import CONNECTION_HEALTH
 from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
 
 UNREACHABLE = "postgresql://nobody@127.0.0.1:1/does-not-exist"
@@ -101,3 +104,13 @@ def test_a_registry_write_invalidates_the_cached_identities() -> None:
 
     assert proxy.model_identities()["uuid-1"].display_name == "Luna Renamed"
     assert len(reads) == 2
+
+
+def test_api_pools_bound_connects_and_drop_connections_a_lost_server_abandoned() -> None:
+    pools = [
+        PostgreSqlOpsDbProxy(UNREACHABLE)._pool, AuthStore(UNREACHABLE)._pool,
+        CopilotStore(UNREACHABLE)._pool,
+    ]
+    for pool in pools:
+        assert isinstance(pool.kwargs, dict)
+        assert pool.kwargs.items() >= CONNECTION_HEALTH.items()

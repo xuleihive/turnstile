@@ -25,6 +25,7 @@ from ..domain.models import (
     TokenUsageRecord,
 )
 from ..domain.runtime_models import PlatformInvocationAttempt, PlatformInvocationCompletion
+from .pool_health import CONNECTION_HEALTH
 from .repository_applications import PostgreSqlApplicationRepositoryMixin
 from .repository_assistant import PostgreSqlAssistantRepositoryMixin
 from .repository_billable_requests import PostgreSqlBillableRequestRepositoryMixin
@@ -251,7 +252,7 @@ class PostgreSqlOpsDbProxy(
             database_url,
             min_size=pool_min_size,
             max_size=pool_max_size,
-            kwargs={"row_factory": dict_row, "autocommit": autocommit},
+            kwargs={"row_factory": dict_row, "autocommit": autocommit, **CONNECTION_HEALTH},
             open=False,
         )
         self._pool_lock = threading.Lock()

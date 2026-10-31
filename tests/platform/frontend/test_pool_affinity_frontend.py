@@ -51,6 +51,14 @@ def test_pool_affinity_editor_is_capability_and_owner_gated() -> None:
     assert "const hasEffectivePool = Boolean(pool.data || providedInitialDraft)" in editor
     assert "const isRemoveFlow =" in editor
     assert 'data-pending>{PUBLICATION_LABELS[publicationStatus]}' in editor
+    assert 'message: publication.data?.error_message ?? "APIM 后端池发布失败",\n' \
+        "        publicationId,\n" in editor
+    assert (
+        "{!publicationStatus && notice?.publicationId && "
+        '<span className="router-resilience-task">任务 ID '
+        "<code data-no-localize>{notice.publicationId}</code></span>}"
+    ) in editor
+    assert ".router-resilience-task {" in read_frontend_styles()
     dialog = (
         FRONTEND_SOURCE / "components/model-management/apim-native-route-create-dialog.tsx"
     ).read_text(encoding="utf-8")

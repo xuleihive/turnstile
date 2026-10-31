@@ -2751,6 +2751,7 @@ class FixedRoutePublisherFactory:
         if checkpoint.context_sha256 != context:
             raise PolicyCompilationError("Route connection preparation context changed")
         stored = deepcopy(raw)
+        issued: dict[str, int] = {}
 
         def prepare(binding: GatewayModelBinding) -> tuple[ConnectionRevision, int]:
             nonlocal checkpoint, stored
@@ -2767,7 +2768,10 @@ class FixedRoutePublisherFactory:
             prior = checkpoint.connections.get(key)
             if prior is not None and prior.connection != connection:
                 raise PolicyCompilationError("Route connection preparation changed")
-            instant = prior.issued_epoch if prior is not None else self._clock()
+            # Aliases sharing one connection must carry one identical approval.
+            instant = prior.issued_epoch if prior is not None else issued.setdefault(
+                key, self._clock(),
+            )
 
             def validate_pool_intent(raw_intent: Mapping[str, Any]) -> dict[str, Any]:
                 intent = _PoolWriteIntent.model_validate_json(canonical_document(raw_intent))

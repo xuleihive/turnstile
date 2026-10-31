@@ -2603,12 +2603,17 @@ class PostgreSqlPublicationRepositoryMixin:
                     )
             else:
                 runtime_config = _activation_runtime_config(binding)
+                # Migration 019 made runtime names non-unique, so look up before inserting.
                 runtime = connection.execute(
+                    """SELECT * FROM model_runtime
+                       WHERE gateway_profile_id = %s AND name = %s
+                       ORDER BY created_at, id LIMIT 1 FOR UPDATE""",
+                    (publication["gateway_profile_id"], binding["runtime_name"]),
+                ).fetchone() or connection.execute(
                     """INSERT INTO model_runtime (
                            provider_id, gateway_profile_id, name, runtime_kind,
                            enabled, is_default, config
                        ) VALUES (%s, %s, %s, %s, TRUE, FALSE, %s)
-                       ON CONFLICT (name) DO UPDATE SET updated_at = model_runtime.updated_at
                        RETURNING *""",
                     (
                         provider_id,

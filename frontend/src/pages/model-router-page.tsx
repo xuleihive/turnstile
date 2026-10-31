@@ -34,6 +34,7 @@ import {
 import { RouterCanvas } from "../components/model-router/router-canvas"
 import { RouterConfigForm } from "../components/model-router/router-config-form"
 import {
+  ROUTER_NATIVE_FALLBACK_NOTICE,
   cloneDefinition,
   createStarterDefinition,
   normalizeRouterDefinition,
@@ -688,6 +689,8 @@ function RouterEditor({
   onPublish: () => void
 }) {
   const effectiveMode: RouterMode = ROUTER_CONFIG_MODE_ENABLED ? mode : "canvas"
+  // Mirrors the APIM gateway check that rejects any node with Fallback triggers.
+  const nativeFallback = value.definition.nodes.some((node) => node.fallback_on.length > 0)
   return <section className="router-editor-pane">
     <header className="router-editor-head">
       <div className="router-editor-identity"><span><GitBranch size={18} /></span><div><div><h2>{value.name || "未命名路由器"}</h2><i data-status={router.status}>{STATUS_LABELS[router.status]}</i>{router.version > 0 && <em>v{router.version}</em>}{dirty && <strong>未保存</strong>}</div></div></div>
@@ -731,6 +734,7 @@ function RouterEditor({
           </button>
         })}
       </div>}
+      {nativeFallback && <div className="router-validation-banner-warning">{ROUTER_NATIVE_FALLBACK_NOTICE}</div>}
     </div>}
     {effectiveMode === "canvas" ? <RouterCanvas key={router.id} definition={value.definition} models={models} displayModels={displayModels} routerName={value.name} routerDescription={value.description} selectedNodeId={selectedNodeId} onSelectedNodeChange={onSelectedNodeChange} onChange={(definition) => onChange({ ...value, definition })} onMetadataChange={(name, description) => onChange({ ...value, name, description })} /> : <RouterConfigForm value={value} models={models} displayModels={displayModels} validation={validation} onChange={onChange} onIssueSelect={(nodeId) => { onSelectedNodeChange(nodeId); onModeChange("canvas") }} />}
   </section>

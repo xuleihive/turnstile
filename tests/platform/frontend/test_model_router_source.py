@@ -831,8 +831,28 @@ def test_model_router_canvas_and_regular_mode_share_one_definition() -> None:
     assert 'createRouterNode("strategy"' in definition
     assert 'createRouterEdge(candidates.id, strategy.id)' in definition
     assert 'createRouterEdge(strategy.id, output.id, "正常输出")' in definition
-    assert 'createRouterEdge(strategy.id, fallback.id, "异常策略")' in definition
-    assert 'fallbackEdge.source_handle = "branch-exception"' in definition
+    assert 'createRouterNode("fallback"' not in definition[
+        definition.index("export function createStarterDefinition") :
+        definition.index("export function inferLayoutDirection")
+    ]
+    notice = (
+        "经 APIM 网关调用的 Router 不支持 Fallback，包含 Fallback 时会返回 503；"
+        "Fallback 只在平台内调用时生效。"
+    )
+    assert f'export const ROUTER_NATIVE_FALLBACK_NOTICE = "{notice}"' in definition
+    assert (
+        '<div className="router-properties-empty">{ROUTER_NATIVE_FALLBACK_NOTICE}</div>'
+    ) in canvas
+    assert "value.definition.nodes.some((node) => node.fallback_on.length > 0)" in page
+    assert (
+        '{nativeFallback && <div className="router-validation-banner-warning">'
+        "{ROUTER_NATIVE_FALLBACK_NOTICE}</div>}"
+    ) in page
+    assert ".router-validation-banner-warning {" in styles
+    for locale in ("en", "ja", "ko"):
+        assert f'"{notice}":' in (
+            FRONTEND_SOURCE / f"locales/{locale}/phrases-core.ts"
+        ).read_text(encoding="utf-8")
     assert "const policyEdges = next.edges.filter(" in definition
     assert "for (const policyEdge of policyEdges)" in definition
     assert "strategy.timeout_ms = fallback.timeout_ms" in definition

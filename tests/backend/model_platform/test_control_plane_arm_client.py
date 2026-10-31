@@ -309,6 +309,81 @@ def test_route_pool_preparation_caps_four_creates_and_resumes_from_exact_readbac
                 client.verify_route_pool_slice(connection, 0, maximum=152)
 
 
+def test_route_pool_waits_for_apim_to_mark_new_key_vault_references_secret() -> None:
+    settings = publisher_settings().model_copy(update={"apim_gateway_profile_id": APIM_ID})
+    scope = RouteScope(target_id=str(APIM_ID), api_id=settings.apim_api_id, gateway_id="managed")
+    rows: dict[str, dict[str, Any]] = {}
+    provisioning: dict[str, int] = {}
+    writes: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "PUT":
+            writes.append(path)
+            rows[path] = json.loads(request.content)["properties"]
+            if "keyVault" in rows[path]:
+                provisioning[path] = 2
+            return httpx.Response(202)
+        if path not in rows:
+            return httpx.Response(404)
+        if provisioning.get(path):
+            provisioning[path] -= 1
+            return httpx.Response(200, json={"properties": {**rows[path], "secret": False}})
+        return httpx.Response(200, json={"properties": rows[path]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        tokens = Mock()
+        tokens.token.return_value = "unit-only-token"
+        client = AzureApimPublisherClient(settings, token_provider=tokens, client=transport)
+        backends = tuple(BackendResource(
+            f"unit-member-{index}", "unit", "https://unit.example.test",
+            (("api-key", "{{unit-key-" + str(index) + "}}"),), None,
+        ) for index in range(2))
+        pool = RouteBackendPool(members=tuple(RoutePoolMember(
+            runtime_id=str(UUID(int=index + 1)), backend_id=backend.id,
+            dependency_sha256=document_digest(client.route_backend_properties(backend)),
+            priority=index, weight=1,
+        ) for index, backend in enumerate(backends)), rate_limit=GatewayRateLimitResilience(
+            max_attempts_per_request=2, retry_interval_seconds=1, first_fast_retry=True,
+            circuit_breaker=GatewayRateLimitCircuitBreaker(failure_count=1, interval_seconds=60,
+                trip_duration_seconds=60, accept_retry_after=True),
+        ), credential_versions={
+            "unit-key-" + str(index): "https://unitvault.vault.azure.net/secrets/key/"
+            + format(index + 1, "032x") for index in range(2)
+        })
+        native_pool = BackendPoolResource(id="unit-pool", title="unit", url="", members=tuple(
+            BackendPoolMemberResource(member.backend_id, member.priority, member.weight)
+            for member in pool.members
+        ))
+        connection = ConnectionRevision(
+            scope=scope, revision_id=str(UUID(int=33)), backend_id="unit-pool",
+            origin="https://unit.example.test", path="/chat/completions", pool=pool,
+            credential=RouteCredential(mode="none"),
+            dependency_sha256=document_digest(client.route_backend_properties(native_pool)))
+        not_ready = 0
+        while True:
+            try:
+                client.prepare_route_pool(connection, backends, lambda intent: None)
+                break
+            except RetryablePublicationError as error:
+                assert str(error) == "APIM credential resource is not yet ready"
+                not_ready += 1
+                assert not_ready <= 2 * len(pool.credential_versions)
+        assert not_ready == 2 * len(pool.credential_versions)
+        assert len(writes) == len(set(writes)) == 1 + len(pool.members) + len(
+            pool.credential_versions
+        )
+        assert client.verify_route_pool(connection) == connection.dependency_sha256
+        key = rows[next(path for path in rows if path.endswith("/namedValues/unit-key-0"))]
+        key["secret"] = False
+        with pytest.raises(RetryablePublicationError, match="not yet ready"):
+            client.prepare_route_pool(connection, backends, lambda intent: None)
+        del key["keyVault"]
+        with pytest.raises(ValueError, match="not marked secret"):
+            client.prepare_route_pool(connection, backends, lambda intent: None)
+        assert len(writes) == 1 + len(pool.members) + len(pool.credential_versions)
+
+
 @pytest.mark.parametrize("payload", [
     {}, {"value": [], "nextLink": "https://example.test/next"},
     {"value": [{"actions": ["*"], "condition": "unverified"}]},

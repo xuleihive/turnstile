@@ -23,6 +23,7 @@ export const ROUTER_CANDIDATE_ROW_HEIGHT = 44
 export const ROUTER_DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000
 // Condition branch labels the router compiler reads as the match outcome.
 export const MATCH_BRANCH_LABELS = ["match", "matched", "true", "yes", "匹配"]
+export const ROUTER_NATIVE_FALLBACK_NOTICE = "经 APIM 网关调用的 Router 不支持 Fallback，包含 Fallback 时会返回 503；Fallback 只在平台内调用时生效。"
 
 export function resolveRouterDisplayModels(
   models: ReadonlyArray<Pick<ManagedModel,
@@ -355,7 +356,7 @@ export function createStarterDefinition(modelIds: string[]): ModelRouterDefiniti
   const start = createRouterNode("start", { x: 40, y: 180 })
   const candidates = createRouterNode("candidate_models", { x: 320, y: 180 })
   candidates.candidates = modelIds.map((modelId) => ({ model_id: modelId }))
-  const output = createRouterNode("output", { x: 920, y: 84 })
+  const output = createRouterNode("output", { x: 920, y: 180 })
   const strategy = createRouterNode("strategy", { x: 660, y: 180 })
   strategy.model_configs = modelIds.map((modelId, index) => ({
     model_id: modelId,
@@ -365,10 +366,8 @@ export function createStarterDefinition(modelIds: string[]): ModelRouterDefiniti
     max_cost_per_million: null,
     description: "",
   }))
-  const fallback = createRouterNode("fallback", { x: 920, y: 276 })
-  const nodes = [start, candidates, strategy, output, fallback]
-  const fallbackEdge = createRouterEdge(strategy.id, fallback.id, "异常策略")
-  fallbackEdge.source_handle = "branch-exception"
+  // Routers called through APIM reject Fallback nodes, so new routers start without one.
+  const nodes = [start, candidates, strategy, output]
   const outputEdge = createRouterEdge(strategy.id, output.id, "正常输出")
   outputEdge.source_handle = "branch-normal"
   return {
@@ -380,7 +379,6 @@ export function createStarterDefinition(modelIds: string[]): ModelRouterDefiniti
       createRouterEdge(start.id, candidates.id),
       createRouterEdge(candidates.id, strategy.id),
       outputEdge,
-      fallbackEdge,
     ],
   }
 }

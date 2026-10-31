@@ -1716,6 +1716,7 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "质量不足": "Insufficient quality",
   "质量不足（未支持，请移除）": "Insufficient quality (unsupported; remove)",
   "触发条件": "Trigger conditions",
+  "经 APIM 网关调用的 Router 不支持 Fallback，包含 Fallback 时会返回 503；Fallback 只在平台内调用时生效。": "Routers called through the APIM gateway do not support Fallback and return 503 when it is present; Fallback only applies to calls made in the platform.",
   "超时阈值 ms": "Timeout threshold (ms)",
   "最大延迟": "Maximum latency",
   "最大延迟 ms": "Maximum latency (ms)",

@@ -1692,6 +1692,7 @@ export const KOREAN_CORE_PHRASES: Record<string, string> = {
   "质量不足": "품질 미달",
   "质量不足（未支持，请移除）": "품질 미달(지원되지 않음, 제거 필요)",
   "触发条件": "트리거 조건",
+  "经 APIM 网关调用的 Router 不支持 Fallback，包含 Fallback 时会返回 503；Fallback 只在平台内调用时生效。": "APIM 게이트웨이를 통해 호출하는 Router는 Fallback을 지원하지 않으며 Fallback이 있으면 503을 반환합니다. Fallback은 플랫폼 내 호출에만 적용됩니다.",
   "超时阈值 ms": "시간 초과 임계값(ms)",
   "最大延迟": "최대 지연 시간",
   "最大延迟 ms": "최대 지연 시간(ms)",

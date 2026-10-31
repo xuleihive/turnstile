@@ -1692,6 +1692,7 @@ export const JAPANESE_CORE_PHRASES: Record<string, string> = {
   "质量不足": "品質不足",
   "质量不足（未支持，请移除）": "品質不足（未対応、削除してください）",
   "触发条件": "トリガー条件",
+  "经 APIM 网关调用的 Router 不支持 Fallback，包含 Fallback 时会返回 503；Fallback 只在平台内调用时生效。": "APIM ゲートウェイ経由で呼び出す Router は Fallback に対応しておらず、Fallback があると 503 を返します。Fallback はプラットフォーム内での呼び出しにのみ適用されます。",
   "超时阈值 ms": "タイムアウトしきい値 (ms)",
   "最大延迟": "最大レイテンシ",
   "最大延迟 ms": "最大レイテンシ (ms)",

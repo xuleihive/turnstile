@@ -82,6 +82,7 @@ import type {
 } from "../../data-sources/apim/types"
 import {
   MATCH_BRANCH_LABELS,
+  ROUTER_NATIVE_FALLBACK_NOTICE,
   ROUTER_NODE_LABELS,
   autoLayoutDefinition,
   cloneDefinition,
@@ -813,6 +814,7 @@ function RouterProperties({
           {(["error", "timeout", "rate_limit"] as const).map((event) => <label key={event}><Checkbox checked={selected.fallback_on.includes(event)} onCheckedChange={(checked) => updateNode({ ...selected, fallback_on: checked === true ? [...selected.fallback_on, event] : selected.fallback_on.filter((value) => value !== event) })} /><span>{{ error: "调用失败", timeout: "超时", rate_limit: "限流" }[event]}</span></label>)}
           {selected.fallback_on.includes("quality") && <label><Checkbox checked onCheckedChange={() => updateNode({ ...selected, fallback_on: selected.fallback_on.filter((value) => value !== "quality") })} /><span>质量不足（未支持，请移除）</span></label>}
         </div></div>
+        <div className="router-properties-empty">{ROUTER_NATIVE_FALLBACK_NOTICE}</div>
       </>}
       <div className="router-node-actions">
         <Button className="router-node-action-secondary" type="button" variant="outline" onClick={duplicateNode}><Copy size={14} />复制</Button>

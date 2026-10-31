@@ -2053,6 +2053,85 @@ def test_connection_renewal_uses_activated_materialized_credential(
         )
 
 
+def test_aliases_of_one_existing_connection_share_one_route_approval() -> None:
+    from itertools import count
+
+    from tests.backend.model_platform.test_storage_route_projection import snapshot_fixture
+    from turnstile_core.persistence.repository_support import _activated_runtime_credentials
+    from turnstile_core.services.route_publication import route_credential_source
+
+    publication, _ = budget_publication_contract_fixture()
+    snapshot, program, _ = snapshot_fixture()
+    target = UUID(program.scope.target_id)
+    binding = publication.desired_spec.bindings[0].model_copy(update={
+        "runtime_id": UUID(int=923), "api_format": ApiFormat.OPENAI_CHAT,
+        "auth_strategy": AuthStrategy.NAMED_VALUE_API_KEY,
+        "named_value_name": "unit-runtime-key", "key_vault_secret_id": None,
+    })
+    assert binding.backend_url is not None
+    runtime_config = {
+        **binding.runtime_config, "control_plane_managed": True,
+        "backend_url": str(binding.backend_url), "backend_path": binding.backend_path,
+        "api_format": binding.api_format.value, "auth_strategy": binding.auth_strategy.value,
+        "managed_identity_resource": binding.managed_identity_resource,
+    }
+    binding = binding.model_copy(update={"runtime_config": runtime_config})
+    sibling = binding.model_copy(update={
+        "model": binding.model.model_copy(update={"model_key": "unit-sibling-alias"}),
+    })
+    secret_id = "https://unit-vault.vault.azure.net/secrets/runtime-key/" + "a" * 32
+    manifest = {"route_credentials": {"version": 1, "bindings": {
+        route_credential_source(binding): secret_id,
+    }}}
+    activated = _activated_runtime_credentials(
+        runtime_config, binding.model_dump(mode="json"), manifest,
+    )
+    publication = publication.model_copy(update={
+        "gateway_profile_id": target, "resource_manifest": manifest,
+        "desired_spec": publication.desired_spec.model_copy(update={
+            "bindings": [binding, sibling],
+        }),
+    })
+    installation = FixedProgramInstallation(
+        program=program, target_identity_sha256="f" * 64,
+        storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
+        gateway_endpoint="https://unit.azure-api.net/turnstile", publisher_subscription_id="unit",
+        parent_policy_sha256="a" * 64, operation_policies_sha256={"models": "b" * 64},
+        operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
+    )
+    configuration = ApimTargetClientConfig(target, "f" * 64, True, Settings.model_construct(
+        azure_subscription_id=str(UUID(int=1)), apim_resource_group="unit-group",
+        apim_service_name="unit-apim", apim_api_id=program.scope.api_id,
+    ), route_target_identity_sha256=installation.target_identity_sha256)
+    repository, configurations, management = MagicMock(), MagicMock(), MagicMock()
+    configurations.resolve.return_value = configuration
+    # The Backend already exists from earlier model additions, so preparation writes nothing.
+    management.prepare_route_connection.side_effect = (
+        lambda connection, persist, *, recovery_only=False: connection.dependency_sha256
+    )
+    management.verify_route_connection.side_effect = lambda value: value.dependency_sha256
+    ticks = count(1100)
+    factory = FixedRoutePublisherFactory(
+        repository, configurations, active_fence=MagicMock(),
+        availability_projector=MagicMock(), clock=lambda: next(ticks),
+    )
+    registry = {"runtimes": [{
+        "id": binding.runtime_id, "enabled": True,
+        "gateway_profile_id": target, "config": activated,
+    }]}
+    approved = factory.approved_connections(
+        publication, installation, management, baseline=snapshot, registry=registry,
+        prepare_connection=factory._connection_preparer(
+            publication, installation, configuration, management, "unit-worker", lambda: None,
+        ),
+    )
+    first, second = approved[binding.model.model_key], approved[sibling.model.model_key]
+    assert management.prepare_route_connection.call_count == 2
+    assert first.connection.revision_id == second.connection.revision_id
+    assert first == second
+    repository.checkpoint_gateway_publication_preparation.assert_not_called()
+
+
 @pytest.mark.parametrize("variant", ["base", "addition", "forged", "reconcile", "unrelated"])
 def test_fixed_route_rotation_renews_only_from_the_connection_base_credential(
     variant: str,

@@ -19,6 +19,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from turnstile_core.persistence.pool_health import CONNECTION_HEALTH
+
 
 class CopilotStoreConflictError(ValueError):
     pass
@@ -35,7 +37,7 @@ class CopilotStore:
             database_url,
             min_size=pool_min_size,
             max_size=pool_max_size,
-            kwargs={"row_factory": dict_row},
+            kwargs={"row_factory": dict_row, **CONNECTION_HEALTH},
             open=False,
         )
         self._pool_lock = threading.Lock()

@@ -211,6 +211,7 @@ const PUBLICATION_LABELS: Record<GatewayPublicationStatus, string> = {
 type PublicationNotice = {
   status: GatewayPublicationStatus
   message: string
+  publicationId?: string
 }
 
 function draftFromPool(
@@ -361,6 +362,7 @@ export function DeploymentResilienceEditor({
       setNotice({
         status,
         message: publication.data?.error_message ?? "APIM 后端池发布失败",
+        publicationId,
       })
     } else {
       setNotice({ status, message: PUBLICATION_LABELS[status] })
@@ -736,7 +738,7 @@ export function DeploymentResilienceEditor({
       </>}
 
       {!canManage && <div className="router-resilience-state"><ShieldCheck size={14} />只读</div>}
-      {visiblePublicationStatus && visiblePublicationMessage && <div className="router-resilience-state" data-status={visiblePublicationStatus}>{publishing ? <LoaderCircle className="spin" size={14} /> : publicationHasError || visiblePublicationStatus === "awaiting_authorization" ? <CircleAlert size={14} /> : <CheckCircle2 size={14} />}<span>{visiblePublicationMessage}</span></div>}
+      {visiblePublicationStatus && visiblePublicationMessage && <div className="router-resilience-state" data-status={visiblePublicationStatus}>{publishing ? <LoaderCircle className="spin" size={14} /> : publicationHasError || visiblePublicationStatus === "awaiting_authorization" ? <CircleAlert size={14} /> : <CheckCircle2 size={14} />}<span>{visiblePublicationMessage}</span>{!publicationStatus && notice?.publicationId && <span className="router-resilience-task">任务 ID <code data-no-localize>{notice.publicationId}</code></span>}</div>}
       {error && <div className="router-resilience-state error"><CircleAlert size={14} /><span data-no-localize>{String(error)}</span></div>}
       {!renderFrame && (disableAction || changeActions) && <footer>{disableAction}{changeActions}</footer>}
       {removeOpen && <AlertDialog open={removeOpen} onOpenChange={(open) => { if (!busy) setRemoveOpen(open) }}>
