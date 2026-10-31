@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
@@ -49,6 +50,8 @@ from .http.session import require_allowed_write_origin, require_authenticated_se
 from .http.static_files import validate_production_web_dist
 
 logger = logging.getLogger(__name__)
+# Lets deployment checks tell a restarted API process from the one it replaced.
+_INSTANCE_ID = uuid4().hex
 
 assistant_service = _assistant_service
 application_access_service = _application_access_service
@@ -98,7 +101,8 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health(response: Response) -> dict[str, str]:
+    response.headers["X-Turnstile-Instance"] = _INSTANCE_ID
     return {"status": "ok"}
 
 

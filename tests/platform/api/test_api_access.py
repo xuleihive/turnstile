@@ -80,6 +80,11 @@ def test_health() -> None:
     client.cookies.clear()
     assert client.get("/health").json() == {"status": "ok"}
 
+def test_health_identifies_the_serving_process() -> None:
+    first, second = client.get("/health"), client.get("/health")
+    assert first.headers["X-Turnstile-Instance"]
+    assert first.headers["X-Turnstile-Instance"] == second.headers["X-Turnstile-Instance"]
+
 def test_every_business_api_route_requires_the_shared_session_dependency() -> None:
     # APIM and GitHub Copilot are physically separate routers. Both depend on the same
     # session/CSRF boundary, while only the OAuth callback remains public.

@@ -2864,6 +2864,8 @@ def test_runtime_release_recycles_updated_apps_without_stale_api_health(
         commands.append(command)
 
     monkeypatch.setattr(runner, "run", run)
+    instances = iter(["replaced-instance", "restarted-instance"])
+    monkeypatch.setattr("scripts.deploy._api_instance", lambda *_: next(instances))
 
     restart_runtime_apps(
         runner,
@@ -2871,6 +2873,7 @@ def test_runtime_release_recycles_updated_apps_without_stale_api_health(
         {
             "resourceGroupName": "turnstile-test",
             "apiName": "api-turnstile-test",
+            "apiUrl": "https://api-turnstile-test.example.test",
             "controlPlaneFunctionName": "func-turnstile-control-test",
         },
     )
@@ -2884,6 +2887,95 @@ def test_runtime_release_recycles_updated_apps_without_stale_api_health(
         "api-turnstile-test",
         "api-turnstile-test",
         "func-turnstile-control-test",
+    ]
+
+
+@pytest.mark.parametrize("scenario", [
+    "recovers", "restart_never_completes", "program_unready", "api_lost_after_restart",
+])
+def test_fixed_program_readiness_starts_after_the_restarted_api_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str,
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription", _parameters(tmp_path / "parameters.json"), tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    commands: list[Sequence[str]] = []
+    elapsed = [0.0]
+    started = [-1.0]
+
+    def advance(seconds: float) -> None:
+        elapsed[0] += seconds
+
+    def serving() -> bool:
+        # The replaced instance answers for 20 seconds after start; its successor needs 200.
+        since = elapsed[0] - started[0]
+        if started[0] < 0 or since < 20:
+            return True
+        return scenario != "restart_never_completes" and since >= 200
+
+    def instance(_url: str, timeout: float) -> str:
+        if not serving():
+            advance(timeout)
+            raise TimeoutError("read timed out")
+        return "replaced-instance" if started[0] < 0 or elapsed[0] - started[0] < 20 else "new"
+
+    def run(command: Sequence[str], **_kwargs: object) -> None:
+        commands.append(command)
+        if command[:3] == ["az", "webapp", "start"]:
+            started[0] = elapsed[0]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if not serving() or scenario == "api_lost_after_restart" and request.method == "GET":
+            advance(request.extensions["timeout"]["read"])
+            raise httpx.ReadTimeout("Offline unreachable API", request=request)
+        if request.method == "POST":
+            return httpx.Response(200, json={})
+        if scenario == "program_unready":
+            advance(1)
+            return httpx.Response(409, json={"detail": "A current fixed program is required"})
+        return httpx.Response(200, json={"current_installation": {
+            "program": {"program_sha256": "a" * 64, "scope": {"target_id": "unit-target"}},
+            "model_additions_enabled": True,
+        }})
+
+    client_factory = httpx.Client
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr("scripts.deploy._api_instance", instance, raising=False)
+    monkeypatch.setattr("scripts.deploy.time.monotonic", lambda: elapsed[0])
+    monkeypatch.setattr("scripts.deploy.time.sleep", advance)
+    monkeypatch.setattr("scripts.deploy.httpx.Client", lambda **kwargs: client_factory(
+        **kwargs, transport=httpx.MockTransport(respond),
+    ))
+    outputs = {
+        "resourceGroupName": "turnstile-test", "apiName": "api-turnstile-test",
+        "apiUrl": "https://api-turnstile-test.example.test",
+        "controlPlaneFunctionName": "func-turnstile-control-test",
+    }
+    descriptor = {
+        "registration": {"gateway_profile_id": "unit-target"},
+        "binding": {"program_sha256": "a" * 64},
+    }
+    if scenario == "restart_never_completes":
+        with pytest.raises(DeploymentError, match="API restart did not complete within 1800s"):
+            restart_runtime_apps(runner, inputs, outputs)
+        assert elapsed[0] >= 1800
+        return
+    restart_runtime_apps(runner, inputs, outputs)
+    assert elapsed[0] - started[0] >= 200
+    arguments = (outputs["apiUrl"], "owner@example.test", "offline", descriptor)
+    if scenario == "recovers":
+        verify_initial_fixed_program(*arguments)
+    else:
+        with pytest.raises(DeploymentError) as failure:
+            verify_initial_fixed_program(*arguments)
+        message = str(failure.value)
+        assert message.startswith("Initial fixed program is not ready for model publication")
+        assert ("the API was unreachable (ReadTimeout)" in message) is (
+            scenario == "api_lost_after_restart"
+        )
+    assert [command[:3] for command in commands] == [
+        ["az", "webapp", "stop"], ["az", "webapp", "start"], ["az", "functionapp", "restart"],
     ]
 
 

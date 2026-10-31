@@ -1542,11 +1542,13 @@ class FixedRoutePublisherFactory:
                             monotonic() + _PROGRAM_RENEW_BACKOFF_SECONDS
                         )
                     last_error = error
+                    from .model_availability import loggable_reason
+
                     logging.getLogger(__name__).warning(
                         "Fixed route proof renewal failed target=%s error_type=%s "
                         "elapsed_seconds=%.1f reason=%s",
                         target_id, type(error).__name__, monotonic() - attempt_started,
-                        error if isinstance(error, PolicyCompilationError) else None,
+                        loggable_reason(error),
                     )
                 else:
                     raise

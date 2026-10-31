@@ -1063,6 +1063,11 @@ def restart_runtime_apps(
 ) -> None:
     resource_group = _output_string(outputs, "resourceGroupName")
     api_name = _output_string(outputs, "apiName")
+    api_url = _output_string(outputs, "apiUrl")
+    try:
+        replaced = _api_instance(api_url, 15)
+    except (OSError, urllib.error.URLError):
+        replaced = None
     for action in ("stop", "start"):
         runner.run(
             [
@@ -1090,6 +1095,7 @@ def restart_runtime_apps(
             _output_string(outputs, "controlPlaneFunctionName"),
         ]
     )
+    wait_for_restarted_api(api_url, replaced)
 
 
 def _output_string(outputs: Mapping[str, Any], name: str) -> str:
@@ -1393,6 +1399,38 @@ def wait_for_health(
 
 def wait_for_observer_health(observer_url: str) -> str:
     return wait_for_health(observer_url, timeout_seconds=1800)
+
+
+def _api_instance(api_url: str, timeout: float) -> str | None:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(
+        urllib.request.Request(f"{api_url.rstrip('/')}/health"), timeout=timeout,
+    ) as response:
+        return cast(str | None, response.headers.get("X-Turnstile-Instance"))
+
+
+def wait_for_restarted_api(
+    api_url: str, replaced: str | None, timeout_seconds: int = 1800,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "no response"
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            instance = _api_instance(api_url, min(15, remaining))
+        except (OSError, urllib.error.URLError) as error:
+            last_error = f"{type(error).__name__}: {error}"
+        else:
+            if instance and instance != replaced:
+                return
+            last_error = (
+                "the replaced API instance is still serving" if instance
+                else "health response has no instance identity"
+            )
+        time.sleep(min(3, max(0, deadline - time.monotonic())))
+    raise DeploymentError(
+        f"API restart did not complete within {timeout_seconds}s: "
+        f"expected a new API instance; actual {last_error}"
+    )
 
 
 def verify_owner_login(
@@ -2172,12 +2210,15 @@ def verify_initial_fixed_program(
         else:
             raise DeploymentError("Initial fixed program Owner login timed out")
         try:
+            unreachable: str | None = None
             while (remaining := deadline - time.monotonic()) > 0:
                 try:
                     response = http.get(path, timeout=min(15, remaining))
-                except httpx.TransportError:
+                except httpx.TransportError as error:
+                    unreachable = type(error).__name__
                     time.sleep(min(3, max(0, deadline - time.monotonic())))
                     continue
+                unreachable = None
                 if response.status_code == 200:
                     preview = response.json()
                     installation = preview["current_installation"]
@@ -2209,7 +2250,10 @@ def verify_initial_fixed_program(
                 if response.status_code != 409:
                     response.raise_for_status()
                 time.sleep(min(3, max(0, deadline - time.monotonic())))
-            raise DeploymentError("Initial fixed program is not ready for model publication")
+            raise DeploymentError(
+                "Initial fixed program is not ready for model publication"
+                + (f"; the API was unreachable ({unreachable})" if unreachable else ""),
+            )
         finally:
             http.post("/api/v1/auth/logout")
 
