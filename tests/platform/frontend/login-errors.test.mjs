@@ -26,7 +26,7 @@ const clientCode = await compile("../../../frontend/src/api/client.ts")
 const authCode = await compile("../../../frontend/src/api/auth.ts")
 const pageCode = await compile("../../../frontend/src/pages/login-page.tsx")
 
-function harness(fetch) {
+function harness(fetch, entraConfigured = false) {
   const client = {}
   runInNewContext(clientCode, { exports: client, fetch, Error, TypeError })
   const auth = {}
@@ -48,6 +48,7 @@ function harness(fetch) {
     "../providers/auth-provider": { useAuth: () => ({
       signInWithPassword: auth.authApi.signInWithPassword,
       entraError: null,
+      entraConfigured,
     }) },
   }
   const page = {}
@@ -91,6 +92,14 @@ test("a network failure is not reported as an invalid password", async () => {
   assert.equal(view.render().find(node => node.props?.role === "alert").props.children,
     "无法连接登录服务，请检查网络后重试。")
   assert.equal(view.slots[3], null)
+})
+
+test("Microsoft sign-in is offered only when the build has an Entra client", () => {
+  for (const entraConfigured of [false, true]) {
+    const view = harness(async () => { throw new Error("no request expected") }, entraConfigured)
+    assert.equal(view.render().some(node => node.props?.className === "login-entra"),
+      entraConfigured)
+  }
 })
 
 test("successful password authentication returns the real response profile", async () => {

@@ -234,6 +234,7 @@ export type ModelEditDraft = ModelPriceDraft & {
   contextWindow: string
   allowedRoles: string[]
   isDefault: boolean
+  toolCalling: boolean
 }
 
 export type ModelEditError =
@@ -268,6 +269,7 @@ export function createModelEditDraft(model: ManagedModel, contextPricingSupporte
     cacheWritePrice: model.cache_write_cost_per_million?.toString() ?? "",
     allowedRoles: [...model.allowed_roles],
     isDefault: model.is_default,
+    toolCalling: model.capabilities.includes("tools"),
     priceSource: model.price_source ?? "manual",
     priceReference: model.price_reference ?? "",
     discountPercent: model.price_discount_percent?.toString() ?? "",
@@ -484,7 +486,9 @@ export function modelEditPayload(model: ManagedModel, draft: ModelEditDraft) {
     upstream_model_id: model.upstream_model_id,
     family_key: model.family_key,
     assignment_required: model.assignment_required,
-    capabilities: [...model.capabilities],
+    capabilities: draft.toolCalling
+      ? [...new Set([...model.capabilities, "tools" as const])]
+      : model.capabilities.filter((capability) => capability !== "tools"),
     display_name: draft.displayName.trim(),
     context_window: optionalNumber(draft.contextWindow),
     input_cost_per_million: draft.contextPricingPreview ? null : optionalNumber(draft.inputPrice),

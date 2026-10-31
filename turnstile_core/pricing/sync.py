@@ -22,7 +22,7 @@ from uuid import UUID
 
 from turnstile_core.domain.runtime_models import ManagedModel, PriceSource, PriceSyncStatus
 from turnstile_core.pricing.catalog import CatalogEntry, CompositeCatalog, parse_context_tier
-from turnstile_core.pricing.context import resolve_context_prices
+from turnstile_core.pricing.context import rediscount_context_tiers, resolve_context_prices
 
 # A published rate rarely moves more than a few percent. Twenty is generous enough that ordinary
 # repricing passes unattended, and tight enough that a parser reading the wrong column stops.
@@ -248,6 +248,34 @@ def _plan_context(
     return _planned_against(
         model, status=PriceSyncStatus.OK, writes=True, context_price_tiers=payload,
     )
+
+
+def repriced_at_discount(model: ManagedModel) -> dict[str, Any] | None:
+    """The charged rates of a model's accepted list prices at its effective discount.
+
+    A discount change is not a price move: no catalog read, no newly published price adopted.
+    None when the model has no accepted list price or already charges these rates.
+    """
+    if model.price_source is PriceSource.MANUAL:
+        return None
+    discount = model.effective_discount_percent
+    if model.context_price_tiers:
+        tiers = rediscount_context_tiers(model.context_price_tiers, model.price_source, discount)
+        if tiers == model.context_price_tiers:
+            return None
+        return {"context_price_tiers": [tier.model_dump(mode="json") for tier in tiers]}
+    if model.list_input_cost_per_million is None or model.list_output_cost_per_million is None:
+        return None
+    charged = CatalogEntry(
+        reference=model.price_reference or "", label=model.model_key, source=model.price_source,
+        **{bucket: getattr(model, column) for bucket, column, _ in _BUCKETS},
+    ).discounted(discount)
+    values = {
+        column.removeprefix("list_"): getattr(charged, bucket) for bucket, column, _ in _BUCKETS
+    }
+    if all(getattr(model, column) == value for column, value in values.items()):
+        return None
+    return values
 
 
 def _largest_drift(model: ManagedModel, entry: CatalogEntry) -> tuple[str, float] | None:

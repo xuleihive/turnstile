@@ -106,7 +106,7 @@ from turnstile_core.pricing.context import (
     model_price_from_values,
     resolve_context_prices,
 )
-from turnstile_core.pricing.sync import plan_price_sync
+from turnstile_core.pricing.sync import plan_price_sync, repriced_at_discount
 from turnstile_core.security import CredentialCipher, credential_hint
 from turnstile_core.services.application_access import ApplicationAccessService
 from turnstile_core.services.budget_settlement import BudgetScopeRepository, BudgetStatusRepository
@@ -529,7 +529,20 @@ class ModelRuntimeService:
         values = write.model_dump(mode="python", exclude={"is_default"})
         if bool(current.get("is_default")) != write.is_default:
             values["is_default"] = write.is_default
+        previous_discount = current.get("price_discount_percent")
         self._save("runtime", values, runtime_id)
+        if (
+            float(previous_discount) if previous_discount is not None else None
+        ) == write.price_discount_percent:
+            return self.registry()
+        for model in self.registry().models:
+            # Models inheriting the connection discount charge their accepted list prices at it.
+            if model.runtime_id != runtime_id or model.price_discount_percent is not None:
+                continue
+            repriced = repriced_at_discount(model)
+            if repriced is not None:
+                self._save("model", repriced, model.id)
+                self._project_accepted_model_price(model.id)
         return self.registry()
 
     def delete_connection(self, runtime_id: UUID) -> RegistryResponse:

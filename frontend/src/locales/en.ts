@@ -31,6 +31,7 @@ export function translateToEnglish(input: string) {
     .replaceAll("（", " (")
     .replaceAll("）", ")")
     .replaceAll("，", ", ")
+    .replaceAll("；", "; ")
     .replaceAll("。", ".")
     .replaceAll("：", ": ")
     .replaceAll("、", ", ")

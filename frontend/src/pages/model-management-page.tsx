@@ -647,7 +647,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       onDismissNotice={() => setNotice(null)}
       onNoticeAction={openPublicationRetry}
       onToggleSidebar={onToggleSidebar}
-      onAdd={(kind) => {
+      onAdd={user?.role === "owner" ? (kind) => {
         if (kind === "model") {
           openNewPublication()
         } else if (kind === "runtime") {
@@ -656,7 +656,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
         } else {
           setEditor({ kind })
         }
-      }}
+      } : undefined}
       onEdit={(kind, item) => {
         if (kind === "runtime") {
           setEditingConnection(item as ModelRuntime)
@@ -1060,7 +1060,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
   onDismissNotice: () => void
   onNoticeAction: () => void
   onToggleSidebar: () => void
-  onAdd: (kind: RegistryKind) => void
+  onAdd?: (kind: RegistryKind) => void
   onEdit: (kind: RegistryKind, item: RegistryItem) => void
   onRotateCredential: (model: ManagedModel) => void
   onDeleteModel: (model: ManagedModel) => void
@@ -1212,7 +1212,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
   return <div className="smh-workspace model-workspace">
     <header className="smh-page-header">
       <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{registry.models.length}</span></div>
-      {activeTab !== "gateways" && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
+      {activeTab !== "gateways" && onAdd && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
     </header>
     <div className="model-toolbar">
       <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} data-tab={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : value === "apim" ? "APIM 实例" : "网关"}<span>{value === "connections" ? scopedConnections.length : value === "apim" ? topology?.total ?? "—" : value === "gateways" ? topologyAvailable && !topology ? "—" : gatewayCount : registry.models.length}</span></button>)}</ButtonGroup>

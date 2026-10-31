@@ -745,6 +745,10 @@
           state[&quot;applicationSlug&quot;] = &quot;&quot;;
           state[&quot;applicationName&quot;] = &quot;&quot;;
           state[&quot;applicationType&quot;] = &quot;&quot;;
+          state[&quot;organizationId&quot;] = &quot;unattributed&quot;;
+          state[&quot;organizationName&quot;] = &quot;unattributed&quot;;
+          state[&quot;departmentId&quot;] = &quot;unattributed&quot;;
+          state[&quot;departmentName&quot;] = &quot;unattributed&quot;;
           try
           {
             var response = (IResponse)context.Variables[&quot;applicationMapRead&quot;];
@@ -771,6 +775,10 @@
               state[&quot;applicationSlug&quot;] = (string)row[&quot;ApplicationSlug&quot;] ?? &quot;&quot;;
               state[&quot;applicationName&quot;] = (string)row[&quot;ApplicationName&quot;] ?? &quot;&quot;;
               state[&quot;applicationType&quot;] = (string)row[&quot;ApplicationType&quot;] ?? &quot;&quot;;
+              state[&quot;organizationId&quot;] = (string)row[&quot;OrganizationId&quot;] ?? &quot;unattributed&quot;;
+              state[&quot;organizationName&quot;] = (string)row[&quot;OrganizationName&quot;] ?? &quot;unattributed&quot;;
+              state[&quot;departmentId&quot;] = (string)row[&quot;DepartmentId&quot;] ?? &quot;unattributed&quot;;
+              state[&quot;departmentName&quot;] = (string)row[&quot;DepartmentName&quot;] ?? &quot;unattributed&quot;;
             }
           }
           catch (Exception) { }
@@ -833,6 +841,18 @@
         </choose>
         <choose>
           <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot;)">
+            <set-header name="x-org-id" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationId&quot;])</value>
+            </set-header>
+            <set-header name="x-org-name" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationName&quot;])</value>
+            </set-header>
+            <set-header name="x-department-id" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentId&quot;])</value>
+            </set-header>
+            <set-header name="x-department-name" exists-action="override">
+              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentName&quot;])</value>
+            </set-header>
             <set-variable name="applicationLedgerPartition" value="@(&quot;app|&quot; + (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationId&quot;] + &quot;|&quot; + DateTime.UtcNow.ToString(&quot;yyyy-MM&quot;))" />
             <set-variable name="applicationLedgerUrl" value="@{
               var partition = (string)context.Variables[&quot;applicationLedgerPartition&quot;];

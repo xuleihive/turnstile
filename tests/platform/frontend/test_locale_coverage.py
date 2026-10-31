@@ -147,6 +147,41 @@ console.log("Locale context survives hot updates; production initialization stay
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_english_counts_and_punctuation_read_as_english() -> None:
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for locale translation tests"
+    result = subprocess.run(
+        [
+            node, "--input-type=module", "-e", """
+import assert from "node:assert/strict"
+import { createRequire } from "node:module"
+import { resolve } from "node:path"
+import { runInNewContext } from "node:vm"
+
+const frontendRequire = createRequire(resolve("frontend/package.json"))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+const bundle = await rolldown({ input: resolve("frontend/src/locales/en.ts") })
+let code
+try { code = (await bundle.generate({ format: "cjs" })).output[0].code }
+finally { await bundle.close() }
+const exports = {}
+runInNewContext(code, { exports })
+const translate = exports.translateToEnglish
+assert.equal(translate("发现 1 个配置问题。"), "1 configuration issue found.")
+assert.equal(translate("发现 3 个配置问题。"), "3 configuration issues found.")
+assert.equal(translate("A model still uses it；Detach it first"),
+    "A model still uses it; Detach it first")
+""",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_assistant_starter_prompts_enter_the_composer_in_the_active_locale() -> None:
     conversation = (
         FRONTEND_SRC / "components" / "assistant" / "assistant-conversation.tsx"
@@ -232,6 +267,8 @@ def test_standalone_labels_have_exact_catalog_entries() -> None:
         "删除 Pool",
         "删除 APIM 后端池？",
         "Retry-After · 最多 2 次",
+        "撤销",
+        "重做",
     )
     for locale in ("en", "ko", "ja"):
         catalog = _catalog_source(locale)

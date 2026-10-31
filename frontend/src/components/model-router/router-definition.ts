@@ -21,6 +21,8 @@ export const ROUTER_CANDIDATE_NODE_WIDTH = 300
 export const ROUTER_CANDIDATE_NODE_MIN_HEIGHT = 134
 export const ROUTER_CANDIDATE_ROW_HEIGHT = 44
 export const ROUTER_DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000
+// Condition branch labels the router compiler reads as the match outcome.
+export const MATCH_BRANCH_LABELS = ["match", "matched", "true", "yes", "匹配"]
 
 export function resolveRouterDisplayModels(
   models: ReadonlyArray<Pick<ManagedModel,
@@ -128,7 +130,9 @@ export function normalizeRouterDefinition(
     const outgoing = next.edges.filter((edge) => edge.source === condition.id)
     const labels = new Set(outgoing.map((edge) => edge.label.trim().toLocaleLowerCase()))
     const hasElse = [...labels].some((label) => ["else", "default", "false", "no", "未匹配"].includes(label))
-    if (incoming.length !== 1 || outgoing.length !== 1 || hasElse) continue
+    // An authored Match branch is an incomplete condition, not a legacy pass-through.
+    const hasMatch = [...labels].some((label) => MATCH_BRANCH_LABELS.includes(label))
+    if (incoming.length !== 1 || outgoing.length !== 1 || hasElse || hasMatch) continue
     incoming[0].target = outgoing[0].target
     incoming[0].label = ""
     next.edges = next.edges.filter((edge) => edge.id !== outgoing[0].id)

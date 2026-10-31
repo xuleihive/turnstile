@@ -235,6 +235,7 @@ function ExecutiveOverview({ filters, costAvailable: configuredCostAvailable }: 
   const anomalies = useQuery(finopsQueries.anomalies(filters))
   const departments = useQuery(finopsQueries.distribution(filters, "department"))
   const models = useQuery(finopsQueries.distribution(filters, "model"))
+  const registry = useQuery(finopsQueries.registry())
   const agents = useQuery(finopsQueries.distribution(filters, "agent"))
   const users = useQuery(finopsQueries.distribution(filters, "user"))
   const runtimes = useQuery(finopsQueries.distribution(filters, "runtime"))
@@ -262,7 +263,7 @@ function ExecutiveOverview({ filters, costAvailable: configuredCostAvailable }: 
     <DistributionRankingPanel className="span-2" title="运行时用量结构" meta={`${runtimes.data?.items.length ?? 0} 个运行时`} items={runtimes.data?.items ?? []} costAvailable={costAvailable} metricMode="auto" emptyTitle="暂无运行时数据" emptyDetail="当前范围暂无用量数据。" />
     <section className="finops-panel"><PanelTitle title="重点治理信号" meta={`${signals.length} 项`} />{signals.length ? <div className="anomaly-list">{signals.map((item) => <div key={item.id}><span className={`anomaly-dot ${item.severity}`} /><div><b>{item.title}</b><p>{item.description}</p></div><strong>{item.actual_value.toFixed(1)}</strong></div>)}</div> : <EmptyState title="暂无异常" detail="当前范围未触发治理阈值。" />}</section>
     <DistributionRankingPanel className="overview-distribution-panel" title="部门用量结构" meta={`${departments.data?.items.length ?? 0} 个部门`} items={departments.data?.items ?? []} costAvailable={costAvailable} metricMode="auto" emptyTitle="暂无部门数据" emptyDetail="当前范围暂无用量数据。" />
-    <DistributionRankingPanel className="overview-distribution-panel" title="模型用量结构" meta={`${new Set(models.data?.items.map((item) => item.name) ?? []).size} 个模型`} items={models.data?.items ?? []} costAvailable={costAvailable} metricMode="auto" emptyTitle="暂无模型数据" emptyDetail="当前范围暂无用量数据。" />
+    <DistributionRankingPanel className="overview-distribution-panel" title="模型用量结构" meta={`${new Set(models.data?.items.map(distributionKey) ?? []).size} 个模型`} items={withConnectionNames(models.data?.items ?? [], registry.data?.models)} costAvailable={costAvailable} metricMode="auto" emptyTitle="暂无模型数据" emptyDetail="当前范围暂无用量数据。" />
     <section className="finops-panel"><PanelTitle title="请求健康度" meta={`P95 ${formatLatency(totals.p95_latency_ms)}`} /><RequestHealthChart totals={totals} /></section>
     <div className="overview-ranking-grid span-3">
       <DistributionRankingPanel title="智能体 Token 排行" meta={`${agents.data?.items.length ?? 0} 个智能体`} items={agents.data?.items ?? []} costAvailable={costAvailable} metricMode="tokens" color="var(--chart-1)" emptyTitle="暂无智能体数据" emptyDetail="当前范围暂无用量数据。" />
@@ -387,6 +388,24 @@ function RequestLatencyChart({ totals, percentage = false }: { totals: Executive
 
 type DistributionRankingItem = { id: string; name: string; total_tokens: number; cache_read_tokens?: number; total_requests: number; estimated_cost: number; share_percent: number }
 
+// Same-named records (two deployments of one model name) stay apart; unattributed rows keep their names.
+function distributionKey(item: Pick<DistributionRankingItem, "id" | "name">) {
+  return item.id && item.id !== "unattributed" ? item.id : item.name
+}
+
+// Same-named models on different connections are told apart by their connection name.
+function withConnectionNames<Item extends Pick<DistributionRankingItem, "id" | "name">>(
+  items: Item[], models: readonly ManagedModel[] = [],
+): Item[] {
+  const connections = new Map(models.map((model) => [model.id, model.runtime_name]))
+  const counts = new Map<string, number>()
+  for (const item of items) counts.set(item.name, (counts.get(item.name) ?? 0) + 1)
+  return items.map((item) => {
+    const connection = (counts.get(item.name) ?? 0) > 1 ? connections.get(item.id) : undefined
+    return connection ? { ...item, name: `${item.name} · ${connection}` } : item
+  })
+}
+
 function tokenRankingTooltip(value: string | number, payload?: unknown) {
   const row = payload as DistributionRankingItem | undefined
   const total = Number(value).toLocaleString(getIntlLocale())
@@ -455,13 +474,14 @@ function MetricRankingPanel({ title, meta, className, rows, valueLabel, valueFor
 function DistributionBars({ items, costAvailable, metricMode = "auto", color, limit = 5 }: { items: DistributionRankingItem[]; costAvailable: boolean; metricMode?: "auto" | "tokens" | "requests"; color?: string; limit?: RankingLimit }) {
   const grouped = new Map<string, { id: string; name: string; total_tokens: number; cache_read_tokens: number; total_requests: number; estimated_cost: number; share_percent: number }>()
   for (const item of items) {
-    const current = grouped.get(item.name) ?? { ...item, id: item.name, total_tokens: 0, cache_read_tokens: 0, total_requests: 0, estimated_cost: 0, share_percent: 0 }
+    const key = distributionKey(item)
+    const current = grouped.get(key) ?? { ...item, id: key, total_tokens: 0, cache_read_tokens: 0, total_requests: 0, estimated_cost: 0, share_percent: 0 }
     current.total_tokens += item.total_tokens
     current.cache_read_tokens += item.cache_read_tokens ?? 0
     current.total_requests += item.total_requests
     current.estimated_cost += item.estimated_cost
     current.share_percent += item.share_percent
-    grouped.set(item.name, current)
+    grouped.set(key, current)
   }
   const merged = [...grouped.values()]
   const useRequests = metricMode === "requests"
@@ -612,6 +632,7 @@ function ModelUsage({ filters, costAvailable }: { filters: UsageFilters; costAva
   // dimension costs a single request and nothing the second time.
   const grouped = useQuery(finopsQueries.distribution(filters, dimension, "model"))
   const models = useQuery(finopsQueries.distribution(filters, "model"))
+  const registry = useQuery(finopsQueries.registry())
   const overview = useQuery(finopsQueries.executiveOverview(filters))
   if (grouped.isLoading || models.isLoading || overview.isLoading) return <LoadingState />
   if (grouped.error || models.error || overview.error) return <ErrorState error={grouped.error ?? models.error ?? overview.error} />
@@ -638,7 +659,7 @@ function ModelUsage({ filters, costAvailable }: { filters: UsageFilters; costAva
     {/* Models take the wide column because they are the one axis every other panel here
         shares -- the cross-tab and both quality charts are model-keyed -- so this column
         stays put while the one beside it changes with the dimension switch. */}
-    <DistributionRankingPanel className="span-2" title="模型 Token 排行" meta={`${new Set(models.data?.items.map((item) => item.name) ?? []).size} 个模型`} items={models.data?.items ?? []} costAvailable={costAvailable} emptyTitle="暂无模型数据" emptyDetail="当前筛选范围暂无用量数据。" />
+    <DistributionRankingPanel className="span-2" title="模型 Token 排行" meta={`${new Set(models.data?.items.map(distributionKey) ?? []).size} 个模型`} items={withConnectionNames(models.data?.items ?? [], registry.data?.models)} costAvailable={costAvailable} emptyTitle="暂无模型数据" emptyDetail="当前筛选范围暂无用量数据。" />
     <DistributionRankingPanel title={current.rankingTitle} meta={`${grouped.data?.items.length ?? 0} ${current.unit}`} items={grouped.data?.items ?? []} costAvailable={costAvailable} emptyTitle={current.emptyTitle} emptyDetail="当前筛选范围暂无用量数据。" />
     <div className="model-mix-heading span-3">
       <div><h2>{current.heading}</h2><span>{modelSummary}</span></div>

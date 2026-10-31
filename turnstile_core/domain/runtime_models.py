@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -569,6 +570,22 @@ class StoredContextPriceTier(ModelPriceTier):
     service_tier: str = ""
     deployment: str = ""
     regions: list[str] = Field(default_factory=list)
+
+
+_CHARGED_TIER_RATES = {
+    "input_price_per_million", "output_price_per_million",
+    "cached_price_per_million", "cache_write_price_per_million",
+}
+
+
+def context_tier_schedule(tiers: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Stored tiers without the charged rates, which a discount change alone moves."""
+    return [
+        StoredContextPriceTier.model_validate(tier).model_dump(
+            mode="json", exclude=_CHARGED_TIER_RATES,
+        )
+        for tier in tiers or []
+    ]
 
 
 def custom_context_rule(tiers: list[StoredContextPriceTier]) -> ContextPriceRule | None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -228,6 +229,43 @@ def test_catalog_save_persists_the_accepted_baseline_and_preserves_metadata_edit
     proxy, _recorder = proxy_with([{"enabled": False}, None, model_row(model_id), baseline])
     result = proxy.update_registry_item("model", model_id, {"price_discount_percent": 90})
     assert result is not None and result["list_input_cost_per_million"] == 3
+
+
+def test_repricing_context_tiers_keeps_their_pending_review() -> None:
+    """A discount moves only the charged rates; a new list price still answers the review."""
+    model_id = uuid4()
+    tier = {
+        "key": "short", "label": "Short", "reference": "azure_retail:A:Short:Global:*",
+        "min_input_tokens": 0, "max_input_tokens": None, "input_price_per_million": 4.0,
+        "output_price_per_million": 20.0, "cached_price_per_million": 4.0,
+        "cache_write_price_per_million": 4.0,
+        "list_prices": {"input": 4.0, "output": 20.0, "cached": None, "cache_write": None},
+    }
+    newer = {**tier, "list_prices": {**tier["list_prices"], "input": 8.0}}
+    current = {
+        "price_source": "azure_retail", "price_reference": "azure_retail:context:unit",
+        "price_discount_percent": None, "context_price_tiers": [tier],
+        "list_input_cost_per_million": None, "list_output_cost_per_million": None,
+        "list_cached_cost_per_million": None, "list_cache_write_cost_per_million": None,
+        "pending_list_price": None, "pending_context_price_tiers": [newer],
+        "price_synced_at": datetime(2026, 10, 1, tzinfo=UTC),
+        "price_sync_status": "review_needed", "price_sync_message": "unit review",
+    }
+    repriced = {**tier, "input_price_per_million": 2.0, "output_price_per_million": 10.0,
+                "cached_price_per_million": 2.0, "cache_write_price_per_million": 2.0}
+
+    proxy, _recorder = proxy_with([{"enabled": False}, None, model_row(model_id), current])
+    result = proxy.update_registry_item("model", model_id, {"context_price_tiers": [repriced]})
+    assert result is not None and result["context_price_tiers"] == [repriced]
+    for field in ("pending_context_price_tiers", "price_synced_at",
+                  "price_sync_status", "price_sync_message"):
+        assert result[field] == current[field]
+
+    proxy, _recorder = proxy_with([{"enabled": False}, None, model_row(model_id), current])
+    result = proxy.update_registry_item("model", model_id, {"context_price_tiers": [newer]})
+    assert result is not None
+    assert result["pending_context_price_tiers"] is None
+    assert (result["price_sync_status"], result["price_sync_message"]) == ("ok", None)
 
 
 # ------------------------------------------------------------------------------------------

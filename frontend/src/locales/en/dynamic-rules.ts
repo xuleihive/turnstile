@@ -31,7 +31,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/^([\d,]+)\s*个网关发布$/g, (_match, value) => `${value} Gateway ${plural(value, "Release")}`],
   [/^([\d,]+)\s*个条件$/g, (_match, value) => `${value} ${plural(value, "condition")}`],
   [/^([\d,]+)\s*条分支$/g, (_match, value) => `${value} ${plural(value, "branch", "branches")}`],
-  [/^发现\s*([\d,]+)\s*个配置问题。$/g, (_match, value) => `${value} configuration issues found.`],
+  [/^发现\s*([\d,]+)\s*个配置问题。$/g, (_match, value) => `${value} configuration ${plural(value, "issue")} found.`],
   [/^连线 ID (.+) 重复。$/g, (_match, id) => `Duplicate edge ID ${id}.`],
   [/^将删除“(.+)”及其当前草稿，并从路由器列表中移除。已发布版本记录会保留用于审计。$/g, (_match, name) => `Delete “${name}” and its current draft from the router list. Published versions remain for audit.`],
   [/^停用“(.+)”后，其已发布版本将不再作为可用路由。草稿与版本记录会保留。$/g, (_match, name) => `Disable “${name}”. Its published version will no longer be available for routing; drafts and version history remain.`],

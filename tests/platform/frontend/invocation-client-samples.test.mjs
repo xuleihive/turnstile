@@ -5,7 +5,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
-import { clientSampleFor, gatewayApiOperations } from "../../../frontend/src/lib/application-client-samples.ts"
+import { clientSampleFor, gatewayApiOperations, operationSampleModels } from "../../../frontend/src/lib/application-client-samples.ts"
 
 const endpoint = "https://gateway.example.test/llm"
 const headers = { "x-user-id": "person@example.test", "x-project-id": "project-unit" }
@@ -73,6 +73,19 @@ test("all existing subscription operations retain their endpoints and key variab
       if (operation.id === "models") assert.ok(!sample.includes("--data-raw"))
     }
   }
+})
+
+test("each sample operation offers only the models whose capability can serve it", () => {
+  const chat = { id: "chat", capabilities: ["chat", "streaming"] }
+  const image = { id: "image", capabilities: ["image_generation"] }
+  const decision = { id: "decision", capabilities: ["decision"] }
+  const models = [chat, image, decision]
+
+  assert.deepEqual(operationSampleModels(models, "image_generations"), [image])
+  assert.deepEqual(operationSampleModels(models, "chat_completions"), [chat])
+  assert.deepEqual(operationSampleModels(models, "decision"), [decision])
+  assert.deepEqual(operationSampleModels(models, "models"), models)
+  assert.deepEqual(operationSampleModels([chat], "image_generations"), [])
 })
 
 test("copy success expires after two seconds and repeated copies restart the feedback", async () => {

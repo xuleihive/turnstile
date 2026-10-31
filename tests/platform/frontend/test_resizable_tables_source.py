@@ -63,6 +63,8 @@ def test_resizable_table_primitive_keeps_interaction_and_accessibility_contract(
     assert "widths ?? lastVisibleWidthsRef.current" in source
     assert "new ResizeObserver(rememberVisibleWidths)" in source
     assert "return resizeAtAllWidths || enabled" in source
+    # Icon-only headers (such as Actions) name their resize handle from the header label.
+    assert 'cell.textContent?.trim() || cell.getAttribute("aria-label")?.trim()' in source
 
 
 def test_column_width_behavior_and_narrow_model_tracks() -> None:

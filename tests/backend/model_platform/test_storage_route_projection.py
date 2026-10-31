@@ -4601,6 +4601,126 @@ def test_subsequent_program_upgrade_preserves_registration_history_and_original_
     assert canonical_document(config) == original
 
 
+@pytest.mark.parametrize("initial_legacy", [None, "9" * 64])
+@pytest.mark.parametrize("upgrades", [0, 1, 2])
+def test_empty_installation_accepts_model_additions_after_every_registered_upgrade(
+    upgrades: int, initial_legacy: str | None,
+) -> None:
+    from tests.backend.model_platform.control_plane_support import (
+        APIM_ID,
+        GatewayControlPlaneService,
+        bedrock_publication,
+        foundry_publication,
+    )
+    from turnstile_core.domain.control_plane import (
+        GatewayPublication,
+        GatewayReleaseSpec,
+        PublicationKind,
+        PublicationStatus,
+    )
+    from turnstile_core.domain.runtime_models import ProviderTarget
+    from turnstile_core.domain.storage_routes import FixedProgramInstallation, FixedProgramUpgrade
+    from turnstile_core.persistence.in_memory import InMemoryRepository
+    from turnstile_core.persistence.repository_support import (
+        _fixed_program_upgrade_config,
+        _managed_program_publication,
+    )
+
+    _, program, _ = snapshot_fixture()
+    program = program.model_copy(update={
+        "scope": program.scope.model_copy(update={"target_id": str(APIM_ID)}),
+    })
+    installation = FixedProgramInstallation(
+        program=program, target_identity_sha256="b" * 64,
+        storage_endpoint="https://unitstore.table.core.windows.net", storage_table="Routes",
+        gateway_endpoint="https://unit.azure-api.net/llm", publisher_subscription_id="unit",
+        parent_policy_sha256="a" * 64, operation_policies_sha256={"models": "c" * 64},
+        operation_contracts={"models": ("GET", "/models")}, supported_profiles=("openai-v1",),
+        **({"model_additions_enabled": True, "legacy_program_sha256": initial_legacy}
+           if initial_legacy else {}),
+    )
+    version = str(UUID(int=76))
+    _, manifest, dependencies = configuration_manifests(program.scope, version, (), {}, 1100)
+    approval = ConfigurationApproval(
+        approval_id=str(UUID(int=77)), scope=program.scope, route_version=version,
+        generation=1, manifest_sha256=manifest, dependency_manifest_sha256=dependencies,
+        catalog_sha256=catalog_digest(()), entry_count=0,
+        required_program_sha256=program.program_sha256, required_profiles=(),
+        budget_epoch=str(UUID(int=2)), issued_epoch=1100, activate_before_epoch=1700,
+    )
+    template = GatewayControlPlaneService(InMemoryRepository()).publish(
+        bedrock_publication(), "unit",
+    )
+    empty = template.model_copy(update={
+        "id": UUID(int=75), "gateway_profile_id": APIM_ID, "status": PublicationStatus.ACTIVE,
+        "publication_kind": PublicationKind.ROUTE_RECONCILE, "generation": 1,
+        "base_release_id": None, "apim_revision": program.api_revision,
+        "policy_sha256": program.program_sha256,
+        "desired_spec": GatewayReleaseSpec(gateway_profile_id=APIM_ID, bindings=[],
+                                           discovery_models=[]),
+        "resource_manifest": {
+            "fixed_route_program": installation.model_dump(mode="json"),
+            "fixed_route_snapshot": RouteSnapshot.prepare(approval, (), {}, 1100).model_dump(
+                mode="json",
+            ),
+            "fixed_route_head": ActiveRouteHead(
+                approval=approval, activated_epoch=1100,
+            ).model_dump(mode="json"),
+        },
+    }).model_dump(mode="python")
+    config: dict[str, Any] = {}
+    previous = installation
+    for index in range(upgrades):
+        # The production upgrade chain: legacy is carried, earlier programs become predecessors.
+        legacy = previous.legacy_program_sha256 or previous.program.program_sha256
+        upgraded = previous.model_copy(update={
+            "program": program.model_copy(update={"program_sha256": str(index + 1) * 64}),
+            "parent_policy_sha256": str(index + 4) * 64, "model_additions_enabled": True,
+            "legacy_program_sha256": legacy,
+            "predecessor_program_sha256": tuple(value for value in (
+                *previous.predecessor_program_sha256, previous.program.program_sha256,
+            ) if value != legacy),
+        })
+        updated = _fixed_program_upgrade_config(empty, config, FixedProgramUpgrade(
+            previous_publication_id=str(UUID(int=75)),
+            previous_installation_sha256=document_digest(previous), installation=upgraded,
+        ).model_dump(mode="json"), document_digest(config))
+        assert updated is not None
+        config, previous = updated, upgraded
+    derived = _managed_program_publication(empty, config)
+    assert derived is not None
+    assert GatewayPublication.model_validate(derived).desired_spec.bindings == []
+    overlaid = derived["resource_manifest"]["fixed_route_program"]
+    assert (overlaid != empty["resource_manifest"]["fixed_route_program"]) is (upgrades == 2)
+    if upgrades == 2:
+        forged = deepcopy(derived)
+        assert program.program_sha256 not in {"e" * 64, "8" * 64}
+        forged["resource_manifest"]["fixed_route_program"].update(
+            legacy_program_sha256="e" * 64, predecessor_program_sha256=["8" * 64],
+        )
+        with pytest.raises(ValueError, match="configuration binding changed"):
+            GatewayPublication.model_validate(forged)
+    if not upgrades:
+        return
+    repository = InMemoryRepository()
+    repository.gateway_publications.append(empty)
+    repository.effective_gateway_releases[APIM_ID] = empty["id"]
+    next(row for row in repository.gateways if row["id"] == APIM_ID)["config"] = config
+    request = foundry_publication("unit-upgraded-empty-installation")
+    request.provider = ProviderTarget(existing_id=next(
+        row["id"] for row in repository.providers if row["brand_key"] == "microsoft_foundry"
+    ))
+
+    addition = GatewayControlPlaneService(
+        repository, apim_principal_id=str(UUID(int=705)),
+    ).publish(request, "unit-owner")
+
+    assert addition.publication_kind is PublicationKind.MODEL_ADD
+    assert addition.base_release_id == empty["id"]
+    assert set(addition.resource_manifest) == {"model_route_addition"}
+    assert repository.effective_gateway_releases[APIM_ID] == empty["id"]
+
+
 @pytest.mark.parametrize("fault", [
     None, "previous-id", "previous-revision", "previous-spec", "previous-policy",
     "target", "already-installed", "routes", "missing-marker",

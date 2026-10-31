@@ -24,6 +24,8 @@ type AuthContextValue = {
   photo: string | null
   /** Why the last Microsoft sign-in was refused, for the sign-in page to show. */
   entraError: string | null
+  /** Whether this build was given an Entra client ID; without one Microsoft sign-in cannot work. */
+  entraConfigured: boolean
   signInWithPassword: (email: string, password: string) => Promise<void>
   signInWithEntra: () => Promise<void>
   signOut: () => Promise<void>
@@ -323,7 +325,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [expireLocalSession])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut }),
+    () => ({ status, user, photo, entraError, entraConfigured: Boolean(ENTRA_CLIENT_ID), signInWithPassword, signInWithEntra, signOut }),
     [status, user, photo, entraError, signInWithPassword, signInWithEntra, signOut],
   )
 

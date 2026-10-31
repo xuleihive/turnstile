@@ -21,6 +21,14 @@ def test_connection_metadata_actions_use_the_owner_connection_endpoint() -> None
     assert "runtimePayload" not in update
 
 
+def test_registry_add_action_is_offered_only_to_owners() -> None:
+    source = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+    assert 'onAdd={user?.role === "owner" ? (kind) => {' in source
+    assert "} : undefined}" in source
+    assert "onAdd?: (kind: RegistryKind) => void" in source
+    assert '{activeTab !== "gateways" && onAdd && <div className="smh-header-actions">' in source
+
+
 def test_connection_default_actions_are_removed_without_removing_compatibility_fields() -> None:
     source = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
     row = source.split("function ConnectionRow(", 1)[1].split(
@@ -1046,6 +1054,7 @@ def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     (
         "model-edit-form.test.mjs",
         "model-publication-connections.test.mjs",
+        "model-router-definition.test.mjs",
         "vite-proxy.test.mjs",
     ),
 )

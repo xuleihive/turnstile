@@ -197,7 +197,7 @@ function useResizableColumns({
   }
 
   const portals = enabled ? headerCells.map((cell, index) => {
-    const label = cell.textContent?.trim()
+    const label = cell.textContent?.trim() || cell.getAttribute("aria-label")?.trim()
     const container = portalContainers.get(cell)
     if (!container || container.parentElement !== cell) return null
     return createPortal(

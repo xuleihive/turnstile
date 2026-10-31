@@ -31,7 +31,7 @@ function MicrosoftMark({ size = 16 }: { size?: number }) {
 }
 
 export function LoginPage() {
-  const { signInWithPassword, signInWithEntra, entraError } = useAuth()
+  const { signInWithPassword, signInWithEntra, entraError, entraConfigured } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [revealed, setRevealed] = useState(false)
@@ -90,22 +90,24 @@ export function LoginPage() {
           {/* Microsoft first: it is the real identity path, and the password form below it is
               a temporary account for people trying the product out. Order is the only thing
               on this page that says which one is which. */}
-          <Button
-            type="button"
-            variant="outline"
-            className="login-entra"
-            onClick={handleEntra}
-            disabled={busy}
-          >
-            {pending === "entra"
-              ? <><LoaderCircle className="login-spin" size={16} />正在跳转…</>
-              : <><MicrosoftMark size={16} />使用 Microsoft 账户登录</>}
-          </Button>
-          {/* Microsoft's branding guidance explicitly asks for this line beside the button,
-              so a reader can tell whether the account they hold is the one that works. */}
-          <p className="login-hint">适用于你的工作或学校账户。</p>
+          {entraConfigured && <>
+            <Button
+              type="button"
+              variant="outline"
+              className="login-entra"
+              onClick={handleEntra}
+              disabled={busy}
+            >
+              {pending === "entra"
+                ? <><LoaderCircle className="login-spin" size={16} />正在跳转…</>
+                : <><MicrosoftMark size={16} />使用 Microsoft 账户登录</>}
+            </Button>
+            {/* Microsoft's branding guidance explicitly asks for this line beside the button,
+                so a reader can tell whether the account they hold is the one that works. */}
+            <p className="login-hint">适用于你的工作或学校账户。</p>
 
-          <div className="login-divider" aria-hidden="true"><span>或</span></div>
+            <div className="login-divider" aria-hidden="true"><span>或</span></div>
+          </>}
 
           <form id="login-form" className="login-form" onSubmit={handlePassword}>
             <div className="login-field">

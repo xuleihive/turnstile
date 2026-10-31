@@ -6,7 +6,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 from ..domain.model_availability import ModelAvailabilityConflict
-from ..domain.runtime_models import apply_databricks_adoption
+from ..domain.runtime_models import apply_databricks_adoption, context_tier_schedule
 
 
 class InMemoryRegistryRepositoryMixin:
@@ -240,14 +240,16 @@ class InMemoryRegistryRepositoryMixin:
             elif kind == "model":
                 for runtime in self.runtimes:
                     runtime["is_default"] = runtime["id"] == values["runtime_id"]
-        if kind == "model" and any(
+        tiers_changed = kind == "model" and "context_price_tiers" in values and (
+            context_tier_schedule(values["context_price_tiers"])
+            != context_tier_schedule(row.get("context_price_tiers"))
+        )
+        if tiers_changed or kind == "model" and any(
             key in values and values[key] != row.get(key)
-            for key in ("price_source", "price_reference", "context_price_tiers")
+            for key in ("price_source", "price_reference")
         ):
             row["pending_context_price_tiers"] = None
-        if kind == "model" and "context_price_tiers" in values and (
-            values["context_price_tiers"] != (row.get("context_price_tiers") or [])
-        ):
+        if tiers_changed:
             row["price_sync_status"] = "ok" if values["context_price_tiers"] else None
             row["price_sync_message"] = None
             row["price_synced_at"] = datetime.now(UTC)

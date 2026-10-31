@@ -945,14 +945,19 @@ class GatewayPublication(GatewayPublicationIntent):
         snapshot = RouteSnapshot.model_validate_json(canonical_document(raw_snapshot))
         head = ActiveRouteHead.model_validate_json(canonical_document(raw_head))
         snapshot.require_valid(head.activated_epoch)
+        # Upgrades keep the empty release bound to its program lineage, as require_ready does.
+        bound_programs = {
+            program.program_sha256, raw_program.get("legacy_program_sha256"),
+            *(raw_program.get("predecessor_program_sha256") or ()),
+        }
         if (
             snapshot.routes or snapshot.members or snapshot.approval.entry_count != 0
             or head.approval != snapshot.approval or head.approval.generation != 1
             or program.scope != head.approval.scope
             or program.scope.target_id != str(self.gateway_profile_id)
             or program.api_revision != self.apim_revision
-            or program.program_sha256 != self.policy_sha256
-            or program.program_sha256 != head.approval.required_program_sha256
+            or self.policy_sha256 not in bound_programs
+            or head.approval.required_program_sha256 != self.policy_sha256
         ):
             raise ValueError("Empty installation program and configuration binding changed")
 

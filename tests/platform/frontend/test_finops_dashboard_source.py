@@ -170,6 +170,37 @@ def test_model_success_rate_rankings_sort_highest_first() -> None:
     assert "right.value - left.value" in source
 
 
+def test_distribution_rankings_keep_same_named_models_apart() -> None:
+    source = read_apim_dashboard_source()
+    bars = source[source.index("function DistributionBars") :]
+    bars = bars[: bars.index("\nfunction ")]
+
+    assert 'return item.id && item.id !== "unattributed" ? item.id : item.name' in source
+    assert "const key = distributionKey(item)" in bars
+    assert "grouped.get(item.name)" not in bars
+    for title in ("模型用量结构", "模型 Token 排行"):
+        panel = source.split(f'title="{title}"', 1)[1].split("/>", 1)[0]
+        assert "models.data?.items.map(distributionKey)" in panel
+        # Same-named rows carry their connection name so they can be told apart.
+        assert (
+            "items={withConnectionNames(models.data?.items ?? [], registry.data?.models)}"
+            in panel
+        )
+    labels = source[source.index("function withConnectionNames") :]
+    labels = labels[: labels.index("\nfunction ")]
+    assert "(counts.get(item.name) ?? 0) > 1 ? connections.get(item.id)" in labels
+    assert "name: `${item.name} · ${connection}`" in labels
+
+
+def test_mobile_trace_header_keeps_every_text_block_in_the_content_column() -> None:
+    styles = read_frontend_styles()
+    mobile = styles.split(
+        ".trace-detail-hero, .trace-detail-hero.has-router { grid-template-columns: 38px", 1,
+    )[1]
+    # The model/time block has no class; it must not fall into the 38px status column.
+    assert ".trace-detail-hero > div, .trace-detail-hero > strong { grid-column: 2;" in mobile
+
+
 def test_usage_activity_chart_splits_cache_read_and_write_without_double_counting() -> None:
     source = (FRONTEND_SOURCE / "components/finops/usage-activity-card.tsx").read_text(
         encoding="utf-8"

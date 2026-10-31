@@ -609,6 +609,37 @@ def test_apim_attributes_mapped_subscriptions_to_trusted_agents() -> None:
     )
 
 
+def test_apim_attributes_admitted_subscriptions_to_their_registered_organization() -> None:
+    policy = POLICY_PATH.read_text()
+    root = ElementTree.fromstring(policy)
+    state = next(
+        node.attrib["value"] for node in root.iter("set-variable")
+        if node.attrib.get("name") == "applicationMapState"
+    )
+    admitted = next(
+        node for node in root.iter("when")
+        if node.attrib.get("condition")
+        == '@((string)context.Variables["applicationAdmission"] == "ok")'
+        and any(child.attrib.get("name") == "applicationLedgerPartition" for child in node)
+    )
+    headers = {node.attrib["name"]: node.findtext("value") for node in admitted.iter("set-header")}
+
+    for header, field, column in (
+        ("x-org-id", "organizationId", "OrganizationId"),
+        ("x-org-name", "organizationName", "OrganizationName"),
+        ("x-department-id", "departmentId", "DepartmentId"),
+        ("x-department-name", "departmentName", "DepartmentName"),
+    ):
+        assert f'state["{field}"] = (string)row["{column}"] ?? "unattributed";' in state
+        assert headers[header] == (
+            f'@((string)((JObject)context.Variables["applicationMapState"])["{field}"])'
+        )
+    # Telemetry snapshots these headers later, so a client-supplied value never reaches it.
+    assert policy.index('name="applicationLedgerPartition"') < policy.index(
+        'name="telemetryOrganizationId"'
+    )
+
+
 def test_apim_normalizes_openai_prompt_tokens_to_exclude_cache() -> None:
     policy = POLICY_PATH.read_text()
 

@@ -97,6 +97,19 @@ test("capabilities are excluded from the draft and preserved from the registered
   }
 })
 
+test("tool calling is the one capability an owner can declare in the editor", () => {
+  const source = model({ capabilities: ["chat", "streaming"] })
+  const draft = createModelEditDraft(source)
+  assert.equal(draft.toolCalling, false)
+  const declared = { ...draft, toolCalling: true }
+  assert.equal(modelEditHasChanges(draft, declared), true)
+  assert.deepEqual(modelEditPayload(source, declared).capabilities, ["chat", "streaming", "tools"])
+  const tools = model({ capabilities: ["chat", "tools", "streaming"] })
+  assert.equal(createModelEditDraft(tools).toolCalling, true)
+  assert.deepEqual(modelEditPayload(tools, { ...createModelEditDraft(tools), toolCalling: false })
+    .capabilities, ["chat", "streaming"])
+})
+
 test("legacy and custom roles round-trip without silently adding or dropping permissions", () => {
   const source = model({ allowed_roles: ["owner", "admin", "service", "custom-role"] })
   const draft = createModelEditDraft(source)

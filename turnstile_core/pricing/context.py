@@ -16,7 +16,7 @@ from turnstile_core.domain.runtime_models import (
     StoredContextPriceTier,
     custom_context_rule,
 )
-from turnstile_core.pricing.catalog import CompositeCatalog
+from turnstile_core.pricing.catalog import CatalogEntry, CompositeCatalog
 
 
 def context_price_reference(source: PriceSource, references: Sequence[str]) -> str:
@@ -36,6 +36,32 @@ def model_price_from_tiers(tiers: Sequence[StoredContextPriceTier]) -> ModelPric
 
 def model_price_from_values(values: Mapping[str, Any]) -> ModelPrice | None:
     return ModelPrice.from_registry(values)
+
+
+def rediscount_context_tiers(
+    tiers: Sequence[StoredContextPriceTier], source: PriceSource, discount_percent: float | None,
+) -> list[StoredContextPriceTier]:
+    """The same tiers charged at another discount, from their accepted list prices."""
+    return [tier.model_copy(update=_charged_tier_prices(CatalogEntry(
+        reference=tier.reference, label=tier.label, source=source,
+        input_per_million=tier.list_prices.input, output_per_million=tier.list_prices.output,
+        cached_per_million=tier.list_prices.cached,
+        cache_write_per_million=tier.list_prices.cache_write,
+    ), discount_percent)) for tier in tiers]
+
+
+def _charged_tier_prices(entry: CatalogEntry, discount_percent: float | None) -> dict[str, float]:
+    charged = entry.discounted(discount_percent)
+    assert charged.input_per_million is not None and charged.output_per_million is not None
+    cached = charged.cached_per_million
+    cached = charged.input_per_million if cached is None else cached
+    writes = charged.cache_write_per_million
+    return {
+        "input_price_per_million": charged.input_per_million,
+        "output_price_per_million": charged.output_per_million,
+        "cached_price_per_million": cached,
+        "cache_write_price_per_million": cached if writes is None else writes,
+    }
 
 
 def resolve_context_prices(
@@ -118,19 +144,11 @@ def resolve_context_prices(
         common_regions = regions if common_regions is None else common_regions & regions
         if not common_regions:
             raise ValueError("Context tiers must use the same region")
-        charged = entry.discounted(discount_percent)
-        assert charged.input_per_million is not None and charged.output_per_million is not None
-        cached = charged.cached_per_million
-        cached = charged.input_per_million if cached is None else cached
-        writes = charged.cache_write_per_million
         tiers.append(StoredContextPriceTier(
             key=descriptor.key, label=descriptor.label, reference=reference,
             min_input_tokens=input_range.min_input_tokens,
             max_input_tokens=input_range.max_input_tokens,
-            input_price_per_million=charged.input_per_million,
-            output_price_per_million=charged.output_per_million,
-            cached_price_per_million=cached,
-            cache_write_price_per_million=cached if writes is None else writes,
+            **_charged_tier_prices(entry, discount_percent),
             list_prices=PendingListPrice(
                 input=entry.input_per_million, output=entry.output_per_million,
                 cached=entry.cached_per_million, cache_write=entry.cache_write_per_million,

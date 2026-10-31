@@ -81,6 +81,7 @@ import type {
   ModelRouterStrategyType,
 } from "../../data-sources/apim/types"
 import {
+  MATCH_BRANCH_LABELS,
   ROUTER_NODE_LABELS,
   autoLayoutDefinition,
   cloneDefinition,
@@ -303,7 +304,7 @@ function flowNodes(
 
 function flowEdges(
   definition: ModelRouterDefinition,
-  _layoutDirection: RouterLayoutDirection,
+  selectedEdgeId: string | null,
 ): RouterFlowEdge[] {
   const nodesById = new Map(definition.nodes.map((node) => [node.id, node]))
   return definition.edges.map((edge) => {
@@ -323,6 +324,7 @@ function flowEdges(
       targetHandle: "route-target",
       label: edge.label || undefined,
       type: "routerEdge",
+      selected: edge.id === selectedEdgeId,
       className: branching
         ? `router-branch-edge router-branch-${tone}`
         : "router-route-edge",
@@ -375,6 +377,7 @@ function RouterCanvasSurface({
   const [isDragging, setIsDragging] = useState(false)
   const [isLocked, setIsLocked] = useState(false)
   const [showGrid, setShowGrid] = useState(true)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const canvasNodesRef = useRef<RouterFlowNode[]>(projectedNodes)
   const draggingRef = useRef(false)
   const dragFrameRef = useRef<number | null>(null)
@@ -384,8 +387,9 @@ function RouterCanvasSurface({
     setCanvasNodesState(next)
   }, [])
   const edges = useMemo(
-    () => flowEdges(definition, layoutDirection),
-    [definition, layoutDirection],
+    // React Flow deletes selected edges even when the canvas is locked.
+    () => flowEdges(definition, isLocked ? null : selectedEdgeId),
+    [definition, isLocked, selectedEdgeId],
   )
   const nodeSignature = `${layoutDirection}|${definition.nodes.map((node) => `${node.id}:${node.candidates.map((candidate) => candidate.model_id).join(",")}`).sort().join("|")}`
 
@@ -500,12 +504,16 @@ function RouterCanvasSurface({
     const existingOutgoing = definition.edges.filter((edge) => edge.source === connection.source)
     let defaultLabel = ""
     if (sourceNode?.type === "condition") {
-      const hasMatch = existingOutgoing.some((edge) => ["match", "matched", "true", "yes", "匹配"].includes(edge.label.trim().toLocaleLowerCase()))
+      const hasMatch = existingOutgoing.some((edge) => MATCH_BRANCH_LABELS.includes(edge.label.trim().toLocaleLowerCase()))
       defaultLabel = hasMatch ? "Else" : "Match"
     }
     const edge = createRouterEdge(connection.source, connection.target, defaultLabel)
     edge.source_handle = connection.sourceHandle
-    onChange({ ...cloneDefinition(definition), edges: [...definition.edges, edge] })
+    const next = { ...cloneDefinition(definition), edges: [...definition.edges, edge] }
+    // A Strategy newly fed by a candidate pool stores the candidate rows it displays.
+    const feedsStrategy = sourceNode?.type === "candidate_models"
+      && definition.nodes.find((node) => node.id === connection.target)?.type === "strategy"
+    onChange(feedsStrategy ? syncStrategyModelConfigs(next) : next)
   }
 
   const applyLayout = (direction: RouterLayoutDirection) => {
@@ -557,10 +565,9 @@ function RouterCanvasSurface({
       onNodeDragStop={handleNodeDragStop}
       onEdgesChange={handleEdgesChange}
       onConnect={handleConnect}
-      onNodeClick={(_event, node) => onSelectedNodeChange(
-        node.id,
-      )}
-      onPaneClick={() => onSelectedNodeChange(null)}
+      onNodeClick={(_event, node) => { setSelectedEdgeId(null); onSelectedNodeChange(node.id) }}
+      onEdgeClick={(_event, edge) => { if (isLocked) return; setSelectedEdgeId(edge.id); onSelectedNodeChange(null) }}
+      onPaneClick={() => { setSelectedEdgeId(null); onSelectedNodeChange(null) }}
       onDragOver={(event) => {
         event.preventDefault()
         event.dataTransfer.dropEffect = "move"

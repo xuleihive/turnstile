@@ -27,6 +27,15 @@ export function gatewayApiOperations(): GatewayApiOperationOption[] {
   ]
 }
 
+export function operationSampleModels<Model extends { capabilities: readonly string[] }>(
+  models: readonly Model[],
+  operation: GatewayApiOperation,
+): Model[] {
+  return models.filter(model => operation === "models"
+    || model.capabilities.includes("decision") === (operation === "decision")
+    && model.capabilities.includes("image_generation") === (operation === "image_generations"))
+}
+
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`
 }

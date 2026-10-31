@@ -637,6 +637,24 @@ def test_model_router_canvas_and_regular_mode_share_one_definition() -> None:
     assert "edgesFocusable={!isLocked && !isDragging}" in canvas
     assert "deleteKeyCode" in canvas
     assert "onConnect={handleConnect}" in canvas
+    # A Strategy newly fed by a candidate pool must store the candidate rows it displays.
+    assert (
+        'const feedsStrategy = sourceNode?.type === "candidate_models"\n'
+        '      && definition.nodes.find((node) => node.id === connection.target)?.type'
+        ' === "strategy"' in canvas
+    )
+    assert "onChange(feedsStrategy ? syncStrategyModelConfigs(next) : next)" in canvas
+    # A clicked edge becomes the only selection, so it can be inspected or deleted.
+    assert (
+        "onEdgeClick={(_event, edge) => { if (isLocked) return; setSelectedEdgeId(edge.id); "
+        "onSelectedNodeChange(null) }}" in canvas
+    )
+    assert "selected: edge.id === selectedEdgeId," in canvas
+    # A locked canvas presents no selected edge, so Delete cannot remove one.
+    assert "flowEdges(definition, isLocked ? null : selectedEdgeId)" in canvas
+    # Canvas branch labels and draft normalization share one Match label list.
+    assert "MATCH_BRANCH_LABELS.includes(edge.label" in canvas
+    assert '"match", "matched"' not in canvas
     assert "onDrop=" in canvas
     assert "<MiniMap" not in canvas
     assert "showMinimap" not in canvas
