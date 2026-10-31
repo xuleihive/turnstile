@@ -2,6 +2,11 @@ targetScope = 'resourceGroup'
 
 param location string
 param provisionApimOutboundNetwork bool = false
+@allowed([
+  'Developer'
+  'StandardV2'
+])
+param apimSkuName string
 param postgresLocation string
 param resourcePrefix string
 param suffix string
@@ -59,6 +64,9 @@ var telemetryFunctionSubnetName = 'snet-flex-telemetry'
 var controlFunctionSubnetName = 'snet-flex-control'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 var apiSubnetName = 'snet-api'
+// Developer has no outbound integration; classic External injection gives its gateway line of sight to the private ledger.
+var apimOutboundIntegration = provisionApimOutboundNetwork && apimSkuName == 'StandardV2'
+var apimVirtualNetworkInjection = provisionApimOutboundNetwork && apimSkuName == 'Developer'
 var telemetryDeploymentContainerName = 'deploy-telemetry'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
@@ -413,7 +421,7 @@ resource apiSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   ]
 }
 
-resource apimOutboundSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (provisionApimOutboundNetwork) {
+resource apimOutboundSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (apimOutboundIntegration) {
   name: 'nsg-${resourcePrefix}-apim-outbound-${suffix}'
   location: location
   properties: {
@@ -435,7 +443,7 @@ resource apimOutboundSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024
   }
 }
 
-resource apimOutboundSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = if (provisionApimOutboundNetwork) {
+resource apimOutboundSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = if (apimOutboundIntegration) {
   parent: virtualNetwork
   name: 'snet-apim-outbound'
   properties: {
@@ -451,6 +459,68 @@ resource apimOutboundSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-0
         }
       }
     ]
+  }
+  dependsOn: [
+    apiSubnet
+  ]
+}
+
+resource apimInjectionSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (apimVirtualNetworkInjection) {
+  name: 'nsg-${resourcePrefix}-apim-injection-${suffix}'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'allow-gateway-https-inbound'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.42.4.0/27'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'allow-apim-management-inbound'
+        properties: {
+          priority: 110
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'ApiManagement'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.42.4.0/27'
+          destinationPortRange: '3443'
+        }
+      }
+      {
+        name: 'allow-load-balancer-inbound'
+        properties: {
+          priority: 120
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.42.4.0/27'
+          destinationPortRange: '6390'
+        }
+      }
+    ]
+  }
+}
+
+resource apimInjectionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = if (apimVirtualNetworkInjection) {
+  parent: virtualNetwork
+  name: 'snet-apim-injection'
+  properties: {
+    addressPrefix: '10.42.4.0/27'
+    networkSecurityGroup: {
+      id: apimInjectionSecurityGroup!.id
+    }
   }
   dependsOn: [
     apiSubnet
@@ -1082,7 +1152,7 @@ output eventHubName string = usageEventHub.name
 output applicationInsightsName string = appInsights.name
 output applicationInsightsConnectionString string = appInsights.properties.ConnectionString
 output ledgerStorageName string = ledgerStorage.name
-output apimOutboundSubnetId string = provisionApimOutboundNetwork ? apimOutboundSubnet!.id : ''
+output apimOutboundSubnetId string = apimVirtualNetworkInjection ? apimInjectionSubnet!.id : apimOutboundIntegration ? apimOutboundSubnet!.id : ''
 output ledgerTableEndpoint string = ledgerTableEndpoint
 output ledgerTableResourceId string = ledgerTable.id
 output routeTableResourceId string = routeTable.id

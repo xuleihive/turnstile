@@ -118,6 +118,15 @@ and persists whitelisted API associations, hostnames and CA metadata. A declared
 not necessarily reachable or observed; missing evidence stays unknown. Retired deployments and
 confirmed names survive later inventory refreshes.
 
+Every gateway that serves Turnstile traffic, whether a registered APIM or a Self-hosted Gateway,
+reads the budget ledger Table and the route Key Vault while handling requests. Both accept that
+traffic only through private endpoints, and APIM services created on or after 1 December 2025
+cannot use trusted-service access. Before enabling a gateway, give it network line of sight:
+inject the APIM into the platform virtual network, or peer the gateway's network with it and link
+that network to the Table and Key Vault private DNS zones. Role assignments alone are not
+sufficient; without line of sight, ledger reads fail with HTTP 403 and requests are denied with
+`budget_protocol_fenced`.
+
 ### Create a Self-hosted Gateway from Turnstile
 
 The default **Add Gateway** flow creates a new APIM Gateway configuration; it does not require

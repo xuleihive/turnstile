@@ -410,6 +410,8 @@ cp infra/main.parameters.example.json .turnstile/main.parameters.json
 
 Set the resource prefix, resource group, Azure and PostgreSQL regions, APIM publisher email, and `bootstrapOwnerEmail`. New deployments provision a capacity-one `StandardV2` APIM by default. `entraClientId` and `entraAllowedEmailDomains` are optional; password Owner login works without Entra.
 
+`apimSkuName` accepts `StandardV2` or `Developer`. The gateway must reach the private ledger Table and route Key Vault: StandardV2 uses outbound virtual network integration, while Developer, which has no SLA, is injected into the platform virtual network in External mode on subnet `10.42.4.0/27`. Injection adds considerably to the deployment time and gives the gateway a new public IP address, so allowlist that address only after deployment completes. Basic v2 is not supported because it cannot reach private endpoints.
+
 To run a clean end-to-end deployment without provisioning another APIM service, set all four `existingApimName`, `existingApimResourceGroupName`, `existingApimPrincipalId`, and `existingApimGatewayUrl` values. PostgreSQL and every other platform resource are still created from scratch. The deployment derives environment-unique API, path, product, subscription, logger, diagnostic-setting, and observer Named Value identifiers from `resourcePrefix`, so the shared APIM configuration does not overwrite another Turnstile environment.
 
 Do not add passwords, keys, hashes, or connection strings to this file. The deployment command rejects secure parameter names in the public file.

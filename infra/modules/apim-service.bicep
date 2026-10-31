@@ -13,7 +13,6 @@ param publisherName string
 
 @allowed([
   'Developer'
-  'BasicV2'
   'StandardV2'
 ])
 param skuName string
@@ -21,7 +20,7 @@ param skuName string
 @minValue(1)
 param capacity int
 
-@description('Dedicated delegated subnet for Standard v2 private outbound integration. Empty preserves service-only provisioning.')
+@description('Standard v2: delegated subnet for private outbound integration. Developer: undelegated subnet for classic External injection with an Azure-managed public IP. Empty preserves service-only provisioning.')
 param outboundSubnetResourceId string = ''
 
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {

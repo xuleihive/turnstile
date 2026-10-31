@@ -43,9 +43,9 @@ param apimPublisherEmail string
 @description('APIM publisher display name.')
 param apimPublisherName string = 'Turnstile'
 
+@description('StandardV2 reaches the private ledger through outbound virtual network integration; Developer is injected into the platform virtual network in External mode.')
 @allowed([
   'Developer'
-  'BasicV2'
   'StandardV2'
 ])
 param apimSkuName string = 'StandardV2'
@@ -227,7 +227,7 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' =
 }
 
 var effectiveApimResourceGroupName = provisionApimService ? platformResourceGroup.name : existingApimResourceGroupName
-var provisionApimOutboundNetwork = provisionApimService && apimSkuName == 'StandardV2'
+var provisionApimOutboundNetwork = provisionApimService
 
 module apim 'modules/apim-service.bicep' = if (provisionApimService) {
   name: 'turnstile-apim'
@@ -253,6 +253,7 @@ module dataPlane 'modules/data-plane.bicep' = {
   params: {
     location: location
     provisionApimOutboundNetwork: provisionApimOutboundNetwork
+    apimSkuName: apimSkuName
     postgresLocation: postgresLocation
     resourcePrefix: resourcePrefix
     suffix: suffix

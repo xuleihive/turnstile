@@ -67,10 +67,17 @@ def test_new_apim_defaults_to_standard_v2() -> None:
 
 
 def test_fresh_standard_v2_private_egress_is_bound_after_the_data_plane() -> None:
+    assert "var provisionApimOutboundNetwork = provisionApimService\n" in MAIN
+    data_plane = MAIN.split("module dataPlane ", 1)[1].split("module apimOutboundNetwork ", 1)[0]
+    assert "apimSkuName: apimSkuName" in data_plane
     assert (
-        "var provisionApimOutboundNetwork = provisionApimService && apimSkuName == 'StandardV2'"
-        in MAIN
+        "var apimOutboundIntegration = provisionApimOutboundNetwork && apimSkuName == 'StandardV2'"
+        in DATA_PLANE
     )
+    assert (
+        "output apimOutboundSubnetId string = apimVirtualNetworkInjection ? "
+        "apimInjectionSubnet!.id : apimOutboundIntegration ? apimOutboundSubnet!.id : ''"
+    ) in DATA_PLANE
     initial = MAIN.split("module apim 'modules/apim-service.bicep'", 1)[1].split(
         "var effectiveApimName", 1,
     )[0]
@@ -94,10 +101,12 @@ def test_apim_outbound_subnet_preserves_private_dns_and_storage_restrictions() -
     from ipaddress import ip_network
 
     subnet = DATA_PLANE.split("resource apimOutboundSubnet ", 1)[1].split(
-        "resource blobPrivateDnsZone ", 1,
+        "resource apimInjectionSecurityGroup ", 1,
     )[0]
-    assert "if (provisionApimOutboundNetwork)" in subnet
+    assert "if (apimOutboundIntegration)" in subnet
     assert "parent: virtualNetwork" in subnet
+    assert "name: 'snet-apim-outbound'" in subnet
+    assert "addressPrefix: '10.42.3.96/27'" in subnet
     assert "serviceName: 'Microsoft.Web/serverFarms'" in subnet
     assert "id: apimOutboundSecurityGroup!.id" in subnet
     assert "apiSubnet" in subnet.split("dependsOn: [", 1)[1].split("]", 1)[0]
@@ -108,6 +117,10 @@ def test_apim_outbound_subnet_preserves_private_dns_and_storage_restrictions() -
     nsg = DATA_PLANE.split("resource apimOutboundSecurityGroup ", 1)[1].split(
         "resource apimOutboundSubnet ", 1,
     )[0]
+    assert "if (apimOutboundIntegration)" in nsg
+    assert nsg.count("name: '") == 2
+    assert "name: 'allow-key-vault-outbound'" in nsg
+    assert "direction: 'Outbound'" in nsg
     assert "destinationAddressPrefix: 'AzureKeyVault'" in nsg
     assert "destinationPortRange: '443'" in nsg
     dns = DATA_PLANE.split("resource tablePrivateDnsLink ", 1)[1].split("resource ", 1)[0]
@@ -120,6 +133,49 @@ def test_apim_outbound_subnet_preserves_private_dns_and_storage_restrictions() -
         "virtualNetworkRules: []",
     ):
         assert restriction in ledger
+
+
+def test_developer_apim_is_injected_into_an_undelegated_platform_subnet() -> None:
+    import re
+    from ipaddress import IPv4Network, ip_network
+
+    assert "'BasicV2'" not in MAIN
+    assert "'BasicV2'" not in APIM_SERVICE
+    assert (
+        "var apimVirtualNetworkInjection = "
+        "provisionApimOutboundNetwork && apimSkuName == 'Developer'"
+    ) in DATA_PLANE
+    nsg = DATA_PLANE.split("resource apimInjectionSecurityGroup ", 1)[1].split(
+        "resource apimInjectionSubnet ", 1,
+    )[0]
+    assert "if (apimVirtualNetworkInjection)" in nsg
+    assert re.findall(
+        r"direction: '(\w+)'\s+access: '(\w+)'\s+protocol: '(\w+)'\s+"
+        r"sourceAddressPrefix: '([^']+)'\s+sourcePortRange: '\*'\s+"
+        r"destinationAddressPrefix: '([^']+)'\s+destinationPortRange: '(\d+)'",
+        nsg,
+    ) == [
+        ("Inbound", "Allow", "Tcp", "Internet", "10.42.4.0/27", "443"),
+        ("Inbound", "Allow", "Tcp", "ApiManagement", "10.42.4.0/27", "3443"),
+        ("Inbound", "Allow", "Tcp", "AzureLoadBalancer", "10.42.4.0/27", "6390"),
+    ]
+    assert nsg.count("direction: ") == 3
+    subnet = DATA_PLANE.split("resource apimInjectionSubnet ", 1)[1].split(
+        "resource blobPrivateDnsZone ", 1,
+    )[0]
+    assert "if (apimVirtualNetworkInjection)" in subnet
+    assert "parent: virtualNetwork" in subnet
+    assert "addressPrefix: '10.42.4.0/27'" in subnet
+    assert "id: apimInjectionSecurityGroup!.id" in subnet
+    assert "delegations" not in subnet
+    assert "apiSubnet" in subnet.split("dependsOn: [", 1)[1].split("]", 1)[0]
+    network = IPv4Network("10.42.4.0/27")
+    assert network.subnet_of(IPv4Network("10.42.0.0/16"))
+    for prefix in re.findall(r"addressPrefix: '([^']+)'", DATA_PLANE):
+        if prefix != str(network):
+            assert not network.overlaps(ip_network(prefix))
+    assert "virtualNetworkType: 'External'" in APIM_SERVICE
+    assert "publicIpAddressId" not in APIM_SERVICE
 
 
 def test_apim_exposes_the_turnstile_gateway_path() -> None:
