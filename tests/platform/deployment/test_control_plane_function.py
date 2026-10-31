@@ -792,3 +792,48 @@ def test_publication_timer_logs_the_failure_reason(
         f"Gateway publication {UUID(int=7)} failed: error_code=PolicyCompilationError "
         "error_message='Fixed route connection approvals conflict'"
     ]
+
+
+@pytest.mark.parametrize("kind,fails", [
+    ("model_add", False), ("model_add", True), ("route_reconcile", False),
+])
+def test_publication_timer_projects_prices_once_a_model_is_active(
+    monkeypatch: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture, kind: str, fails: bool,
+) -> None:
+    settings = Settings.model_construct(
+        control_plane_enabled=True, gateway_publication_worker_enabled=True,
+        ledger_table_endpoint="https://ledger.example.test", ledger_table_name="Ledger",
+    )
+    active = MagicMock(id=UUID(int=8), resource_manifest={})
+    active.status.value = "active"
+    active.publication_kind.value = kind
+    worker = MagicMock()
+    worker.run_once.return_value = active
+    repository = MagicMock()
+    ledger = MagicMock()
+    ledger.__enter__.return_value = ledger
+    projections: list[tuple[object, object]] = []
+
+    def project(target: object, store: object, now: object) -> None:
+        projections.append((target, store))
+        if fails:
+            raise RuntimeError("ledger unavailable")
+
+    policy = tmp_path / "policy.xml"
+    policy.write_text("<policies />")
+    monkeypatch.setenv("CONTROL_PLANE_PARENT_POLICY_PATH", str(policy))
+    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(function_app, "create_repository", lambda *_, **__: repository)
+    monkeypatch.setattr(function_app, "AtomicTableLedger", lambda *_, **__: ledger)
+    monkeypatch.setattr(function_app, "initialize_model_prices", project)
+    monkeypatch.setattr(CredentialCipher, "from_settings", lambda _: object())
+    monkeypatch.setattr(function_app, "GatewayPublicationWorker", lambda *_, **__: worker)
+
+    with caplog.at_level("WARNING", logger=function_app.logger.name):
+        function_app.publish_gateway_changes(None)
+
+    assert projections == ([(repository, ledger)] if kind == "model_add" else [])
+    assert caplog.messages == ([
+        f"Model price projection pending after publication {UUID(int=8)} "
+        "error_type=RuntimeError"
+    ] if fails else [])

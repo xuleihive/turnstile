@@ -871,7 +871,8 @@ class GatewayPublicationIntent(StrictModel):
             and not self.desired_spec.bindings
         ):
             if isinstance(self, GatewayPublication):
-                self.require_empty_fixed_installation()
+                # A later configuration release supersedes the installation; history reads it.
+                self.require_empty_fixed_installation(allow_superseded=True)
                 return self
             raise ValueError("non-removal publications require a binding")
         return self
@@ -917,7 +918,7 @@ class GatewayPublication(GatewayPublicationIntent):
         ):
             raise ValueError("APIM initialization requires its exact verified fixed program")
 
-    def require_empty_fixed_installation(self) -> None:
+    def require_empty_fixed_installation(self, *, allow_superseded: bool = False) -> None:
         from .storage_routes import (
             ActiveRouteHead,
             ProgramIdentity,
@@ -925,9 +926,13 @@ class GatewayPublication(GatewayPublicationIntent):
             canonical_document,
         )
 
+        promoted = (
+            (PublicationStatus.ACTIVE, PublicationStatus.SUPERSEDED)
+            if allow_superseded else (PublicationStatus.ACTIVE,)
+        )
         if (
             self.publication_kind is not PublicationKind.ROUTE_RECONCILE
-            or self.status is not PublicationStatus.ACTIVE or self.base_release_id is not None
+            or self.status not in promoted or self.base_release_id is not None
             or self.generation != 1 or self.desired_spec.discovery_models
             or self.desired_spec.removed_models
         ):

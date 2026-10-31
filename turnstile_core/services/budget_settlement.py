@@ -43,7 +43,7 @@ class BudgetPriceRepository(Protocol):
     def registry(self) -> dict[str, Sequence[dict[str, Any]]]: ...
 
 
-def _initialize_model_prices(
+def initialize_model_prices(
     repository: BudgetPriceRepository, ledger: AtomicTableLedger, now: datetime,
 ) -> None:
     for model in repository.registry()["models"]:
@@ -107,7 +107,7 @@ class BudgetScopeService:
                     seed.policy.budget_mode == "usd" and seed.policy.enabled
                     and not prices_initialized
                 ):
-                    _initialize_model_prices(self._repository, self._ledger, moment)
+                    initialize_model_prices(self._repository, self._ledger, moment)
                     prices_initialized = True
                 if not seed.active:
                     legacy = (
@@ -459,7 +459,7 @@ class BudgetRecoveryService:
                             )
                         continue
                 if update.budget_mode == "usd" and update.enabled and not prices_initialized:
-                    _initialize_model_prices(self._repository, self._ledger, datetime.now(UTC))
+                    initialize_model_prices(self._repository, self._ledger, datetime.now(UTC))
                     prices_initialized = True
                 applied_policy = self._ledger.write_policy(
                     update.scope,

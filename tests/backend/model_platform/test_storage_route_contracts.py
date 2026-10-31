@@ -448,12 +448,8 @@ def test_native_pool_reader_preserves_deployment_identity_and_header_bound() -> 
     assert "headers.Count > 60" not in READ_FIXED_CONTENT
 
 
-@pytest.mark.parametrize("fault", [None, "intent", "binding", "not-empty", "base"])
-def test_empty_fixed_installation_is_not_an_empty_ordinary_publication(fault: str | None) -> None:
-    from datetime import UTC, datetime
-
+def empty_installation_record() -> dict[str, Any]:
     from tests.backend.model_platform.test_storage_route_projection import snapshot_fixture
-    from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationIntent
     from turnstile_core.domain.storage_routes import (
         ActiveRouteHead,
         RouteSnapshot,
@@ -490,12 +486,31 @@ def test_empty_fixed_installation_is_not_an_empty_ordinary_publication(fault: st
         "updated_at": datetime.now(UTC),
     }
     record["desired_spec_sha256"] = document_digest(record["desired_spec"])
+    return record
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "intent", "binding", "not-empty", "base", "superseded", "failed"],
+)
+def test_empty_fixed_installation_is_not_an_empty_ordinary_publication(fault: str | None) -> None:
+    from tests.backend.model_platform.test_storage_route_projection import snapshot_fixture
+    from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationIntent
+
+    original, _, _ = snapshot_fixture()
+    record = empty_installation_record()
     if fault == "intent":
         with pytest.raises(ValueError):
             GatewayPublicationIntent.model_validate({name: record[name] for name in (
                 "gateway_profile_id", "publication_kind", "desired_spec",
             )})
         return
+    if fault == "superseded":
+        superseded = GatewayPublication.model_validate({**record, "status": "superseded"})
+        with pytest.raises(ValueError, match="Only an initial fixed installation"):
+            superseded.require_empty_fixed_installation()
+        return
+    if fault == "failed":
+        record["status"] = "failed"
     if fault == "binding":
         record["policy_sha256"] = "f" * 64
     elif fault == "not-empty":

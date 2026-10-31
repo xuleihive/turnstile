@@ -55,7 +55,11 @@ from turnstile_core.services.application_provisioning_ledger import (
     prepare_application_ledger,
     project_application_rate_limit,
 )
-from turnstile_core.services.budget_settlement import BudgetScopeRepository, BudgetScopeService
+from turnstile_core.services.budget_settlement import (
+    BudgetScopeRepository,
+    BudgetScopeService,
+    initialize_model_prices,
+)
 from turnstile_core.services.gateway_publication_worker import GatewayPublicationWorker
 from turnstile_core.services.gateway_release_operation_worker import (
     GatewayReleaseOperationWorker,
@@ -556,6 +560,19 @@ def publish_gateway_changes(timer: func.TimerRequest) -> None:
                         result.error_code,
                         result.error_message,
                     )
+                if (
+                    ledger is not None and result.status.value == "active"
+                    and result.publication_kind.value == "model_add"
+                ):
+                    # Activation creates the model row; budget scopes may already be seeded.
+                    try:
+                        initialize_model_prices(repository, ledger, datetime.now(UTC))
+                    except Exception as error:
+                        logger.warning(
+                            "Model price projection pending after publication %s error_type=%s",
+                            result.id,
+                            type(error).__name__,
+                        )
                 route_configuration = result.resource_manifest.get("route_configuration")
                 model_removal = "model_route_removal" in result.resource_manifest
                 has_route_progress = (

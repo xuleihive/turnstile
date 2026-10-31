@@ -86,6 +86,32 @@ def test_availability_api_reports_uninstalled_storage_without_mutating_models(
     assert publication_api.models == before
 
 
+def test_superseded_initial_installation_keeps_release_history_readable(
+    publication_api: InMemoryRepository,
+) -> None:
+    from tests.backend.model_platform.test_storage_route_contracts import (
+        empty_installation_record,
+    )
+
+    installation = {**empty_installation_record(), "status": "superseded"}
+    for field in ("id", "gateway_profile_id"):
+        installation[field] = UUID(installation[field])
+    publication_api.gateway_publications.append(installation)
+    release_id = str(installation["id"])
+
+    responses = (
+        client.get("/api/v1/model-management/publications?limit=50"),
+        client.get(f"/api/v1/model-management/publications/{release_id}"),
+        client.get("/api/v1/model-management/releases?limit=100"),
+        client.get(f"/api/v1/model-management/releases/{release_id}"),
+    )
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+    for listing in (responses[0], responses[2]):
+        assert [item["id"] for item in listing.json()["items"]] == [release_id]
+    assert responses[1].json()["status"] == responses[3].json()["status"] == "superseded"
+
+
 def test_availability_api_returns_versioned_operation_without_claiming_effective_success(
     publication_api: InMemoryRepository,
 ) -> None:
