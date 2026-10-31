@@ -87,9 +87,10 @@ class BudgetDiagnostics:
                 and str(route.get("gateway_id")) == str(gateway_id)
                 and route.get("gateway_implementation") == "apim"
             ):
+                request_id = str(uuid4())
                 resolved = self.runtime._invocation_route(self._request(
-                    route, "system-budget-diagnostic", str(uuid4()),
-                ))
+                    route, "system-budget-diagnostic", request_id,
+                ), request_id)
                 if resolved is None:
                     raise HTTPException(
                         status_code=409, detail="The diagnostic route is unavailable"

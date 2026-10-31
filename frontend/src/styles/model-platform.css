@@ -928,6 +928,11 @@ button.model-availability-status { cursor: pointer; }
 	.apim-native-route-hero .runtime-detail-facts > div:last-child { border-bottom: 0; }
 	.model-toolbar-filters { grid-template-columns: minmax(110px, 128px) minmax(0, 1fr) max-content; }
 	.model-search-control.expanded { max-width: none; }
+	.model-table.models { --model-table-compact-width: calc(max(160px, var(--resizable-column-1, 160px)) + max(80px, var(--resizable-column-5, 80px)) + max(63px, var(--resizable-column-6, 63px)) + 2 * var(--model-table-gap) + 24px); }
+	.model-table.models .model-table-head,
+	.model-table.models .model-list-row { grid-template-columns: minmax(160px, var(--resizable-column-1, 1fr)) minmax(80px, var(--resizable-column-5, 80px)) minmax(63px, var(--resizable-column-6, 63px)); }
+	.model-table.models .model-table-head > :nth-child(3),
+	.model-table.models .model-list-row > :nth-child(3) { display: none; }
 	[data-slot="alert-dialog-header"] { grid-template-columns: 1fr; justify-items: center; text-align: center; }
 	[data-slot="alert-dialog-media"] { grid-row: auto; }
 	[data-slot="alert-dialog-title"], [data-slot="alert-dialog-description"] { grid-column: 1; }

@@ -50,6 +50,9 @@ const DECISION_STATE_JSON_SAMPLE = JSON.stringify({
   impact: "Customers cannot complete purchases in any region",
 }, null, 2)
 
+type InvocationDraft = { owner: string; mode: "chat" | "image" | "decision"; prompt: string; stateFormat: "text" | "json"; questions: string }
+let invocationDraft: InvocationDraft | null = null
+
 function InvocationModelLogo({ model, runtime }: { model: ManagedModel; runtime?: ModelRuntime }) {
   if (model.capabilities.includes("decision")) return <MicrosoftLogo size={16} />
   if (runtime?.runtime_kind === "foundry" && model.upstream_model_id === "model-router") return <FoundryLogo size={16} />
@@ -63,6 +66,7 @@ function InvocationModelLogo({ model, runtime }: { model: ManagedModel; runtime?
 export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalog }) {
   const queryClient = useQueryClient();
   const { user: sessionUser } = useAuth();
+  const [draft] = useState(() => sessionUser && invocationDraft?.owner === sessionUser.email ? invocationDraft : null);
   const registry = useQuery(finopsQueries.registry());
   const [departmentId, setDepartmentId] = useState(
     entities.departments[0]?.id ?? "",
@@ -96,7 +100,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     if (users.some((person) => person.id === userId)) return;
     setUserId(sessionUser?.email ?? users[0]?.id ?? "");
   }, [sessionUser?.email, userId, users]);
-  const [mode, setMode] = useState<"chat" | "image" | "decision">("chat");
+  const [mode, setMode] = useState<"chat" | "image" | "decision">(draft?.mode ?? "chat");
   const imageMode = mode === "image";
   const decisionMode = mode === "decision";
   const assignedRouters = useQuery({ ...finopsQueries.assignedModelRouters(userId), enabled: mode === "chat" && Boolean(userId) });
@@ -130,15 +134,18 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     : null;
   const effectiveImageOptions = imageProfile ? imageOptions ?? {} : null;
   const [imageResult, setImageResult] = useState<ImageInvocationResponse | null>(null);
-  const [prompt, setPrompt] = useState(CHAT_PROMPT_SAMPLE);
-  const [stateFormat, setStateFormat] = useState<"text" | "json">("text");
-  const [questions, setQuestions] = useState(JSON.stringify({
+  const [prompt, setPrompt] = useState(draft?.prompt ?? CHAT_PROMPT_SAMPLE);
+  const [stateFormat, setStateFormat] = useState<"text" | "json">(draft?.stateFormat ?? "text");
+  const [questions, setQuestions] = useState(draft?.questions ?? JSON.stringify({
     urgent: { type: "noul", instructions: "Does this incident need urgent attention?" },
     team: { type: "choice", instructions: "Which team should handle this incident?",
       criteria: { engineering: "Bugs, errors, and outages", support: "How-to and account questions" } },
     severity: { type: "score", instructions: "How severe is this incident?",
       criteria: ["Minor", "Major", "Critical"] },
   }, null, 2));
+  useEffect(() => {
+    if (sessionUser) invocationDraft = { owner: sessionUser.email, mode, prompt, stateFormat, questions };
+  }, [sessionUser, mode, prompt, stateFormat, questions]);
   const [outputLimit, setOutputLimit] = useState(String(INVOCATION_MAX_OUTPUT_TOKENS));
   const maxOutputTokens = Number(outputLimit);
   const validOutputLimit = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens >= 1 && maxOutputTokens <= 1_000_000;

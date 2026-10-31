@@ -760,3 +760,35 @@ def test_publication_timer_closes_its_repository(
 
     repository.close.assert_called_once_with()
     repository_factory.assert_called_once_with(settings, autocommit=True)
+
+
+def test_publication_timer_logs_the_failure_reason(
+    monkeypatch: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings.model_construct(
+        control_plane_enabled=True, gateway_publication_worker_enabled=True,
+    )
+    failed = MagicMock(
+        id=UUID(int=7), error_code="PolicyCompilationError",
+        error_message="Fixed route connection approvals conflict", resource_manifest={},
+    )
+    failed.status.value = "failed"
+    worker = MagicMock()
+    worker.run_once.return_value = failed
+    policy = tmp_path / "policy.xml"
+    policy.write_text("<policies />")
+    monkeypatch.setenv("CONTROL_PLANE_PARENT_POLICY_PATH", str(policy))
+    monkeypatch.setattr(function_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(function_app, "create_repository", MagicMock())
+    monkeypatch.setattr(function_app, "AzureApimPublisherClient", lambda _: object())
+    monkeypatch.setattr(CredentialCipher, "from_settings", lambda _: object())
+    monkeypatch.setattr(function_app, "GatewayPublicationWorker", lambda *_, **__: worker)
+
+    with caplog.at_level("WARNING", logger=function_app.logger.name):
+        function_app.publish_gateway_changes(None)
+
+    worker.run_once.assert_called_once()
+    assert caplog.messages == [
+        f"Gateway publication {UUID(int=7)} failed: error_code=PolicyCompilationError "
+        "error_message='Fixed route connection approvals conflict'"
+    ]

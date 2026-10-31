@@ -850,7 +850,29 @@ def test_initial_admission_projection_does_not_reset_consumption_or_other_consum
     assert ledger.rows[(partition, "C")] == {"ConfirmedUsed": 123}
     assert ledger.rows[(partition, "R|unit")] == {"Reserved": 456}
     assert ledger.rows[("other-consumer", "Q")] == {"Limit": 999}
-    assert ledger.rows[(partition, "M")] == {"Configured": True, "Models": "||"}
+    assert ledger.rows[(partition, "M")] == {"Configured": False, "Models": "||"}
+
+
+def test_initial_admission_projection_matches_application_model_access_mode() -> None:
+    repository, cipher, client, _, spec = provision_fixture()
+    worker = GatewayReleaseOperationWorker(
+        repository, client, cipher=cipher, application_projector=lambda *_: None,
+    )
+    for _ in range(3):
+        assert worker.run_once("worker") is not None
+    ledger = UnitLedger()
+    partition = application_partition_key(spec.application_id, datetime.now(UTC).strftime("%Y-%m"))
+    prepare_application_ledger(repository, ledger, APIM_ID, spec.application_id)
+    assert ledger.rows[(partition, "M")]["Configured"] is False
+    model = next(item for item in repository.models if item.get("enabled", True))
+    repository.update_gateway_application_model_access(
+        spec.application_id, "restricted", [model["id"]], "owner@example.com",
+    )
+    prepare_application_ledger(repository, ledger, APIM_ID, spec.application_id)
+    assert ledger.rows[(partition, "M")] == {
+        "Configured": True,
+        "Models": "|" + "|".join(sorted({str(model["id"]), str(model["model_key"]).lower()})) + "|",
+    }
 
 
 def test_usd_creation_projects_identity_and_tpm_without_a_competing_token_limit() -> None:
@@ -868,7 +890,7 @@ def test_usd_creation_projects_identity_and_tpm_without_a_competing_token_limit(
     partition = application_partition_key(spec.application_id, datetime.now(UTC).strftime("%Y-%m"))
     assert (partition, "Q") not in ledger.rows
     assert (partition, "C") not in ledger.rows
-    assert ledger.rows[(partition, "M")] == {"Configured": True, "Models": "||"}
+    assert ledger.rows[(partition, "M")] == {"Configured": False, "Models": "||"}
     assert ledger.rows[(application_rate_limit_partition_key(spec.application_id), "T")] == {
         "TokensPerMinute": 24_000,
     }

@@ -106,7 +106,7 @@ def prepare_application_ledger(
     model_identifiers = model_access_value(policy.identifiers) if policy else ""
     if len(model_identifiers) > MODEL_PROPERTY_LIMIT:
         raise PolicyCompilationError("Application model access exceeds the ledger property limit")
-    access = {"Configured": policy is not None, "Models": model_identifiers}
+    access = {"Configured": policy is not None and policy.configured, "Models": model_identifiers}
     organization = application_organization(dict(mapping.get("tags") or {}))
     department = next((item for item in enterprise_catalog().departments
                        if item.id == mapping.get("department_id")), None)

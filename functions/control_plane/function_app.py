@@ -549,6 +549,13 @@ def publish_gateway_changes(timer: func.TimerRequest) -> None:
                     result.id,
                     result.status.value,
                 )
+                if result.status.value == "failed":
+                    logger.warning(
+                        "Gateway publication %s failed: error_code=%s error_message=%r",
+                        result.id,
+                        result.error_code,
+                        result.error_message,
+                    )
                 route_configuration = result.resource_manifest.get("route_configuration")
                 model_removal = "model_route_removal" in result.resource_manifest
                 has_route_progress = (

@@ -782,6 +782,38 @@ def test_internal_invocation_enforces_user_model_policy() -> None:
     _assert_storable(denial)
 
 
+def test_disabled_model_invocation_is_denied_with_a_trace() -> None:
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        raise AssertionError("the provider must not be reached for a disabled model")
+
+    repository = InMemoryRepository()
+    runtime, model = _foundry_route(repository)
+    model["enabled"] = False
+    service = ModelRuntimeService(
+        repository,
+        Settings(),
+        GatewayRouter(httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        service.invoke(
+            request(model=model["model_key"], runtime=runtime["name"]).model_copy(
+                update={"model_id": model["id"]}
+            )
+        )
+
+    assert error.value.status_code == 403
+    detail: object = error.value.detail
+    assert detail == {"code": "model_disabled", "message": "The requested model is disabled"}
+    [denial] = repository.usage_records
+    assert error.value.headers == {"x-request-id": denial.request_id}
+    assert (denial.status_code, denial.model_admission) == (403, "model_disabled")
+    assert (denial.model_id, denial.model, denial.runtime) == (
+        str(model["id"]), model["display_name"], model["runtime_name"],
+    )
+    _assert_storable(denial)
+
+
 def test_dynamic_model_does_not_allow_legacy_health_identity_to_bypass_assignment() -> None:
     calls = 0
 

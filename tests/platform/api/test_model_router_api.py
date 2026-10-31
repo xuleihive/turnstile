@@ -1004,6 +1004,32 @@ def test_router_names_are_unique_per_user_case_insensitively(
     assert response.status_code == 409
 
 
+def test_router_without_callable_candidates_is_denied_with_a_trace(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+) -> None:
+    repository, _ = router_repository
+    model_id = enabled_model_ids(repository)[0]
+    created = client.post(
+        "/api/v1/model-routers",
+        json={"name": "Retired Router", "definition": valid_definition(model_id)},
+    )
+    assert created.status_code == 201
+    router_id = created.json()["id"]
+    assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+    next(model for model in repository.models if model["id"] == model_id)["enabled"] = False
+
+    denied = client.post("/api/v1/model-gateway/invoke", json=invocation_payload(router_id))
+
+    assert denied.status_code == 409
+    assert denied.json()["detail"] == "Model router has no callable candidates"
+    [trace] = repository.usage_records
+    assert denied.headers["x-request-id"] == trace.request_id
+    assert (trace.status_code, trace.model, trace.model_admission) == (
+        409, "Retired Router", "router_no_callable_candidates",
+    )
+    assert (trace.input_tokens, trace.output_tokens, trace.estimated_cost) == (0, 0, 0.0)
+
+
 def test_published_assigned_router_falls_back_and_persists_attempt_trace(
     router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
 ) -> None:

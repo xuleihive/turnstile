@@ -1421,7 +1421,16 @@ class ModelRouterExecutionService:
             )
         if last_error is not None:
             raise last_error
-        raise HTTPException(status_code=409, detail="Model router has no callable candidates")
+        self._runtime_service.deny(
+            request,
+            {"display_name": router.name, "model_id": "unattributed",
+             "runtime_name": "unattributed"},
+            "router_no_callable_candidates",
+            str(uuid4()),
+            model_admission="router_no_callable_candidates",
+            status_code=409,
+            detail="Model router has no callable candidates",
+        )
 
     @classmethod
     def decision_preview(

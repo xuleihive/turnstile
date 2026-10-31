@@ -34,6 +34,22 @@ def test_member_invocation_picker_lists_self_and_current_department_testers() ->
     assert "allowAll && <SelectItem" in shared
 
 
+def test_invocation_draft_survives_page_navigation_for_the_same_user() -> None:
+    invocation = (
+        FRONTEND_SOURCE / "data-sources/apim/pages/dashboard-invocation.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "let invocationDraft: InvocationDraft | null = null" in invocation
+    assert (
+        "sessionUser && invocationDraft?.owner === sessionUser.email ? invocationDraft : null"
+    ) in invocation
+    assert "useState(draft?.prompt ?? CHAT_PROMPT_SAMPLE)" in invocation
+    assert (
+        "invocationDraft = { owner: sessionUser.email, mode, prompt, stateFormat, questions }"
+    ) in invocation
+    assert "Storage" not in invocation
+
+
 def test_invocation_client_samples_follow_current_selection() -> None:
     invocation = (
         FRONTEND_SOURCE / "data-sources/apim/pages/dashboard-invocation.tsx"

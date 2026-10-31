@@ -1681,7 +1681,7 @@ class ModelRuntimeService:
             return
         if self._model_policy_allows(route, self._person_model_policy(user_id)):
             return
-        self._deny(
+        self.deny(
             request,
             route,
             "model_not_assigned",
@@ -1732,13 +1732,13 @@ class ModelRuntimeService:
             if remaining < request.reservation_tokens(
                 str(route["model_key"]), request.validate_profile(route.get("image_profile"))
             ):
-                self._deny(
+                self.deny(
                     request, route, "image_budget_insufficient", request_id,
                     budget_admission="denied",
                 )
         if int(state["used_tokens"]) < int(state["token_limit"]):
             return
-        self._deny(
+        self.deny(
             request,
             route,
             "budget_exceeded",
@@ -1819,7 +1819,7 @@ class ModelRuntimeService:
             ) from None
         route["budget_delegation_token"] = SecretStr(token)
 
-    def _deny(
+    def deny(
         self,
         request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
         route: dict[str, Any],
@@ -1828,6 +1828,8 @@ class ModelRuntimeService:
         *,
         budget_admission: str | None = None,
         model_admission: str | None = None,
+        status_code: int = 403,
+        detail: object | None = None,
     ) -> NoReturn:
         """Reject the call and leave a trace of it.
 
@@ -1887,8 +1889,8 @@ class ModelRuntimeService:
                     # would have been priced with.
                     et_coeff_m=self._settings.model_coefficients.get("default", 1.0),
                     latency_ms=0,
-                    status="403",
-                    status_code=403,
+                    status=str(status_code),
+                    status_code=status_code,
                     estimated_cost=0.0,
                     error_message=f"API policy denied: {reason}",
                     estimated=False,
@@ -1902,21 +1904,30 @@ class ModelRuntimeService:
             # denial, and it once hid a CHECK violation that silently dropped every trace.
             logger.exception("Denial trace could not be written for %s", reason)
         raise HTTPException(
-            status_code=403,
-            detail=reason,
+            status_code=status_code,
+            detail=reason if detail is None else detail,
             headers={"x-request-id": request_id},
         )
 
     def _invocation_route(
-        self, request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
+        self,
+        request: ModelInvocationRequest | ImageInvocationRequest | DecisionInvocationRequest,
+        request_id: str,
     ) -> dict[str, Any] | None:
         if request.model_id is not None:
             current = next((model for model in self._repository.registry()["models"]
                             if model["id"] == request.model_id), None)
             if current is not None and current["enabled"] is False:
-                raise HTTPException(status_code=403, detail={
-                    "code": "model_disabled", "message": "The requested model is disabled",
-                })
+                self.deny(
+                    request,
+                    {**current, "model_id": current["id"]},
+                    "model_disabled",
+                    request_id,
+                    model_admission="model_disabled",
+                    detail={
+                        "code": "model_disabled", "message": "The requested model is disabled",
+                    },
+                )
         explicit = (
             request.gateway_profile_id is not None or request.gateway_deployment_id is not None
         )
@@ -2001,7 +2012,7 @@ class ModelRuntimeService:
         timeout_ms: int | None = None,
     ) -> ModelInvocationResponse:
         request_id = request_id or str(uuid4())
-        route = self._invocation_route(request)
+        route = self._invocation_route(request, request_id)
         if route is None:
             raise HTTPException(
                 status_code=404, detail="No enabled model route matches the request"
@@ -2034,7 +2045,7 @@ class ModelRuntimeService:
         editor_trial_authorized: bool = False,
     ) -> DecisionInvocationResponse:
         request_id = request_id or str(uuid4())
-        route = self._invocation_route(request)
+        route = self._invocation_route(request, request_id)
         if route is None:
             raise HTTPException(status_code=404, detail="No enabled Decision route matches")
         route = self._model_protocol_route(route)
@@ -2214,7 +2225,7 @@ class ModelRuntimeService:
         )
 
         request_id = str(uuid4())
-        route = self._invocation_route(request)
+        route = self._invocation_route(request, request_id)
         if route is None:
             raise HTTPException(status_code=404, detail="No enabled image model route matches")
         if (
@@ -2253,8 +2264,8 @@ class ModelRuntimeService:
                 if isinstance(route.get("budget_delegation_token"), SecretStr) else "postgresql",
             ))
         except BillableBudgetExceeded:
-            self._deny(request, route, "image_budget_insufficient", request_id,
-                       budget_admission="denied")
+            self.deny(request, route, "image_budget_insufficient", request_id,
+                      budget_admission="denied")
         request_id = str(attempt.id)
         route["request_id"] = request_id
         started = time.monotonic()

@@ -886,6 +886,20 @@ def test_publication_targets_remain_visible_across_mobile_columns() -> None:
     assert "white-space: nowrap" in target_label
 
 
+def test_model_table_keeps_status_and_actions_inside_phone_widths() -> None:
+    phone = (FRONTEND_SOURCE / "styles/model-platform.css").read_text(encoding="utf-8").split(
+        "@media (max-width: 639px) {", 1,
+    )[1].split("\n}\n", 1)[0]
+
+    assert ".model-table.models .model-list-row > :nth-child(3) { display: none; }" in phone
+    assert (
+        ".model-table.models .model-list-row { grid-template-columns: "
+        "minmax(160px, var(--resizable-column-1, 1fr)) "
+        "minmax(80px, var(--resizable-column-5, 80px)) "
+        "minmax(63px, var(--resizable-column-6, 63px)); }"
+    ) in phone
+
+
 def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     model_page = (
