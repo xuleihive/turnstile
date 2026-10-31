@@ -2100,6 +2100,92 @@ def test_initial_fixed_program_preview_retries_read_timeouts_within_shared_deadl
         assert elapsed[0] < 180
 
 
+@pytest.mark.parametrize("fault", [None, "second_upgrade", "foreign_origin", "forged_base"])
+def test_upgrade_recorded_by_a_later_publication_keeps_its_deployed_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None,
+) -> None:
+    from typing import Any
+    from uuid import UUID
+
+    from fastapi import Response
+
+    from backend import bootstrap_storage_route as bootstrap
+    from backend.http.model_platform import preview_gateway_program_upgrade
+    from scripts import deploy
+    from turnstile_core.domain.storage_routes import (
+        FixedProgramInstallation,
+        FixedProgramUpgrade,
+        document_digest,
+    )
+
+    runtime = Mock(wraps=runtime_release_parameters)
+    monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
+    with monkeypatch.context() as initialization:
+        test_initial_fixed_program_binds_compiled_policies_before_registration(
+            tmp_path, initialization, False, "StandardV2",
+        )
+    descriptor = bootstrap.FixedInstallationDescriptor.model_validate_json(
+        json.dumps(runtime.call_args.args[5]),
+    )
+    original = bootstrap.installation_record(descriptor, "a" * 64)
+
+    def upgrade(previous: FixedProgramInstallation, value: str) -> FixedProgramInstallation:
+        legacy = previous.legacy_program_sha256 or previous.program.program_sha256
+        return previous.model_copy(update={
+            "program": previous.program.model_copy(update={"program_sha256": value * 64}),
+            "parent_policy_sha256": value * 64, "model_additions_enabled": True,
+            "legacy_program_sha256": legacy,
+            "predecessor_program_sha256": tuple(item for item in (
+                *previous.predecessor_program_sha256, previous.program.program_sha256,
+            ) if item != legacy),
+        })
+
+    installation_id, configuration_id = str(UUID(int=93)), str(UUID(int=94))
+    upgraded = upgrade(original, "1")
+    first = FixedProgramUpgrade(
+        previous_publication_id=installation_id,
+        previous_installation_sha256=document_digest(
+            upgrade(original, "3") if fault == "foreign_origin" else original,
+        ),
+        installation=upgraded,
+    )
+    config: dict[str, Any] = {"fixed_route_program_upgrade": first.model_dump(mode="json")}
+    current = upgraded
+    if fault == "second_upgrade":
+        current = upgrade(upgraded, "2")
+        config = {
+            "fixed_route_program_upgrade_history": [first.model_dump(mode="json")],
+            "fixed_route_program_upgrade": FixedProgramUpgrade(
+                previous_publication_id=configuration_id,
+                previous_installation_sha256=document_digest(upgraded), installation=current,
+            ).model_dump(mode="json"),
+        }
+    target_id = descriptor.registration.gateway_profile_id
+    repository = Mock()
+    repository.effective_gateway_publication.return_value = {
+        "id": configuration_id,
+        "resource_manifest": {"fixed_route_program": upgraded.model_dump(mode="json")},
+    }
+    repository.get_gateway_profiles.return_value = [{"id": target_id, "config": config}]
+    preview = preview_gateway_program_upgrade(target_id, repository, "unit-owner", Response())
+    if fault == "forged_base":
+        preview["initial_installation"] = upgrade(original, "3").model_dump(mode="json")
+    client_factory = httpx.Client
+    monkeypatch.setattr("scripts.deploy.httpx.Client", lambda **kwargs: client_factory(
+        **kwargs, transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json=preview if request.method == "GET" else {},
+        )),
+    ))
+    arguments = ("https://offline.example.test", "owner@example.test", "offline",
+                 descriptor.model_dump(mode="json"))
+    if fault in {"foreign_origin", "forged_base"}:
+        with pytest.raises(DeploymentError, match="approval chain is invalid"):
+            deploy.verify_initial_fixed_program(*arguments)
+    else:
+        assert deploy.verify_initial_fixed_program(*arguments) == preview
+        assert deploy._approved_fixed_installation(descriptor, preview) == current
+
+
 def test_temporary_parameter_file_is_private_and_deleted(tmp_path: Path) -> None:
     with temporary_parameter_file({"parameters": {}}, tmp_path) as path:
         assert path.is_file()

@@ -61,6 +61,7 @@ from turnstile_core.domain.gateway_targets import (
 from turnstile_core.domain.storage_routes import (
     FixedProgramCutover,
     FixedProgramInstallation,
+    FixedProgramUpgrade,
     RouteScope,
 )
 from turnstile_core.domain.storage_routes import document_digest as route_document_digest
@@ -1565,8 +1566,13 @@ def _approved_fixed_installation(
         initial = FixedProgramInstallation.model_validate_json(
             json.dumps(registration["initial_installation"]),
         )
-        if initial != installation_record(installed, initial.target_identity_sha256):
-            raise ValueError("Registered program origin differs from deployment outputs")
+        original = installation_record(installed, initial.target_identity_sha256)
+        if initial != original:
+            # A later publication records the upgraded program; its first upgrade starts here.
+            first = FixedProgramUpgrade.model_validate_json(json.dumps(
+                [*registration["registration_history"], registration["registration"]][0],
+            ))
+            first.require_previous(first.previous_publication_id, original)
         approved = _registered_program_installation(
             registration["previous_publication_id"], initial, {
                 "fixed_route_program_upgrade": registration["registration"],
@@ -2189,7 +2195,9 @@ def verify_initial_fixed_program(
                         _approved_fixed_installation(
                             initial, preview,
                         )
-                        installation = preview["initial_installation"]
+                        installation = installation_record(
+                            initial, preview["initial_installation"]["target_identity_sha256"],
+                        ).model_dump(mode="json")
                     if (
                         installation["program"]["program_sha256"]
                         != descriptor["binding"]["program_sha256"]
