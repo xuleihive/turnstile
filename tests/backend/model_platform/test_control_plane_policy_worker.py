@@ -995,6 +995,32 @@ def test_transient_apim_failure_requeues_the_same_step() -> None:
     assert retry is not None and retry.status == "validating"
     assert advanced is not None and advanced.status == "provisioning"
 
+
+def test_transient_failure_logs_the_requeue_reason(caplog: pytest.LogCaptureFixture) -> None:
+    class RetryClient(FakeApimClient):
+        def ensure_backend(self, backend: BackendResource) -> None:
+            raise RetryablePublicationError("APIM returned HTTP 429")
+
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        bedrock_publication(), "owner@example.com",
+    )
+    worker = GatewayPublicationWorker(
+        repository,
+        RetryClient(),
+        (ROOT / "infra/policies/foundry-finops-policy.xml").read_text(),
+    )
+    caplog.set_level("INFO", logger="turnstile_core.services.gateway_publication_worker")
+
+    assert worker.run_once("worker-a").status == "validating"  # type: ignore[union-attr]
+    retry = worker.run_once("worker-a")
+
+    assert retry is not None and retry.status == "validating"
+    assert (
+        f"Gateway publication {publication.id} requeued at validating: "
+        "error_code=RetryablePublicationError error_message='APIM returned HTTP 429'"
+    ) in caplog.text
+
 @pytest.mark.parametrize(
     ("status_code", "payload"),
     [

@@ -197,15 +197,24 @@ class FixedProgramVerifier:
             raise PolicyCompilationError("Fixed route program complete digest changed")
         self._probe(configuration=None)
         checked_at = self._clock()
-        if type(checked_at) is not int or not started <= checked_at < started + 30:
+        if type(checked_at) is not int or checked_at < started:
             raise PolicyCompilationError(
                 "Fixed route program verification exceeded its time window",
+            )
+        # Management evidence read from `started` backs a proof for at most 150 seconds: a
+        # 30-second verification budget plus the 120-second proof lifetime. Slow management
+        # reads shorten the proof instead of failing it, so the evidence age bound is unchanged.
+        expires_epoch = min(checked_at + 120, started + 150)
+        if checked_at >= expires_epoch:
+            raise PolicyCompilationError(
+                "Fixed route program verification exceeded its time window after "
+                f"{checked_at - started} of 150 seconds",
             )
         self._verified_parent = parent
         return ProgramCapabilityProof(
             proof_id=str(uuid4()), identity=program,
             supported_profiles=installed.supported_profiles,
-            issued_epoch=checked_at, expires_epoch=checked_at + 120,
+            issued_epoch=checked_at, expires_epoch=expires_epoch,
         )
 
     def confirm(self, head: ActiveRouteHead) -> None:

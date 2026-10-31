@@ -934,6 +934,131 @@ def test_fixed_program_verifier_requires_current_management_and_exact_authentica
         assert requests == ["HEAD", "HEAD"]
 
 
+def _timed_program_verifier(
+    parent_seconds: float, operation_seconds: float, fault: str | None = None,
+) -> FixedProgramVerifier:
+    scope = RouteScope(target_id=str(UUID(int=1)), api_id="unit-api", gateway_id="managed")
+    contracts = fixed_operation_contracts()
+    operation = ("<policies><inbound><base/></inbound><backend><base/></backend>"
+                 "<outbound><base/></outbound><on-error><base/></on-error></policies>")
+    parent = operation.replace("<inbound><base/>", '<inbound><base/><set-variable '
+                                'name="routeProgram" value="' + "0" * 64 + '"/>'
+                                '<set-variable name="routeVaultOrigins" value="[]"/>')
+    policies = {name: operation for name in contracts}
+    digest = fixed_program_digest(parent, policies, tuple((name, *route)
+                                                          for name, route in contracts.items()))
+    parent = parent.replace("0" * 64, digest)
+    identity = ProgramIdentity(scope=scope, api_revision="1", instance_id="managed",
+                                program_sha256=digest, trust_binding_sha256="a" * 64)
+    installed = FixedProgramInstallation(
+        program=identity, target_identity_sha256="b" * 64,
+        storage_endpoint="https://unitstore.table.core.windows.net",
+        storage_table="TurnstileRoutes", gateway_endpoint="https://unit-apim.example.test/llm",
+        publisher_subscription_id="unit-only",
+        parent_policy_sha256=fixed_policy_digest(parent), supported_profiles=("openai-v1",),
+        operation_contracts=contracts,
+        operation_policies_sha256={
+            name: fixed_policy_digest(policy) for name, policy in policies.items()
+        },
+    )
+    now = [1000.0]
+    changed = operation.replace("<base/></inbound>", '<base/><set-variable name="unitChanged" '
+                                'value="1"/></inbound>')
+
+    def read_parent(_revision: str) -> str:
+        now[0] += parent_seconds
+        return changed if fault == "parent" else parent
+
+    def read_operations(_revision: str) -> dict[str, tuple[str, str, str]]:
+        now[0] += operation_seconds * len(contracts)
+        return {name: (*contract, changed if fault == "operation" and name == "models"
+                       else policies[name]) for name, contract in contracts.items()}
+
+    def probe(request: httpx.Request) -> httpx.Response:
+        fields = {"abi": "2", "target": scope.target_id, "api": scope.api_id, "revision": "1",
+                  "nonce": "0" * 32 if fault == "nonce"
+                  else request.headers["x-turnstile-route-probe"],
+                  "gateway": "managed", "instance": "managed",
+                  "program": "f" * 64 if fault == "program" else digest,
+                  "trust": identity.trust_binding_sha256}
+        return httpx.Response(204, headers={"x-turnstile-route-" + name: value
+                                            for name, value in fields.items()})
+
+    management = MagicMock()
+    management.current_revision.return_value = "2" if fault == "revision" else "1"
+    management.revision_api_policy.side_effect = read_parent
+    management.route_program_operations.side_effect = read_operations
+    return FixedProgramVerifier(
+        installed, management, SecretStr("unit-only"),
+        httpx.Client(transport=httpx.MockTransport(probe)), clock=lambda: int(now[0]),
+    )
+
+
+def test_fixed_program_verifier_bounds_evidence_age_on_slow_management_reads() -> None:
+    fast = _timed_program_verifier(5, 0.5).verify()
+    assert (fast.issued_epoch, fast.expires_epoch) == (1009, 1129)
+    slow = _timed_program_verifier(25, 1.5).verify()
+    assert (slow.issued_epoch, slow.expires_epoch) == (1038, 1150)
+    last = _timed_program_verifier(149, 0).verify()
+    assert (last.issued_epoch, last.expires_epoch) == (1149, 1150)
+    with pytest.raises(ValueError, match="time window after 150 of 150 seconds"):
+        _timed_program_verifier(150, 0).verify()
+    with pytest.raises(ValueError, match="exceeded its time window"):
+        _timed_program_verifier(-1, 0).verify()
+    for fault, message in {
+        "nonce": "authenticated probe identity changed",
+        "program": "authenticated probe identity changed",
+        "parent": "parent changed",
+        "operation": "operation changed",
+        "revision": "revision changed",
+    }.items():
+        with pytest.raises(ValueError, match=message):
+            _timed_program_verifier(25, 1.5, fault).verify()
+
+
+@pytest.mark.parametrize("parent_seconds", [25, 150])
+def test_program_proof_renewal_completes_or_reports_slow_management_reads(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, parent_seconds: int,
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import turnstile_core.services.storage_route_publisher as publisher_module
+
+    verifier = _timed_program_verifier(parent_seconds, 1.5)
+    program = verifier.installation.program
+    target_id = UUID(program.scope.target_id)
+    repository, port = Mock(), Mock()
+    repository.list_apim_targets.return_value = [{"gateway_profile_id": target_id}]
+    repository.get_gateway_profiles.return_value = []
+    repository.effective_gateway_publication.return_value = {
+        "id": UUID(int=512), "gateway_profile_id": target_id, "status": "active",
+        "resource_manifest": {"fixed_route_program": {}},
+    }
+    repository.model_availability_proof_guard.return_value = nullcontext()
+    port._verifier = verifier
+    port.projection.read_program_proof.return_value = None
+    factory = publisher_module.FixedRoutePublisherFactory(
+        repository, Mock(), active_fence=Mock(), availability_projector=Mock(),
+    )
+    monkeypatch.setattr(publisher_module, "_PROGRAM_RENEW_BACKOFF_UNTIL", {})
+    monkeypatch.setattr(factory, "installed", Mock(return_value=(
+        SimpleNamespace(program=program, native_gateway_scope=False), Mock(),
+    )))
+    monkeypatch.setattr(factory, "_open", Mock(return_value=nullcontext((port, Mock()))))
+    if parent_seconds == 25:
+        factory.renew_program_proofs()
+        published = port.projection.publish_program_proof.call_args.args[0]
+        assert (published.issued_epoch, published.expires_epoch) == (1038, 1150)
+    else:
+        with pytest.raises(ValueError, match="after 163 of 150 seconds"):
+            factory.renew_program_proofs()
+        port.projection.publish_program_proof.assert_not_called()
+        assert ("reason=Fixed route program verification exceeded its time window after "
+                "163 of 150 seconds") in caplog.text
+        assert "elapsed_seconds=" in caplog.text and "unit-only" not in caplog.text
+
+
 def test_fixed_program_operations_and_digest_preserve_exact_source_native_contract() -> None:
     contracts = fixed_operation_contracts("/v1/models", "/v1/messages", decision_enabled=True)
     assert contracts["microsoft-decision"] == ("POST", "/providers/microsoft/v1/systemone")

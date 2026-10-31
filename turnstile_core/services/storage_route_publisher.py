@@ -1065,8 +1065,8 @@ class FixedRoutePublisherFactory:
                         ),),
                     )
             acquire_proof()
-            started = self._clock()
             proof = port._verifier.verify()
+            started = self._clock()
             port.projection.require_current_connections(snapshot, installation.program, started)
             observed_head = port.projection.read_active()
             if observed_head is None or observed_head[0] != head:
@@ -1495,6 +1495,7 @@ class FixedRoutePublisherFactory:
                 with _PROGRAM_RENEW_BACKOFF_LOCK:
                     if _PROGRAM_RENEW_BACKOFF_UNTIL.get(backoff_key, 0.0) > now_mono:
                         continue
+            attempt_started = monotonic()
             try:
                 with repository.model_availability_proof_guard(target_id, wait=False):
                     installed, config = self.installed(target_id, UUID(str(current["id"])))
@@ -1530,8 +1531,9 @@ class FixedRoutePublisherFactory:
                         )
                 network_error = error
                 logging.getLogger(__name__).warning(
-                    "Fixed route proof renewal failed target=%s error_type=%s",
-                    target_id, type(error).__name__,
+                    "Fixed route proof renewal failed target=%s error_type=%s "
+                    "elapsed_seconds=%.1f",
+                    target_id, type(error).__name__, monotonic() - attempt_started,
                 )
             except Exception as error:
                 if use_backoff:
@@ -1541,8 +1543,10 @@ class FixedRoutePublisherFactory:
                         )
                     last_error = error
                     logging.getLogger(__name__).warning(
-                        "Fixed route proof renewal failed target=%s error_type=%s",
-                        target_id, type(error).__name__,
+                        "Fixed route proof renewal failed target=%s error_type=%s "
+                        "elapsed_seconds=%.1f reason=%s",
+                        target_id, type(error).__name__, monotonic() - attempt_started,
+                        error if isinstance(error, PolicyCompilationError) else None,
                     )
                 else:
                     raise
@@ -1751,7 +1755,6 @@ class FixedRoutePublisherFactory:
         snapshots = [(publication, scope, len(scopes)) for publication in publications
                  for scopes in (recorded_route_scopes(publication),) for scope in scopes]
         runtimes = {str(row["id"]): row for row in self._repository.registry()["runtimes"]}
-        started = self._clock()
         completed = 0
         with (
             repository.model_availability_proof_guard(target_id, wait=wait),
@@ -1759,6 +1762,7 @@ class FixedRoutePublisherFactory:
         ):
             base_port, base_management = readers.enter_context(self._open(installed, config))
             base_proof = base_port._verifier.verify()
+            started = self._clock()
             fence = self._active_fence(target_id)
             if (fence.get("protocol_version") != 2 or fence.get("mode") != "active"
                     or fence.get("gateway_profile_id") != str(target_id)):

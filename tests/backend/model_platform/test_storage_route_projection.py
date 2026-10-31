@@ -1202,6 +1202,127 @@ def test_managed_approval_renewal_compares_raw_publication_not_decorated_view(
         assert len(renewals) == len(scope_snapshots)
 
 
+def test_approval_renewal_budget_starts_after_slow_program_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import turnstile_core.services.route_publication as route_module
+    from turnstile_core.services.storage_route_publisher import FixedRoutePublisherFactory
+
+    snapshot, program, proof = snapshot_fixture()
+    route = snapshot.routes[0]
+    target = UUID(program.scope.target_id)
+    identity, runtime_id = UUID(int=979), UUID(int=978)
+    raw = {"id": identity, "gateway_profile_id": target, "status": "active",
+           "resource_manifest": {"legacy": "unchanged"}}
+    current: Any = SimpleNamespace(
+        id=identity, gateway_profile_id=target, resource_manifest={},
+        desired_spec=SimpleNamespace(bindings=[SimpleNamespace(
+            model=SimpleNamespace(model_key=route.alias), runtime_id=runtime_id,
+        )]), model_dump=lambda **kwargs: {**raw, "resource_manifest": {"managed_program": True}},
+    )
+    repository = Mock()
+    repository.effective_gateway_publication.side_effect = [raw, deepcopy(raw)]
+    repository.active_model_route_publications.return_value = []
+    repository.registry.return_value = {"runtimes": [{
+        "id": runtime_id, "gateway_profile_id": target, "enabled": True, "config": {},
+    }]}
+    repository.model_availability_proof_guard.return_value = nullcontext()
+    started = max(1100, snapshot.members[0].connection_approval.expires_epoch - 3600)
+    now = [started]
+
+    def verify() -> ProgramCapabilityProof:
+        now[0] += 70
+        return proof.model_copy(update={"issued_epoch": now[0], "expires_epoch": started + 150})
+
+    factory = FixedRoutePublisherFactory(repository, Mock(), active_fence=lambda _: {
+        "protocol_version": 2, "mode": "active", "gateway_profile_id": str(target),
+        "epoch": snapshot.approval.budget_epoch,
+    }, availability_projector=Mock(), clock=lambda: now[0])
+    head = ActiveRouteHead(approval=snapshot.approval, activated_epoch=1100)
+    monkeypatch.setattr(route_module, "recorded_route_snapshot", lambda _: (snapshot, head))
+    monkeypatch.setattr(factory, "_runtime_destination_matches", Mock(return_value=True))
+    monkeypatch.setattr(factory, "_credential_references", Mock(return_value={}))
+    monkeypatch.setattr(factory, "_verify_credential_references", Mock())
+    port, management = Mock(), Mock()
+    port._verifier.verify.side_effect = verify
+    port.projection.read_active.return_value = (head, '"original"')
+    port.projection.read_approval_renewal_history.return_value = None
+    management.verify_route_connection.side_effect = lambda revision: revision.dependency_sha256
+    monkeypatch.setattr(factory, "_open", lambda *args: nullcontext((port, management)))
+    installation: Any = SimpleNamespace(program=program, native_gateway_scope=False)
+    factory._renew_independent_approvals(current, installation, Mock())
+    assert port.projection.publish_approval_renewal.call_count == 1
+    assert port.projection.publish_approval_renewal.call_args.args[3].issued_epoch == started + 70
+
+
+def test_availability_window_starts_after_slow_program_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    import turnstile_core.services.route_publication as route_module
+    import turnstile_core.services.storage_route_publisher as publisher_module
+
+    _, program, proof = snapshot_fixture()
+    target = UUID(program.scope.target_id)
+    endpoint = "https://unit.azure-api.net/llm"
+    source = {"id": UUID(int=980), "resource_manifest": {"fixed_route_program": {}}}
+    repository = Mock()
+    repository.effective_gateway_publication.return_value = source
+    repository.get_model_availability_inventory.return_value = {target: "a" * 64}
+    repository.list_gateway_deployments.return_value = [
+        {"retired_at": None, "native_gateway_id": "managed", "endpoint_url": endpoint},
+    ]
+    repository.get_model_availability_states.return_value = {}
+    repository.model_availability_proof_guard.return_value = nullcontext()
+    started = 1100
+    now = [started]
+
+    def verify() -> ProgramCapabilityProof:
+        now[0] += 70
+        return proof.model_copy(update={"issued_epoch": now[0], "expires_epoch": started + 150})
+
+    port = Mock()
+    port._verifier.verify.side_effect = verify
+    head = object()
+    port.projection.read_active.return_value = (head, '"head"')
+    port.projection.read_program_proof.return_value = None
+    port.read_catalog.return_value = []
+    installation = SimpleNamespace(
+        program=program, native_gateway_scope=False, model_additions_enabled=False,
+        gateway_endpoint=endpoint, operation_contracts={"models": ("GET", "/models")},
+    )
+    config = SimpleNamespace(settings=SimpleNamespace(
+        ledger_table_endpoint="https://unitstore.table.core.windows.net",
+        ledger_table_name="Ledger",
+    ))
+    factory = publisher_module.FixedRoutePublisherFactory(
+        repository, Mock(), active_fence=Mock(), availability_projector=Mock(),
+        clock=lambda: now[0],
+    )
+    monkeypatch.setattr(publisher_module, "GatewayPublication", SimpleNamespace(
+        model_validate=lambda _: SimpleNamespace(
+            id=source["id"], desired_spec=SimpleNamespace(bindings=[]),
+        ),
+    ))
+    monkeypatch.setattr(publisher_module, "TableStorageLedger",
+                        lambda *args, **kwargs: nullcontext(Mock()))
+    monkeypatch.setattr(route_module, "recorded_route_snapshot", lambda _: (
+        SimpleNamespace(routes=(), configuration_sha256="c" * 64), head,
+    ))
+    monkeypatch.setattr(factory, "installed", Mock(return_value=(installation, config)))
+    monkeypatch.setattr(factory, "_open", Mock(return_value=nullcontext((port, Mock()))))
+    coverage = factory.verify_availability(target, "a" * 64)
+    assert coverage.verified_at == datetime.fromtimestamp(started + 70, UTC)
+    assert coverage.expires_at == datetime.fromtimestamp(started + 150, UTC)
+    port.projection.publish_program_proof.assert_called_once()
+
+
 class Journal:
     def __init__(self) -> None:
         self.intent: RouteActivationIntent | None = None

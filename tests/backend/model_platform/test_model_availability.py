@@ -1316,6 +1316,23 @@ def test_coordinator_refresh_bounds_parallel_targets_and_holds_exact_proof_guard
         client.renew_model_availability.assert_not_called()
 
 
+def test_coverage_failure_log_carries_only_safe_policy_reasons(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from turnstile_core.services.model_availability import _log_verification_failure
+
+    timed_out = ("Fixed route program verification exceeded its time window after "
+                 "152 of 150 seconds")
+    _log_verification_failure(UUID(int=12), PolicyCompilationError(timed_out))
+    _log_verification_failure(UUID(int=13), PolicyCompilationError(
+        "APIM policy /subscriptions/unit returned no XML representation",
+    ))
+    _log_verification_failure(UUID(int=14), ValueError("Unit unclassified failure"))
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages[0].endswith("reason=" + timed_out)
+    assert messages[1].endswith("reason=None") and messages[2].endswith("reason=None")
+
+
 def test_coordinator_confirm_is_parallel_and_preserves_target_order() -> None:
     verifier, state, _requests = gateway_availability_fixture()
     with verifier.client:

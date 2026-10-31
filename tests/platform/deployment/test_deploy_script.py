@@ -2050,6 +2050,56 @@ def test_initial_fixed_program_login_retries_within_shared_deadline(
         assert elapsed[0] < 180
 
 
+@pytest.mark.parametrize("failure", ["once", "always"])
+def test_initial_fixed_program_preview_retries_read_timeouts_within_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    elapsed = [0.0]
+    calls = {"login": 0, "preview": 0, "logout": 0}
+    client_factory = httpx.Client
+
+    def advance(seconds: float) -> None:
+        elapsed[0] += seconds
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/login"):
+            calls["login"] += 1
+            return httpx.Response(200, json={})
+        if request.url.path.endswith("/auth/logout"):
+            calls["logout"] += 1
+            return httpx.Response(204)
+        calls["preview"] += 1
+        if failure == "always" or calls["preview"] == 1:
+            timeout = request.extensions["timeout"]["read"]
+            assert 0 < timeout <= 15
+            advance(timeout)
+            raise httpx.ReadTimeout("Offline slow preview", request=request)
+        return httpx.Response(200, json={"current_installation": {
+            "program": {"program_sha256": "a" * 64, "scope": {"target_id": "unit-target"}},
+            "model_additions_enabled": True,
+        }})
+
+    monkeypatch.setattr("scripts.deploy.time.monotonic", lambda: elapsed[0])
+    monkeypatch.setattr("scripts.deploy.time.sleep", advance)
+    monkeypatch.setattr("scripts.deploy.httpx.Client", lambda **kwargs: client_factory(
+        **kwargs, transport=httpx.MockTransport(respond),
+    ))
+    descriptor = {
+        "registration": {"gateway_profile_id": "unit-target"},
+        "binding": {"program_sha256": "a" * 64},
+    }
+    arguments = ("https://offline.example.test", "owner@example.test", "offline", descriptor)
+    if failure == "always":
+        with pytest.raises(DeploymentError, match="not ready for model publication"):
+            verify_initial_fixed_program(*arguments)
+        assert elapsed[0] == 180
+        assert calls == {"login": 1, "preview": 10, "logout": 1}
+    else:
+        verify_initial_fixed_program(*arguments)
+        assert calls == {"login": 1, "preview": 2, "logout": 1}
+        assert elapsed[0] < 180
+
+
 def test_temporary_parameter_file_is_private_and_deleted(tmp_path: Path) -> None:
     with temporary_parameter_file({"parameters": {}}, tmp_path) as path:
         assert path.is_file()

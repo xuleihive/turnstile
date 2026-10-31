@@ -260,6 +260,10 @@ class GatewayPublicationWorker:
         except (RetryablePublicationError, httpx.TransportError) as error:
             code = type(error).__name__
             message = str(error).replace("\n", " ")[:1000]
+            logger.info(
+                "Gateway publication %s requeued at %s: error_code=%s error_message=%r",
+                publication.id, publication.status.value, code, message,
+            )
             queued = self._repository.transition_gateway_publication(
                 publication.id,
                 publication.status.value,

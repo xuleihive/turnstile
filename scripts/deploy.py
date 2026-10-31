@@ -2167,7 +2167,11 @@ def verify_initial_fixed_program(
             raise DeploymentError("Initial fixed program Owner login timed out")
         try:
             while (remaining := deadline - time.monotonic()) > 0:
-                response = http.get(path, timeout=min(15, remaining))
+                try:
+                    response = http.get(path, timeout=min(15, remaining))
+                except httpx.TransportError:
+                    time.sleep(min(3, max(0, deadline - time.monotonic())))
+                    continue
                 if response.status_code == 200:
                     preview = response.json()
                     installation = preview["current_installation"]
