@@ -1200,12 +1200,13 @@ export type GatewayPublicationCreate = {
 }
 
 export type GatewayPublicationFailure = {
-  code: "publisher_permissions_missing" | "publisher_permissions_unverified" | "publisher_authorization_failed" | "parent_policy_changed" | "credential_source_missing" | "publication_failed" | "deployment_not_found" | "deployment_metadata_unavailable" | "upstream_request_failed"
+  code: "publisher_permissions_missing" | "publisher_permissions_unverified" | "publisher_authorization_failed" | "parent_policy_changed" | "credential_source_missing" | "gateway_capability_unavailable" | "publication_failed" | "deployment_not_found" | "deployment_metadata_unavailable" | "upstream_request_failed"
   message: string
   stage: GatewayPublicationStatus | null
   request_id: string | null
   http_status: number | null
   missing_actions: string[]
+  profile?: "openai-v1" | "anthropic-messages" | "openai-images" | "microsoft-decision" | null
 }
 
 export type GatewayPublication = {
@@ -1257,13 +1258,13 @@ export type GatewayPublication = {
 export type GatewayProgramUpgradePreview = {
   previous_publication_id: string
   previous_installation_sha256: string
-  installation: { model_additions_enabled?: boolean; native_gateway_scope?: boolean; decision_enabled?: boolean; supported_profiles?: string[] }
+  installation: { model_additions_enabled?: boolean; native_gateway_scope?: boolean; decision_enabled?: boolean; supported_profiles?: string[]; image_limits?: Record<string, number> | null }
   current_installation?: GatewayProgramUpgradePreview["installation"]
   current_installation_sha256?: string
   registration: {
     previous_publication_id: string
     previous_installation_sha256: string
-    installation: { model_additions_enabled?: boolean; native_gateway_scope?: boolean; decision_enabled?: boolean; supported_profiles?: string[] }
+    installation: { model_additions_enabled?: boolean; native_gateway_scope?: boolean; decision_enabled?: boolean; supported_profiles?: string[]; image_limits?: Record<string, number> | null }
   } | null
 }
 

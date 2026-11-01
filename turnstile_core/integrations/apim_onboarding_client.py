@@ -795,6 +795,7 @@ class AzureApimOnboardingClient(AzureApimPublisherClient):
             or binding.publisher_subscription_id != self.request.probe_subscription_id
             or contracts != fixed_operation_contracts(
                 binding.models_path, binding.messages_path, binding.retired_operations,
+                decision_enabled=binding.decision_enabled,
             )
             or set(policies) != set(contracts)
             or fixed_program_digest(

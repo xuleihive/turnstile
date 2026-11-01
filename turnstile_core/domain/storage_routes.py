@@ -538,15 +538,19 @@ class FixedProgramUpgrade(RouteModel):
             changed.add("pool_enabled")
         if current.router_enabled and not previous.router_enabled:
             changed.add("router_enabled")
+        profiles = previous.supported_profiles
+        if current.image_limits is not None and previous.image_limits is None:
+            profiles = (*profiles, "openai-images")
+            changed.update({"image_limits", "supported_profiles"})
         if current.decision_enabled and not previous.decision_enabled:
             if (current.operation_contracts != {
                 **previous.operation_contracts,
                 "microsoft-decision": ("POST", "/providers/microsoft/v1/systemone"),
-            } or current.supported_profiles != (
-                *previous.supported_profiles, "microsoft-decision",
-            )):
+            } or current.supported_profiles != (*profiles, "microsoft-decision")):
                 raise ValueError("DECISION_PROGRAM_UPGRADE_CONTRACT_CHANGED")
             changed.update({"decision_enabled", "operation_contracts", "supported_profiles"})
+        elif "image_limits" in changed and current.supported_profiles != profiles:
+            raise ValueError("IMAGE_PROGRAM_UPGRADE_CONTRACT_CHANGED")
         if (
             self.previous_publication_id != publication_id
             or self.previous_installation_sha256 != document_digest(previous)

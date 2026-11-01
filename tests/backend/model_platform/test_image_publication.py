@@ -110,6 +110,73 @@ def test_infrastructure_upgrade_failure_has_a_safe_actionable_public_message() -
     assert ordinary.error_message is None
 
 
+def test_missing_gateway_image_capability_fails_preflight_with_a_structured_reason() -> None:
+    from unittest.mock import MagicMock
+
+    from turnstile_core.domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
+    from turnstile_core.domain.storage_routes import (
+        FixedProgramInstallation,
+        ProgramIdentity,
+        RouteScope,
+    )
+    from turnstile_core.integrations.apim_control_plane_contract import (
+        GatewayCapabilityUnavailableError,
+    )
+    from turnstile_core.services.storage_route_publisher import FixedRoutePublisherFactory
+
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(
+        repository, apim_principal_id="unit-principal",
+    ).publish(image_publication(repository), "owner@example.com")
+    binding = publication.desired_spec.bindings[-1]
+    installation = FixedProgramInstallation(
+        program=ProgramIdentity(
+            scope=RouteScope(target_id=str(publication.gateway_profile_id), api_id="unit-api",
+                             gateway_id="managed"),
+            api_revision="1", instance_id="managed", program_sha256="a" * 64,
+            trust_binding_sha256="b" * 64,
+        ),
+        target_identity_sha256="c" * 64, storage_endpoint="https://unitstore.table.core.windows.net",
+        storage_table="Routes", gateway_endpoint="https://unit.azure-api.net/llm",
+        publisher_subscription_id="unit-publisher", parent_policy_sha256="d" * 64,
+        operation_contracts={"models": ("GET", "/models")},
+        operation_policies_sha256={"models": "e" * 64},
+        supported_profiles=("openai-v1", "anthropic-messages"),
+    )
+    registry: dict[str, Any] = {"runtimes": [{
+        "id": binding.runtime_id, "enabled": True,
+        "gateway_profile_id": publication.gateway_profile_id,
+        "config": {"storage_route_approvals": {}},
+    }]}
+    factory = FixedRoutePublisherFactory(
+        repository, MagicMock(), active_fence=MagicMock(), availability_projector=MagicMock(),
+    )
+    with pytest.raises(GatewayCapabilityUnavailableError) as raised:
+        factory._preflight_dependencies(publication, installation, registry)
+    assert raised.value.profile == "openai-images"
+    view = GatewayPublicationView.from_publication(publication.model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": type(raised.value).__name__,
+        "error_message": str(raised.value),
+    }))
+    assert view.failure is not None
+    assert (view.error_code, view.failure.code, view.failure.profile) == (
+        "gateway_capability_unavailable", "gateway_capability_unavailable", "openai-images",
+    )
+    assert "scripts.deploy enable-capabilities" in view.failure.message
+    assert view.error_message == view.failure.message
+    generic = GatewayPublicationView.from_publication(publication.model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": "PolicyCompilationError",
+        "error_message": str(raised.value),
+    }))
+    assert generic.failure is not None and generic.failure.code == "publication_failed"
+    assert generic.failure.profile is None and generic.failure.request_id is None
+    assert "diagnostic reference" not in generic.failure.message
+    factory._preflight_dependencies(publication, installation.model_copy(update={
+        "supported_profiles": (*installation.supported_profiles, "openai-images"),
+        "image_limits": DEFAULT_IMAGE_GENERATION_LIMITS,
+    }), registry)
+
+
 def test_image_publication_still_requires_the_apim_identity() -> None:
     repository = InMemoryRepository()
     with pytest.raises(ControlPlaneConflictError, match="APIM managed identity"):

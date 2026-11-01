@@ -11,6 +11,7 @@ from ..domain.gateway_targets import (
     CapabilitySupport,
     native_gateway_scope_for_capability,
 )
+from ..domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
 from ..domain.storage_routes import RouteScope, document_digest
 from .apim_budget_execution import budget_execution_fence, compose_budget_execution_parent
 from .apim_control_plane_contract import PolicyCompilationError
@@ -21,7 +22,12 @@ from .apim_policy_components import (
     serialize_policy,
     validate_parent_policy,
 )
-from .apim_storage_routes import FixedRouteBinding, FixedRouteProgram, compile_fixed_route_program
+from .apim_storage_routes import (
+    FULL_PROGRAM_PROFILES,
+    FixedRouteBinding,
+    FixedRouteProgram,
+    compile_fixed_route_program,
+)
 
 
 def render_onboarding_fixed_program(
@@ -46,6 +52,9 @@ def render_onboarding_fixed_program(
         trust_binding_sha256=document_digest(configuration),
         trusted_vault_origins=(f"https://{vault}.vault.azure.net",),
         publisher_subscription_id=request.probe_subscription_id,
+        supported_profiles=FULL_PROGRAM_PROFILES,
+        image_limits=DEFAULT_IMAGE_GENERATION_LIMITS,
+        decision_enabled=True,
         model_additions_enabled=True,
         pool_enabled=True,
         router_enabled=True,

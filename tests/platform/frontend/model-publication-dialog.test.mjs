@@ -348,6 +348,10 @@ test("connection type uses a neutral OpenAI-compatible icon and retains provider
 
 test("image price states accept explicit zero and submit all three rates without chat fields", async () => {
   const view = harness()
+  Object.assign(view.program.data.current_installation, {
+    supported_profiles: ["openai-v1", "anthropic-messages", "openai-images"],
+    image_limits: { max_request_bytes: 24576, max_response_bytes: 16777216, output_reservation_tokens: 8192, timeout_seconds: 180 },
+  })
   view.select("chat", "image_generation")
   view.input("foundry-deployment", " image-deployment ")
   await view.submit()

@@ -39,6 +39,15 @@ class ImageGenerationLimits(StrictModel):
         return self.max_request_bytes + self.output_reservation_tokens
 
 
+# Its burst reservation equals the canonical parent policy's image burst cap (32768).
+DEFAULT_IMAGE_GENERATION_LIMITS = ImageGenerationLimits(
+    max_request_bytes=24576,
+    max_response_bytes=16777216,
+    output_reservation_tokens=8192,
+    timeout_seconds=180,
+)
+
+
 class ImageGenerationConfiguration(ImageGenerationLimits):
     sizes: tuple[str, ...] = Field(default=(), max_length=32)
     qualities: tuple[str, ...] = Field(default=(), max_length=32)

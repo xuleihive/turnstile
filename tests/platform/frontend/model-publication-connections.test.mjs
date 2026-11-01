@@ -951,8 +951,41 @@ test("Decision model purpose is selectable but cannot submit through the unsuppo
     setPublishError() {},
     dataSource: { publishModel: async request => requests.push(request) },
   })
-  assert.deepEqual(errors, ["所选网关尚未启用 Decision 接口。"])
+  assert.deepEqual(errors, ["所选网关尚未启用 Decision 接口。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。"])
   assert.deepEqual(requests, [])
+})
+
+test("Text-to-image cannot submit through a gateway program without image generation", async () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url), "utf8")
+  assert.match(source, /const imageGatewaySupported = installedProgram\?\.supported_profiles\?\.includes\("openai-images"\) === true\s+&& installedProgram\.image_limits != null/)
+  assert.match(source, /disabled=\{\(decision && !decisionSupported\) \|\| \(imageGeneration && !imageGatewaySupported\) \|\|/)
+  const validation = source.match(/  const validate = \(\) => \{([\s\S]+?)\n  \}\n\n  const submit/)
+  const submission = source.match(/  const submit = async \(\) => \{([\s\S]+?)\n  \}\n  const status/)
+  assert.ok(validation)
+  assert.ok(submission)
+  for (const imageGatewaySupported of [false, true]) {
+    const errors = [], requests = []
+    const context = {
+      decision: false, imageGeneration: true, imageGatewaySupported, foundry: true,
+      topologyBlocked: false, selectedGateway: { id: "unit-gateway" }, programPending: false,
+      programReady: true, publishing: false, selectedRuntime: { id: "unit-runtime" },
+      selectedProvider: { id: "unit-provider" }, pricing: {}, validateModelPricing: () => null,
+      optionalNumberError: () => null, contextWindow: "", inputPrice: "5", outputPrice: "30",
+      cacheReadPrice: "1.25", cacheWritePrice: "", requiredCredentialMissing: false,
+      foundryDeployment: "gpt-image-2", registry: { image_generation_supported: true },
+      imageConfigurationSupported: true, priceValues: ["5", "30", "1.25"],
+      setFormError: value => errors.push(value), setPublishError() {},
+      dataSource: { publishModel: async request => requests.push(request) },
+    }
+    if (imageGatewaySupported) {
+      assert.equal(runInNewContext(stripTypeScriptTypes(`(() => {${validation[1]}\n})()`), context), null)
+      continue
+    }
+    const script = stripTypeScriptTypes(`const validate = () => {${validation[1]}\n}; (async () => {${submission[1]}\n})()`)
+    await runInNewContext(script, context)
+    assert.deepEqual(errors, ["所选网关未启用图像生成。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。"])
+    assert.deepEqual(requests, [])
+  }
 })
 
 test("Decision pricing uses the shared official catalog instead of hardcoded rates", () => {
@@ -1119,13 +1152,30 @@ test("failed publication progress does not claim a model is serving or that Azur
   assert.equal(markup.includes("当前模型继续正常服务"), false)
 })
 
+test("a missing gateway capability is a final, explained failure without Republish", () => {
+  const markup = frontendRequire("react-dom/server").renderToStaticMarkup(publicationComponents.PublicationProgress({
+    publication: { status: "failed", failure: { code: "gateway_capability_unavailable", profile: "openai-images" } },
+  }))
+  assert.match(markup, /发布未完成，当前 Revision 未受影响/)
+  assert.equal(markup.includes("生效状态未确认"), false)
+  assert.match(publicationComponents.publicationCapabilityMessage("openai-images"), /图像生成（openai-images）.*scripts\.deploy enable-capabilities/)
+  assert.match(publicationComponents.publicationCapabilityMessage("microsoft-decision"), /Decision 接口（microsoft-decision）.*scripts\.deploy enable-capabilities/)
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url), "utf8")
+  assert.match(source, /const capabilityFailure = failed && publication\.data\?\.failure\?\.code === "gateway_capability_unavailable"/)
+  assert.match(source, /\{failed && !capabilityFailure && <Button type="button" onClick=\{\(\) => void retry\(\)\}/)
+  const page = readFileSync(new URL("../../../frontend/src/pages/model-management-page.tsx", import.meta.url), "utf8")
+  assert.match(page, /actionLabel: publication\.failure\?\.code === "gateway_capability_unavailable" \? "查看详情" : "重新发布"/)
+})
+
 const releaseComponents = {}
 runInNewContext(releasesModule + "\nexports.PublicationFailureNotice = PublicationFailureNotice; exports.ReleaseDetail = ReleaseDetail", {
   exports: releaseComponents,
   require: name => name === "react/jsx-runtime" || name === "lucide-react"
     ? frontendRequire(name) : name === "../providers/timezone-provider"
       ? { useTimezone: () => ({ timezone: "UTC" }) } : name === "../locales"
-        ? { getIntlLocale: () => "en-US" } : new Proxy({}, { get: (_target, key) => key }),
+        ? { getIntlLocale: () => "en-US" }
+        : name === "../components/model-management/model-publication-dialog" ? publicationComponents
+          : new Proxy({}, { get: (_target, key) => key }),
 })
 
 for (const status of ["queued", "validating", "provisioning", "building_revision", "verifying", "awaiting_authorization", "promoting", "failed", "rolling_back", "rolled_back", "active", "superseded"]) {

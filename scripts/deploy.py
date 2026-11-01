@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid5
 from xml.etree import ElementTree as ET
 
@@ -58,6 +58,7 @@ from turnstile_core.domain.gateway_targets import (
     native_gateway_scope_for_capability,
     self_hosted_gateway_capability_for_tier,
 )
+from turnstile_core.domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
 from turnstile_core.domain.storage_routes import (
     FixedProgramCutover,
     FixedProgramInstallation,
@@ -74,11 +75,13 @@ from turnstile_core.integrations.apim_policy_components import (
     serialize_policy,
 )
 from turnstile_core.integrations.apim_storage_routes import (
+    FULL_PROGRAM_PROFILES,
     FixedRouteBinding,
     compile_fixed_route_program,
     fixed_operation_contracts,
     fixed_policy_digest,
     fixed_program_digest,
+    prepare_capability_upgrade,
 )
 from turnstile_core.persistence.repository_support import _registered_program_installation
 
@@ -106,6 +109,7 @@ EXPECTED_FUNCTIONS = {
     },
 }
 FIXED_ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+CAPABILITY_UPGRADE_VERSION = "capabilities-v1"
 POSTGRES_VERSION = "16"
 POSTGRES_AVAILABILITY_ZONE = "1"
 DEFAULT_POSTGRES_SKU_NAME = "Standard_B1ms"
@@ -2078,6 +2082,9 @@ def initialize_fixed_program(
         trusted_vault_origins=(f"https://{vault}.vault.azure.net",),
         publisher_subscription_id=_output_string(outputs, "apimProbeSubscriptionId"),
         observer_key_named_value=_output_string(outputs, "observerAdapterKeyNamedValueName"),
+        supported_profiles=FULL_PROGRAM_PROFILES,
+        image_limits=DEFAULT_IMAGE_GENERATION_LIMITS,
+        decision_enabled=True,
         model_additions_enabled=True,
         pool_enabled=True,
         router_enabled=True,
@@ -2188,6 +2195,145 @@ def recover_fixed_program(
             raise DeploymentError("Fixed program recovery registration differs from its candidate")
 
 
+def enable_program_capabilities(
+    runner: CommandRunner, inputs: DeploymentInputs, outputs: Mapping[str, Any],
+    *, assume_yes: bool = False, owner_credentials: Path | None = None,
+) -> None:
+    if "pendingInstallation" in outputs or "pendingFixedBootstrap" in outputs:
+        raise DeploymentError("Complete the pending installation before enabling capabilities")
+    core = ExistingCore.from_outputs(outputs)
+    api_id = _output_string(outputs, "apimApiId")
+    resource_id = (
+        f"/subscriptions/{inputs.subscription}/resourceGroups/{core.apim_resource_group_name}"
+        f"/providers/Microsoft.ApiManagement/service/{core.apim_name}/apis/{api_id}"
+    )
+    application_root = (
+        f"/subscriptions/{inputs.subscription}/resourceGroups/{inputs.resource_group_name}"
+        "/providers/Microsoft.Web/sites/"
+    )
+    descriptor = current_app_settings(
+        runner, inputs, _output_string(outputs, "controlPlaneFunctionName"),
+    ).get("TURNSTILE_FIXED_BOOTSTRAP_DESCRIPTOR")
+    if not descriptor:
+        raise DeploymentError("Enabling capabilities requires a fixed program installed by deploy")
+    installed = FixedInstallationDescriptor.model_validate_json(descriptor)
+    password = (
+        owner_credentials_password(owner_credentials, inputs.owner_email)
+        if owner_credentials is not None else getpass.getpass("Existing Owner password: ")
+    )
+    api_url = _output_string(outputs, "apiUrl")
+
+    def approved_program() -> tuple[FixedProgramInstallation, JsonObject]:
+        preview = verify_initial_fixed_program(
+            api_url, inputs.owner_email, password, installed.model_dump(mode="json"),
+        )
+        return _approved_fixed_installation(installed, preview), preview
+
+    approved, preview = approved_program()
+    if approved.decision_enabled and approved.image_limits is not None:
+        print("Decision and image generation are already enabled; no changes are required")
+        return
+    directory = inputs.state_path.with_suffix(".upgrades") / CAPABILITY_UPGRADE_VERSION
+    credentials = runner.run_json([
+        "az", "account", "get-access-token", "--subscription", inputs.subscription,
+        "--resource", "https://management.azure.com/", "--output", "json",
+    ])
+    with _upgrade_lock(directory), httpx.Client(
+        headers={"Authorization": f"Bearer {credentials.pop('accessToken')}",
+                 "Accept": "application/json"},
+        timeout=60, trust_env=False,
+    ) as client:
+        current = AzureUpgradeBackend(
+            client, resource_id,
+            (application_root + _output_string(outputs, "apiName"),
+             application_root + _output_string(outputs, "controlPlaneFunctionName")),
+            lambda *_args: None,
+        ).read()
+        if current is None:
+            raise DeploymentError("Saved API is absent; capabilities cannot be enabled")
+        plan_path = directory / "plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else None
+        upgrade = (FixedProgramUpgrade.model_validate_json(json.dumps(plan["upgrade"]))
+                   if plan is not None else None)
+        if upgrade is not None and upgrade.previous_installation_sha256 != route_document_digest(
+            approved,
+        ):
+            if fixed_policy_digest(current.parent_policy) != approved.parent_policy_sha256:
+                raise DeploymentError(
+                    "The saved capability plan no longer matches the live API; review it first",
+                )
+            plan_path.rename(directory / f"plan-superseded-{int(time.time())}.json")
+            plan = upgrade = None
+        if plan is None or upgrade is None:
+            _validate_installed_fixed_program(
+                current, installed, inputs, outputs,
+                deployment_budget_delegation(runner, inputs, outputs), preview,
+            )
+            upgrade, parent_policy, operation_policies = prepare_capability_upgrade(
+                approved, preview["previous_publication_id"], current.parent_policy,
+                {name: (operation["method"], operation["urlTemplate"],
+                        cast(str, current.operation_policies[name]))
+                 for name, operation in current.operations.items()},
+                installed.binding.ledger_table_endpoint, installed.binding.ledger_table_name,
+                installed.binding.observer_key_named_value,
+                enable_decision=True, enable_images=True,
+            )
+            plan = {"upgrade": upgrade.model_dump(mode="json"), "parent_policy": parent_policy,
+                    "operation_policies": operation_policies}
+            _write_private_json(plan_path, plan)
+        assert upgrade is not None
+        target = upgrade.installation
+        if fixed_policy_digest(current.parent_policy) not in {
+            approved.parent_policy_sha256, target.parent_policy_sha256,
+        }:
+            raise DeploymentError("The live API parent is neither the approved nor the planned one")
+        print(f"Gateway program: {target.program.scope.target_id} ({core.apim_name}/{api_id})")
+        print("Profiles: " + ", ".join(approved.supported_profiles)
+              + " -> " + ", ".join(target.supported_profiles))
+        print("Operations added or replaced: " + ", ".join(sorted(
+            name for name, digest in target.operation_policies_sha256.items()
+            if approved.operation_policies_sha256.get(name) != digest
+        )))
+        _confirm_deployment(assume_yes)
+        revision = resource_id + ";rev=" + quote(target.program.api_revision, safe="")
+        etags: dict[str, str | None] = {}
+        for name in target.operation_contracts:
+            response = client.head(
+                "https://management.azure.com" + revision + "/operations/"
+                + quote(name, safe="") + "/policies/policy",
+                params={"api-version": "2024-05-01"},
+            )
+            if response.status_code == 404 and name == "microsoft-decision":
+                etags[name] = None
+                continue
+            response.raise_for_status()
+            etags[name] = response.headers.get("ETag", "")
+        parent = client.head(
+            "https://management.azure.com" + revision + "/policies/policy",
+            params={"api-version": "2024-05-01"},
+        )
+        parent.raise_for_status()
+    write = FixedProgramCutover(
+        upgrade=upgrade, parent_policy=plan["parent_policy"],
+        expected_parent_etag=parent.headers.get("ETag", ""),
+        operation_policies=plan["operation_policies"], expected_operation_etags=etags,
+    )
+    try:
+        recover_fixed_program(runner, inputs, outputs, (write, preview["config_sha256"]))
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != 409:
+            raise
+    final = approved_program()[1]
+    if upgrade.model_dump(mode="json") not in [
+        *final.get("registration_history", []), final.get("registration"),
+    ]:
+        raise DeploymentError(
+            "The capability cutover was not confirmed; review the Control-plane logs and rerun "
+            "the same command to read back and resume",
+        )
+    print("Decision and image generation are enabled on the gateway program")
+
+
 def verify_initial_fixed_program(
     api_url: str, owner_email: str, owner_password: str, descriptor: Mapping[str, Any],
 ) -> JsonObject:
@@ -2287,6 +2433,14 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
             raise DeploymentError("An incremental upgrade requires the original deployment outputs")
         gateway_upgrade(
             runner, inputs, saved_outputs, args.action, assume_yes=args.yes,
+            owner_credentials=args.owner_credentials,
+        )
+        return
+    if args.action == "enable-capabilities":
+        if saved_outputs is None:
+            raise DeploymentError("Enabling capabilities requires the original deployment outputs")
+        enable_program_capabilities(
+            runner, inputs, saved_outputs, assume_yes=args.yes,
             owner_credentials=args.owner_credentials,
         )
         return
@@ -2530,7 +2684,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Plan or deploy a complete self-hosted Turnstile environment."
     )
     parser.add_argument(
-        "action", choices=("plan", "deploy", "plan-upgrade", "upgrade", "rollback-upgrade")
+        "action", choices=(
+            "plan", "deploy", "plan-upgrade", "upgrade", "rollback-upgrade", "enable-capabilities",
+        ),
     )
     parser.add_argument("--subscription", required=True)
     parser.add_argument("--parameters", type=Path, required=True)

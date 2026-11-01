@@ -36,6 +36,7 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog"
 import { Button } from "../components/ui/button"
+import { publicationCapabilityMessage } from "../components/model-management/model-publication-dialog"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select"
 import {
@@ -289,6 +290,7 @@ function PublicationFailureNotice({ failure, publicationId }: {
     publisher_authorization_failed: "Azure 拒绝了 Publisher 的 APIM 管理请求。请核对发布身份的授权。",
     parent_policy_changed: "APIM 父策略与排队时的快照不一致，请核对变化后再重试。",
     credential_source_missing: "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。",
+    gateway_capability_unavailable: publicationCapabilityMessage(failure.profile),
     deployment_not_found: "选定连接中不存在该部署，请使用实际部署名称而不是模型名称。",
     deployment_metadata_unavailable: "无法读取部署目录，请核对连接认证和目录权限。",
     upstream_request_failed: "模型验证请求失败，请核对部署名称、接口路径和 HTTP 状态。",

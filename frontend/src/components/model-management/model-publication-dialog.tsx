@@ -9,6 +9,7 @@ import type {
   ApimTargetTopologyList,
   GatewayPublication,
   GatewayPublicationCreate,
+  GatewayPublicationFailure,
   GatewayPublicationStatus,
   ModelProvider,
   ModelRegistry,
@@ -151,7 +152,7 @@ function PublicationProgress({ publication }: { publication: GatewayPublication 
         </li>
       })}
     </ol>
-    </> : <p className="publication-progress-unavailable">{removing ? completed ? "模型已从 Turnstile 移除" : "移除尚未完成" : "发布未完成，生效状态未确认。"}</p>}
+    </> : <p className="publication-progress-unavailable">{removing ? completed ? "模型已从 Turnstile 移除" : "移除尚未完成" : publication.failure?.code === "gateway_capability_unavailable" ? "发布未完成，当前 Revision 未受影响。" : "发布未完成，生效状态未确认。"}</p>}
   </section>
 }
 
@@ -298,6 +299,12 @@ export function publicationStatusLabel(status: GatewayPublicationStatus, configu
   }[status]
 }
 
+export function publicationCapabilityMessage(profile: GatewayPublicationFailure["profile"]) {
+  if (profile === "openai-images") return "所选网关程序未启用图像生成（openai-images），请由部署管理员运行 scripts.deploy enable-capabilities 完成网关升级后再发布。"
+  if (profile === "microsoft-decision") return "所选网关程序未启用 Decision 接口（microsoft-decision），请由部署管理员运行 scripts.deploy enable-capabilities 完成网关升级后再发布。"
+  return "所选网关程序不支持该模型的接口格式，请先完成网关升级。"
+}
+
 export function ModelPublicationDialog({
   registry,
   topology = null,
@@ -413,6 +420,8 @@ export function ModelPublicationDialog({
   const decisionSupported = registry.decision_supported === true
     && installedProgram?.decision_enabled === true
     && installedProgram.supported_profiles?.includes("microsoft-decision") === true
+  const imageGatewaySupported = installedProgram?.supported_profiles?.includes("openai-images") === true
+    && installedProgram.image_limits != null
   const programError = selectedGateway && !publicationId && !programPending && !programReady
     ? programPreview.isError ? "无法验证网关发布状态。" : "网关尚未准备好单模型发布。"
     : null
@@ -470,7 +479,7 @@ export function ModelPublicationDialog({
     if (!selectedGateway) return "没有可用的 Azure API Management 网关。"
     if (programPending) return "正在验证网关发布状态"
     if (!programReady) return programError ?? "网关尚未准备好单模型发布。"
-    if (decision && !decisionSupported) return "所选网关尚未启用 Decision 接口。"
+    if (decision && !decisionSupported) return "所选网关尚未启用 Decision 接口。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。"
     if (!selectedRuntime || !selectedProvider) return "请选择当前网关下的可用连接。"
     const priceError = validateModelPricing(pricing)
     if (priceError) return {
@@ -492,6 +501,7 @@ export function ModelPublicationDialog({
     if (foundry) {
       if (!foundryDeployment.trim()) return "请输入已有的 Foundry Deployment Name。"
       if (imageGeneration && registry.image_generation_supported !== true) return "后端尚未启用图像生成"
+      if (imageGeneration && !imageGatewaySupported) return "所选网关未启用图像生成。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。"
       if (imageGeneration && !imageConfigurationSupported) return "后端尚未支持图像参数透传"
       if (imageGeneration && priceValues.some(value => !value.trim())) return "请填写文字输入、缓存文字和图像输出单价。"
       return null
@@ -561,6 +571,8 @@ export function ModelPublicationDialog({
   const status = publication.data?.status
   const terminal = status ? TERMINAL_STATUSES.includes(status) : false
   const failed = status === "failed"
+  // Missing gateway capabilities fail before any APIM write; republishing cannot succeed.
+  const capabilityFailure = failed && publication.data?.failure?.code === "gateway_capability_unavailable"
   const awaitingAuthorization = status === "awaiting_authorization"
   const active = status === "active"
   const superseded = status === "superseded"
@@ -661,7 +673,7 @@ export function ModelPublicationDialog({
               {failed || rolledBack ? <TriangleAlert size={15} /> : awaitingAuthorization ? <ShieldCheck size={15} /> : active ? <Check size={15} /> : <ShieldCheck size={15} />}
               <div>
                 <span className="publication-safety-title"><b>{failed ? removing ? "移除未完成" : "发布未完成" : rolledBack ? "已回退" : awaitingAuthorization ? "等待授权" : active ? removing ? "模型已从 Turnstile 移除" : "发布完成" : removing ? "移除尚未完成" : "当前配置仍在生效"}</b>{!failed && !rolledBack && <FieldHelp>{removing ? "历史用量与上游模型保留。" : awaitingAuthorization ? "目标提供方授权就绪后继续验证，验证通过前不启用本次发布。" : active ? "模型已发布，分配人员后即可使用" : "验证通过后启用本次发布。"}</FieldHelp>}</span>
-                {failed && <span className="publication-safety-error">{publication.data.failure?.code === "credential_source_missing" ? "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。" : publication.data.failure?.message ?? publication.data.error_message ?? (removing ? "移除未完成，生效状态未确认。" : "发布未完成，请使用发布 ID 查看服务日志。")}</span>}
+                {failed && <span className="publication-safety-error">{publication.data.failure?.code === "credential_source_missing" ? "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。" : capabilityFailure ? publicationCapabilityMessage(publication.data.failure?.profile) : publication.data.failure?.message ?? publication.data.error_message ?? (removing ? "移除未完成，生效状态未确认。" : "发布未完成，请使用发布 ID 查看服务日志。")}</span>}
               </div>
             </div>}
           </>}
@@ -794,7 +806,8 @@ export function ModelPublicationDialog({
             </>}
           </section>
 
-          {decision && !programPending && !decisionSupported && <div className="registry-error" role="alert">所选网关尚未启用 Decision 接口。</div>}
+          {decision && !programPending && !decisionSupported && <div className="registry-error" role="alert">所选网关尚未启用 Decision 接口。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。</div>}
+          {imageGeneration && !programPending && registry.image_generation_supported === true && !imageGatewaySupported && <div className="registry-error" role="alert">所选网关未启用图像生成。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。</div>}
           {imageGeneration && !imageConfigurationSupported && <div className="registry-error" role="alert">后端尚未支持图像参数透传</div>}
           <section className="simple-model-section simple-pricing" aria-labelledby="publication-pricing-heading">
             <div className="publication-section-heading">
@@ -843,9 +856,9 @@ export function ModelPublicationDialog({
 
         <DialogFooter className="registry-editor-footer">
           <Button type="button" variant="outline" className="publication-dismiss" onClick={onClose}>{publicationId ? "关闭" : "取消"}</Button>
-          {failed && <Button type="button" onClick={() => void retry()} disabled={publishing || Boolean(!removing && publication.data?.retry_requires_credential && !providerApiKey.trim())}>{removing ? <RefreshCw size={14} /> : <Rocket size={14} />}{removing ? "重试移除" : "重新发布"}</Button>}
+          {failed && !capabilityFailure && <Button type="button" onClick={() => void retry()} disabled={publishing || Boolean(!removing && publication.data?.retry_requires_credential && !providerApiKey.trim())}>{removing ? <RefreshCw size={14} /> : <Rocket size={14} />}{removing ? "重试移除" : "重新发布"}</Button>}
           {awaitingAuthorization && <Button type="button" onClick={() => void resumeAuthorization()} disabled={publishing}><ShieldCheck size={14} />我已授权，重新验证</Button>}
-          {!publicationId && <Button type="button" onClick={() => void submit()} disabled={(decision && !decisionSupported) || publishing || programPending || !programReady || topologyBlocked || requiredCredentialMissing || !selectedGateway || !selectedRuntime || !selectedProvider || (imageGeneration && !imageConfigurationSupported) || (pricing.contextPricingPreview === true && !!validateModelPricing(pricing))}><Rocket size={14} />{publishing ? "正在提交" : "发布模型"}</Button>}
+          {!publicationId && <Button type="button" onClick={() => void submit()} disabled={(decision && !decisionSupported) || (imageGeneration && !imageGatewaySupported) || publishing || programPending || !programReady || topologyBlocked || requiredCredentialMissing || !selectedGateway || !selectedRuntime || !selectedProvider || (imageGeneration && !imageConfigurationSupported) || (pricing.contextPricingPreview === true && !!validateModelPricing(pricing))}><Rocket size={14} />{publishing ? "正在提交" : "发布模型"}</Button>}
         </DialogFooter>
       </div>
     </DialogContent>

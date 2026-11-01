@@ -74,6 +74,7 @@ from ..domain.storage_routes import (
 from ..integrations.apim_control_plane_contract import (
     BackendCircuitBreakerResource,
     BackendResource,
+    GatewayCapabilityUnavailableError,
     OAuthCredentialResource,
     PolicyCompilationError,
     RetryablePublicationError,
@@ -291,13 +292,20 @@ def _validate_program_cutover(
     operations = management.route_program_operations(previous.program.api_revision)
     enables_pool = ((installed.pool_enabled and not previous.pool_enabled)
                     or (installed.router_enabled and not previous.router_enabled))
+    enables_decision = installed.decision_enabled and not previous.decision_enabled
+    enables_images = installed.image_limits is not None and previous.image_limits is None
     refreshes = original_parent_policy is not None
-    if (set(operations) != set(previous.operation_contracts)
-            or any((method, path) != previous.operation_contracts[name]
+    rewrites = bool(operation_policies) and (
+        enables_pool or refreshes or enables_decision or enables_images
+    )
+    # A resumed Decision cutover may have created its Operation before the interruption.
+    if (set(operations) not in ([set(previous.operation_contracts)] + (
+            [set(installed.operation_contracts)] if enables_decision and rewrites else []))
+            or any((method, path) != installed.operation_contracts[name]
                    or fixed_policy_digest(policy) not in {
-                       previous.operation_policies_sha256[name],
-                       installed.operation_policies_sha256[name] if (enables_pool or refreshes)
-                       and operation_policies else previous.operation_policies_sha256[name],
+                       previous.operation_policies_sha256.get(name),
+                       installed.operation_policies_sha256[name] if rewrites
+                       else previous.operation_policies_sha256.get(name),
                    }
                    for name, (method, path, policy) in operations.items())):
         raise PolicyCompilationError("Program cutover operation contract changed")
@@ -364,7 +372,16 @@ def _validate_program_cutover(
                         usage_identity=usage_identity_expression(parent),
                     )
                 )
-            elif name not in selected:
+            elif name == "images-generations" and enables_images:
+                original = parse_policy(fixed_operation(
+                    name, installed_route_binding(
+                        installed, config.settings.ledger_table_endpoint,
+                        config.settings.ledger_table_name,
+                        config.settings.apim_usage_observer_key_named_value,
+                    ), logger_id=eventhub_logger_id(parent),
+                    usage_identity=usage_identity_expression(parent),
+                ))
+            elif name not in selected or name == "microsoft-decision" and enables_decision:
                 if (name != "microsoft-decision" or previous.decision_enabled
                         or not installed.decision_enabled):
                     raise PolicyCompilationError("Program cutover adds an unsupported Operation")
@@ -498,12 +515,15 @@ def register_verified_program_upgrade(
                         native_digest != installed.parent_policy_sha256
                         and native_digest == fixed_policy_digest(normalized)
                     )
-                    enables_pool = (
+                    enables_capability = (
                         installed.pool_enabled and not previous_installation.pool_enabled
                         or installed.router_enabled and not previous_installation.router_enabled
+                        or installed.decision_enabled and not previous_installation.decision_enabled
+                        or installed.image_limits is not None
+                        and previous_installation.image_limits is None
                     )
                     rewrites_operations = (
-                        enables_pool or original_parent_policy is not None
+                        enables_capability or original_parent_policy is not None
                     ) and bool(operation_policies)
                     native_operations = management.route_program_operations(
                         previous_installation.program.api_revision,
@@ -2077,16 +2097,18 @@ class FixedRoutePublisherFactory:
                         raise PolicyCompilationError("Fixed route Pool member Runtime changed")
             runtime = next((item for item in runtimes if item["id"] == binding.runtime_id), None)
             config = runtime.get("config") if runtime is not None else None
+            profile = profiles.get(binding.api_format)
             if (
                 runtime is None or runtime.get("enabled") is not True
                 or str(runtime.get("gateway_profile_id")) != str(publication.gateway_profile_id)
-                or not isinstance(config, dict)
-                or profiles.get(binding.api_format) not in installation.supported_profiles
+                or not isinstance(config, dict) or profile is None
                 or binding.serving_deployments and all(
                     deployment.native_gateway_id != installation.program.scope.gateway_id
                        for deployment in binding.serving_deployments)
             ):
                 raise PolicyCompilationError("Fixed route dependency preflight is unsupported")
+            if profile not in installation.supported_profiles:
+                raise GatewayCapabilityUnavailableError(profile)
             adapter = binding_request_adapter(binding)
             if adapter is not None and adapter not in installation.supported_adapters:
                 raise PolicyCompilationError("Fixed route Bedrock adapter is not installed")

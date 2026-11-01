@@ -16,6 +16,7 @@ import httpx
 from pydantic import Field, SecretStr, model_validator
 
 from ..domain.image_profiles import (
+    DEFAULT_IMAGE_GENERATION_LIMITS,
     ImageGenerationLimits,
     ImageGenerationProfile,
     create_image_profile,
@@ -30,6 +31,7 @@ from ..domain.storage_routes import (
     ProgramCapabilityProof,
     ProgramIdentity,
     RouteModel,
+    RouteProfile,
     RouteScope,
     canonical_document,
     document_digest,
@@ -278,6 +280,11 @@ class FixedProgramVerifier:
             for name, value in expected.items()
         ):
             raise PolicyCompilationError("Fixed route authenticated probe identity changed")
+
+
+FULL_PROGRAM_PROFILES: tuple[RouteProfile, ...] = (
+    "openai-v1", "anthropic-messages", "openai-images", "microsoft-decision",
+)
 
 
 class FixedRouteBinding(RouteModel):
@@ -2542,12 +2549,26 @@ def prepare_budget_delegation_upgrade(
     installed: FixedProgramInstallation, publication_id: str, candidate: str,
     operations: dict[str, tuple[str, str, str]],
     *, enable_pool: bool = False, enable_router: bool = False,
+    enable_decision: bool = False, image_limits: ImageGenerationLimits | None = None,
 ) -> tuple[FixedProgramUpgrade, str]:
     contracts = fixed_operation_contracts(
         installed.operation_contracts["models"][1],
         installed.operation_contracts["anthropic-messages"][1],
-        installed.retired_operations, decision_enabled=installed.decision_enabled,
+        installed.retired_operations,
+        decision_enabled=installed.decision_enabled or enable_decision,
     )
+    capabilities: dict[str, object] = {}
+    if enable_decision or image_limits is not None:
+        capabilities = {
+            "supported_profiles": (
+                *installed.supported_profiles,
+                *(("openai-images",) if image_limits is not None else ()),
+                *(("microsoft-decision",) if enable_decision else ()),
+            ),
+            "image_limits": image_limits or installed.image_limits,
+            "decision_enabled": installed.decision_enabled or enable_decision,
+            "operation_contracts": contracts,
+        }
     root = parse_policy(compact_fixed_policy(candidate))
     marker = root.find(".//set-variable[@name='routeProgram']")
     if marker is None:
@@ -2590,10 +2611,74 @@ def prepare_budget_delegation_upgrade(
             },
             **({"pool_enabled": True} if enable_pool or enable_router else {}),
             **({"router_enabled": True} if enable_router else {}),
+            **capabilities,
         }),
     )
     upgrade.require_previous(publication_id, installed)
     return upgrade, candidate
+
+
+def prepare_capability_upgrade(
+    installed: FixedProgramInstallation, publication_id: str, parent: str,
+    operations: Mapping[str, tuple[str, str, str]], ledger_endpoint: str, ledger_table: str,
+    observer_key: str | None, *, enable_decision: bool, enable_images: bool,
+) -> tuple[FixedProgramUpgrade, str, dict[str, str]]:
+    # Other operations keep their installed bytes; the cutover checks them against the live API.
+    from .apim_budget_execution import eventhub_logger_id, usage_identity_expression
+
+    decision = enable_decision and not installed.decision_enabled
+    images = enable_images and installed.image_limits is None
+    if not (decision or images):
+        raise PolicyCompilationError("Program capabilities are already enabled")
+    previous = installed_route_binding(installed, ledger_endpoint, ledger_table, observer_key)
+    enabled = FixedRouteBinding.model_validate_json(previous.model_copy(update={
+        "supported_profiles": (
+            *previous.supported_profiles,
+            *(("openai-images",) if images else ()),
+            *(("microsoft-decision",) if decision else ()),
+        ),
+        "image_limits": DEFAULT_IMAGE_GENERATION_LIMITS if images else previous.image_limits,
+        "decision_enabled": previous.decision_enabled or decision,
+    }).model_dump_json())
+    root = parse_policy(parent)
+    bursts = {node.get("increment-count") for node in root.iter("rate-limit-by-key")
+              if node.get("counter-key", "").startswith('@($"finops:images:')}
+    if images and bursts != {str(DEFAULT_IMAGE_GENERATION_LIMITS.burst_reservation_tokens)}:
+        raise PolicyCompilationError("Installed image burst cap differs from the image capacity")
+    if {name: operation[:2] for name, operation in operations.items()} != dict(
+        installed.operation_contracts,
+    ):
+        raise PolicyCompilationError("Installed program operations differ from its approval")
+    logger_id, usage_identity = eventhub_logger_id(root), usage_identity_expression(root)
+    for name in set(FIXED_OPERATIONS) & set(operations):
+        if component_digest(parse_policy(operations[name][2]), normalize_text_defaults=False) != (
+            component_digest(parse_policy(fixed_operation(
+                name, previous, logger_id=logger_id, usage_identity=usage_identity,
+            )), normalize_text_defaults=False)
+        ):
+            raise PolicyCompilationError(
+                "Installed program is not current; wait for the Control-plane refresh",
+            )
+    policies = {name: operation[2] for name, operation in operations.items()}
+    for name in (("images-generations",) if images else ()) + (
+        ("microsoft-decision",) if decision else ()
+    ):
+        policies[name] = compact_fixed_policy(fixed_operation(
+            name, enabled, logger_id=logger_id, usage_identity=usage_identity,
+        ))
+    baseline = serialize_policy(_without_fixed_route_parent(parent, previous))
+    contracts = fixed_operation_contracts(
+        enabled.models_path, enabled.messages_path, enabled.retired_operations,
+        decision_enabled=enabled.decision_enabled,
+    )
+    upgrade, candidate = prepare_budget_delegation_upgrade(
+        installed, publication_id,
+        compact_fixed_policy(compose_fixed_route_parent(baseline, enabled)),
+        {name: (method, path, policies[name]) for name, (method, path) in contracts.items()},
+        enable_decision=decision,
+        image_limits=DEFAULT_IMAGE_GENERATION_LIMITS if images else None,
+    )
+    return upgrade, candidate, policies
 
 
 def refresh_fixed_budget_execution_policy(

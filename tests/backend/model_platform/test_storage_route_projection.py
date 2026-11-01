@@ -4426,6 +4426,9 @@ def test_program_upgrade_cutover_holds_proof_guard_until_registration(
 
     management._request.side_effect = request
     management._policy_response_value.return_value = parent
+    management.route_program_operations.return_value = {
+        "models": ("GET", "/models", "<policies />"),
+    }
     native_parent = parent if fault in {"written", "written-expired"} else (
         ET.tostring(ET.fromstring(parent), encoding="unicode") if fault == "xml-normalized"
         else "<policies><inbound><base /><return-response /></inbound></policies>"

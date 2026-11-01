@@ -214,6 +214,52 @@ def test_onboarding_fixed_program_scope_matches_apim_tier(
     assert upgraded.operation_policies == program.operation_policies
 
 
+def assert_decision_and_image_program(
+    binding: Any, parent_policy: str, policies: dict[str, str],
+    contracts: dict[str, tuple[str, str]],
+) -> None:
+    from turnstile_core.domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
+    from turnstile_core.domain.storage_routes import canonical_document
+
+    assert binding.supported_profiles == (
+        "openai-v1", "anthropic-messages", "openai-images", "microsoft-decision",
+    )
+    assert binding.decision_enabled is True
+    assert binding.image_limits == DEFAULT_IMAGE_GENERATION_LIMITS
+    assert contracts["microsoft-decision"] == ("POST", "/providers/microsoft/v1/systemone")
+    assert set(policies) == set(contracts)
+    variables = {
+        node.get("name"): node.get("value")
+        for node in parse_policy(parent_policy).iter("set-variable")
+    }
+    assert variables["routeDecisionEnabled"] == "@(true)"
+    assert json.loads(variables["routeProfiles"] or "") == list(binding.supported_profiles)
+    assert variables["routeImageLimits"] == canonical_document(DEFAULT_IMAGE_GENERATION_LIMITS)
+    images = parse_policy(policies["images-generations"])
+    assert "route_image_capacity_unavailable" not in policies["images-generations"]
+    # Without a published image route the operation still answers 503 instead of forwarding.
+    assert any(
+        "IsNullOrEmpty" in when.get("condition", "")
+        and "routeContent" in when.get("condition", "")
+        and when.find("return-response/set-status[@code='503']") is not None
+        for when in images.iter("when")
+    )
+
+
+@pytest.mark.parametrize("tier", ["Developer", "StandardV2"])
+def test_onboarded_gateway_program_enables_decision_and_images(tier: str) -> None:
+    plan = onboarding_plan(service_tier=tier)
+    source = Path(__file__).resolve().parents[3] / "infra/policies/foundry-finops-policy.xml"
+    program = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), source.read_text(),
+        self_hosted_gateway=self_hosted_gateway_capability_for_tier(plan.service_tier),
+    )
+    assert_decision_and_image_program(
+        program.binding, program.parent_policy, dict(program.operation_policies),
+        {name: (method, path) for name, method, path in program.operation_contracts},
+    )
+
+
 @pytest.mark.parametrize("display_name", [None, "Team inference gateway"])
 def test_onboarding_queues_disabled_profile_and_preserves_retry_credentials(
     display_name: str | None,

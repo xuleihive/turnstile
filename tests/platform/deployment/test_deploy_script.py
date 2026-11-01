@@ -771,6 +771,15 @@ def test_initial_fixed_program_binds_compiled_policies_before_registration(
     chat = parse_policy(next(item["policy"] for item in operations
                              if item["name"] == "chat-completions"))
     assert chat.find("./backend/choose/when") is not None
+    from tests.backend.model_platform.test_apim_onboarding import (
+        assert_decision_and_image_program,
+    )
+
+    assert_decision_and_image_program(
+        descriptor.binding, parameters["parentPolicy"]["value"],
+        {item["name"]: item["policy"] for item in operations},
+        {item["name"]: (item["method"], item["path"]) for item in operations},
+    )
     delegation = parent.find(
         ".//validate-azure-ad-token[@header-name='x-turnstile-delegation-token']",
     )
@@ -1868,6 +1877,401 @@ def test_real_delegation_cutover_xml_roundtrip_and_recovery(
             "apim_usage_observer_key_named_value": "changed-observer-key",
         }), target)
     assert entry_registration.call_count == calls and len(writes) == written
+
+
+@pytest.mark.parametrize("scenario", [
+    "complete", "interrupt_operation", "interrupt_verification", "tampered_images",
+    "tampered_operation", "stale_program", "cli",
+])
+def test_capability_cutover_enables_decision_and_images_resumes_and_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str,
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from typing import Any, cast
+    from uuid import UUID
+    from xml.etree import ElementTree as ET
+
+    from pydantic import SecretStr
+
+    from backend import bootstrap_storage_route as bootstrap
+    from scripts import deploy
+    from tests.backend.model_platform.control_plane_support import (
+        GatewayControlPlaneService,
+        bedrock_publication,
+    )
+    from turnstile_core.config import Settings
+    from turnstile_core.domain.control_plane import (
+        GatewayReleaseSpec,
+        PublicationKind,
+        PublicationStatus,
+    )
+    from turnstile_core.domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
+    from turnstile_core.domain.storage_routes import (
+        ActiveRouteHead,
+        ConfigurationApproval,
+        ProgramCapabilityProof,
+        RouteSnapshot,
+        catalog_digest,
+        configuration_manifests,
+        document_digest,
+    )
+    from turnstile_core.integrations.apim_control_plane_contract import PolicyCompilationError
+    from turnstile_core.integrations.apim_policy_components import parse_policy, serialize_policy
+    from turnstile_core.integrations.apim_storage_routes import (
+        compile_fixed_route_program,
+        fixed_policy_digest,
+        prepare_budget_delegation_upgrade,
+        prepare_capability_upgrade,
+    )
+    from turnstile_core.integrations.storage_route_projection import RouteProjectionConflict
+    from turnstile_core.persistence.in_memory import InMemoryRepository
+    from turnstile_core.services import storage_route_publisher as routes
+
+    runtime = Mock(wraps=runtime_release_parameters)
+    monkeypatch.setattr(sys.modules[__name__], "runtime_release_parameters", runtime)
+    monkeypatch.setattr(bootstrap, "_CONVERGED_REFRESH", {})
+    with monkeypatch.context() as setup:
+        compiler = Mock(wraps=compile_fixed_route_program)
+        setup.setattr(deploy, "compile_fixed_route_program", compiler)
+        test_initial_fixed_program_binds_compiled_policies_before_registration(
+            tmp_path, setup, False, "StandardV2",
+        )
+        descriptor = bootstrap.FixedInstallationDescriptor.model_validate_json(
+            json.dumps(runtime.call_args.args[5]),
+        )
+        trust = runtime.call_args.args[7]
+        deployment_inputs = cast(Mock, deploy.deploy_template).call_args.args[1]
+        api_properties = cast(Mock, deploy.deploy_template).call_args.args[3]["parameters"][
+            "apiProperties"
+        ]["value"]
+        deployment_outputs = {**runtime.call_args.args[1], "apiUrl": "https://api.example.test"}
+        # The program a 1815c2a installation compiled: no Decision operation, images denied.
+        program = compiler._mock_wraps(
+            compiler.call_args.args[0], compiler.call_args.args[1].model_copy(update={
+                "supported_profiles": ("openai-v1", "anthropic-messages"),
+                "decision_enabled": False, "image_limits": None,
+            }), **compiler.call_args.kwargs,
+        )
+    descriptor = descriptor.model_copy(update={
+        "binding": program.binding, "parent_policy_sha256": fixed_policy_digest(
+            program.parent_policy,
+        ), "operation_policies_sha256": {
+            name: fixed_policy_digest(policy) for name, policy in program.operation_policies
+        },
+    })
+    previous = bootstrap.installation_record(descriptor, "b" * 64)
+    target = descriptor.registration.gateway_profile_id
+    policies = dict(program.operation_policies)
+    state: dict[str, Any] = {
+        "parent": program.parent_policy, "parent_etag": '"parent0"', "counter": 0,
+        "operations": {name: (method, path, policies[name])
+                       for name, method, path in program.operation_contracts},
+    }
+    state["etags"] = {name: '"operation0"' for name in state["operations"]}
+    binding = descriptor.binding
+    if scenario == "stale_program":
+        method, path, _ = state["operations"]["responses"]
+        state["operations"]["responses"] = (method, path, policies["chat-completions"])
+        with pytest.raises(PolicyCompilationError, match="not current"):
+            prepare_capability_upgrade(
+                previous, str(UUID(int=75)), state["parent"], state["operations"],
+                binding.ledger_table_endpoint, binding.ledger_table_name,
+                binding.observer_key_named_value, enable_decision=True, enable_images=True,
+            )
+        return
+    upgrade, candidate, operation_policies = prepare_capability_upgrade(
+        previous, str(UUID(int=75)), state["parent"], dict(state["operations"]),
+        binding.ledger_table_endpoint, binding.ledger_table_name,
+        binding.observer_key_named_value, enable_decision=True, enable_images=True,
+    )
+    installed = upgrade.installation
+    assert installed.supported_profiles == (
+        "openai-v1", "anthropic-messages", "openai-images", "microsoft-decision",
+    )
+    assert installed.decision_enabled and installed.image_limits == DEFAULT_IMAGE_GENERATION_LIMITS
+    assert {name for name, digest in installed.operation_policies_sha256.items()
+            if previous.operation_policies_sha256.get(name) != digest} == {
+        "images-generations", "microsoft-decision",
+    }
+    if scenario.startswith("tampered_"):
+        changed = dict(operation_policies)
+        if scenario == "tampered_images":
+            changed["images-generations"] = policies["images-generations"]
+        else:
+            chat = parse_policy(changed["chat-completions"])
+            inbound = chat.find("inbound")
+            assert inbound is not None
+            header = ET.Element("set-header", {"name": "x-user-id", "exists-action": "override"})
+            ET.SubElement(header, "value").text = "forged@example.test"
+            inbound.insert(0, header)
+            changed["chat-completions"] = serialize_policy(chat)
+        upgrade, candidate = prepare_budget_delegation_upgrade(
+            previous, str(UUID(int=75)), candidate,
+            {name: (*installed.operation_contracts[name], changed[name]) for name in changed},
+            enable_decision=True, image_limits=DEFAULT_IMAGE_GENERATION_LIMITS,
+        )
+        operation_policies = changed
+    version = str(UUID(int=76))
+    _, manifest, dependencies = configuration_manifests(
+        previous.program.scope, version, (), {}, 1100,
+    )
+    approval = ConfigurationApproval(
+        approval_id=str(UUID(int=77)), scope=previous.program.scope, route_version=version,
+        generation=1, manifest_sha256=manifest, dependency_manifest_sha256=dependencies,
+        catalog_sha256=catalog_digest(()), entry_count=0,
+        required_program_sha256=previous.program.program_sha256, required_profiles=(),
+        budget_epoch=str(descriptor.epoch), issued_epoch=1100, activate_before_epoch=1700,
+    )
+    head = ActiveRouteHead(approval=approval, activated_epoch=1100)
+    source = GatewayControlPlaneService(InMemoryRepository()).publish(bedrock_publication(), "unit")
+    source = source.model_copy(update={
+        "id": UUID(int=75), "gateway_profile_id": target, "status": PublicationStatus.ACTIVE,
+        "publication_kind": PublicationKind.ROUTE_RECONCILE, "generation": 1,
+        "base_release_id": None, "apim_revision": previous.program.api_revision,
+        "policy_sha256": previous.program.program_sha256,
+        "desired_spec": GatewayReleaseSpec(
+            gateway_profile_id=target, bindings=[], discovery_models=[],
+        ),
+        "resource_manifest": {
+            "fixed_route_program": previous.model_dump(mode="json"),
+            "fixed_route_snapshot": RouteSnapshot.prepare(approval, (), {}, 1100).model_dump(
+                mode="json",
+            ),
+            "fixed_route_head": head.model_dump(mode="json"),
+        },
+    })
+    repository = Mock()
+    repository.effective_gateway_publication.return_value = source.model_dump(mode="python")
+    repository.get_gateway_profiles.return_value = [{"id": target, "config": {}}]
+    repository.model_availability_proof_guard.side_effect = lambda *_, **__: nullcontext()
+    recorded: list[Any] = []
+
+    def record(value: Any, digest: str, **options: Any) -> None:
+        options["before_record"]()
+        recorded.append(value)
+        repository.get_gateway_profiles.return_value = [{
+            "id": target, "config": {"fixed_route_program_upgrade": value},
+        }]
+
+    repository.record_fixed_program_upgrade.side_effect = record
+    writes: list[str] = []
+
+    def write(kind: str) -> None:
+        writes.append(kind)
+        if scenario == "interrupt_operation" and len(writes) == 2:
+            raise ValueError("Injected capability interruption")
+
+    def operation_name(path: str) -> str:
+        return path.split("/operations/", 1)[1].split("/", 1)[0]
+
+    def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+        if "/operations/" not in path:
+            if method == "PUT":
+                assert kwargs["extra_headers"] == {"If-Match": state["parent_etag"]}
+                write("parent")
+                state["parent"] = ET.tostring(ET.fromstring(
+                    kwargs["json_body"]["properties"]["value"],
+                ), encoding="unicode")
+                state["counter"] += 1
+                state["parent_etag"] = f'"parent{state["counter"]}"'
+            return httpx.Response(200, headers={"ETag": state["parent_etag"]})
+        name = operation_name(path)
+        if name not in state["operations"]:
+            return httpx.Response(404)
+        if method == "PUT":
+            assert kwargs["extra_headers"] == {"If-Match": state["etags"][name]}
+            write("operation:" + name)
+            method_name, template, _ = state["operations"][name]
+            state["operations"][name] = (method_name, template, ET.tostring(ET.fromstring(
+                kwargs["json_body"]["properties"]["value"],
+            ), encoding="unicode"))
+            state["counter"] += 1
+            state["etags"][name] = f'"operation{state["counter"]}"'
+        return httpx.Response(200, headers={"ETag": state["etags"][name]})
+
+    def create_operation(revision: str, operation: Any, *, create_only: bool) -> None:
+        assert create_only and operation.id not in state["operations"]
+        write("create:" + operation.id)
+        state["operations"][operation.id] = (operation.method, operation.path, "")
+
+    def put_operation_policy(revision: str, name: str, policy: str, *, create_only: bool) -> None:
+        assert create_only and not state["operations"][name][2]
+        method_name, template, _ = state["operations"][name]
+        state["operations"][name] = (method_name, template, policy)
+        state["counter"] += 1
+        state["etags"][name] = f'"operation{state["counter"]}"'
+
+    management = Mock()
+    management._request.side_effect = request
+    management._read_policy.side_effect = lambda *_: (
+        httpx.Response(200, headers={"ETag": state["parent_etag"]}), state["parent"],
+    )
+    management._policy_response_value.side_effect = lambda _: state["parent"]
+    management.route_program_operations.side_effect = lambda *_: dict(state["operations"])
+    management.current_revision.return_value = previous.program.api_revision
+    management.revision_api_policy.side_effect = lambda *_: state["parent"]
+    management.ensure_operation.side_effect = create_operation
+    management.put_operation_policy.side_effect = put_operation_policy
+    proof = {"current": ProgramCapabilityProof(
+        proof_id=str(UUID(int=78)), identity=previous.program,
+        supported_profiles=previous.supported_profiles, issued_epoch=1050, expires_epoch=1170,
+    )}
+
+    def read_proof(identity: Any) -> Any:
+        if proof["current"].identity != identity:
+            raise RouteProjectionConflict("ROUTE_PROGRAM_PROOF_IDENTITY_CHANGED")
+        return proof["current"], 'W/"proof"'
+
+    projection = Mock()
+    projection.read_program_proof.side_effect = read_proof
+    projection.read_active.return_value = (head, 'W/"head"')
+    projection.publish_upgraded_program_proof.side_effect = lambda *args: proof.update(
+        current=args[2],
+    )
+    projection.publish_program_proof.side_effect = lambda *args: proof.update(current=args[0])
+
+    def probe(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "management.azure.com":
+            assert request.method == "HEAD"
+            if "/operations/" not in request.url.path:
+                return httpx.Response(200, headers={"ETag": state["parent_etag"]})
+            name = operation_name(request.url.path)
+            return httpx.Response(404) if name not in state["operations"] else httpx.Response(
+                200, headers={"ETag": state["etags"][name]},
+            )
+        upgraded = fixed_policy_digest(state["parent"]) == installed.parent_policy_sha256
+        if scenario == "interrupt_verification" and upgraded and not state.get("rejected"):
+            state["rejected"] = True
+            return httpx.Response(503)
+        identity = installed.program if upgraded else previous.program
+        headers = {"abi": "2", "nonce": request.headers["x-turnstile-route-probe"],
+                   "target": identity.scope.target_id, "api": identity.scope.api_id,
+                   "revision": identity.api_revision, "gateway": identity.scope.gateway_id,
+                   "instance": identity.instance_id, "program": identity.program_sha256,
+                   "trust": identity.trust_binding_sha256}
+        if request.url.path.endswith("/configuration"):
+            headers.update(version=version, generation="1", epoch=str(descriptor.epoch))
+        return httpx.Response(204, headers={"x-turnstile-route-" + key: value
+                                          for key, value in headers.items()})
+
+    settings = Settings.model_construct(
+        budget_delegation_trust={target: trust},
+        ledger_table_endpoint=binding.ledger_table_endpoint,
+        ledger_table_name=binding.ledger_table_name,
+        apim_usage_observer_key_named_value=binding.observer_key_named_value,
+    )
+    configurations = Mock()
+    configurations.resolve.return_value = SimpleNamespace(
+        gateway_profile_id=target, route_target_identity_sha256=previous.target_identity_sha256,
+        settings=SimpleNamespace(
+            apim_api_id=previous.program.scope.api_id, apim_gateway_url=previous.gateway_endpoint,
+            apim_probe_subscription_id=previous.publisher_subscription_id,
+            apim_probe_subscription_key=SecretStr("unit-key"),
+            ledger_table_endpoint=binding.ledger_table_endpoint,
+            ledger_table_name=binding.ledger_table_name,
+            apim_usage_observer_key_named_value=binding.observer_key_named_value,
+        ),
+    )
+    real_client = httpx.Client
+    monkeypatch.setattr(routes, "AzureApimPublisherClient", Mock(return_value=management))
+    monkeypatch.setattr(routes, "TableRouteProjection", Mock(return_value=projection))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(
+        **kwargs, transport=httpx.MockTransport(probe),
+    ))
+
+    def cutover() -> None:
+        routes.register_verified_program_upgrade(
+            repository, configurations, upgrade,
+            document_digest(repository.get_gateway_profiles.return_value[0]["config"]),
+            clock=lambda: 1100, parent_policy=candidate,
+            expected_parent_etag=state["parent_etag"], operation_policies=operation_policies,
+            expected_operation_etags={
+                name: state["etags"][name] if name in state["operations"] else None
+                for name in operation_policies
+            },
+        )
+
+    if scenario.startswith("tampered_"):
+        with pytest.raises(PolicyCompilationError, match="protected operation behavior"):
+            cutover()
+        assert not writes and not recorded
+        return
+    if scenario == "cli":
+        import getpass
+
+        from fastapi import Response
+
+        from backend.http.model_platform import preview_gateway_program_upgrade
+        from scripts.apim_upgrade import AzureUpgradeBackend, GatewaySnapshot
+
+        submissions: list[Any] = []
+
+        def submit(_runner: Any, _inputs: Any, _outputs: Any, recovery: Any) -> None:
+            write_request, config_sha256 = recovery
+            submissions.append(write_request)
+            routes.register_verified_program_upgrade(
+                repository, configurations, write_request.upgrade, config_sha256,
+                clock=lambda: 1100, parent_policy=write_request.parent_policy,
+                expected_parent_etag=write_request.expected_parent_etag,
+                operation_policies=write_request.operation_policies or None,
+                expected_operation_etags=write_request.expected_operation_etags or None,
+            )
+
+        monkeypatch.setattr(deploy, "current_app_settings", lambda *_: {
+            "TURNSTILE_FIXED_BOOTSTRAP_DESCRIPTOR": descriptor.model_dump_json(),
+        })
+        monkeypatch.setattr(getpass, "getpass", lambda *_: "offline-owner-password")
+        monkeypatch.setattr(deploy, "verify_initial_fixed_program", lambda *_: (
+            preview_gateway_program_upgrade(target, repository, "unit-owner", Response())
+        ))
+        monkeypatch.setattr(deploy, "deployment_budget_delegation", lambda *_: trust)
+        monkeypatch.setattr(deploy, "recover_fixed_program", submit)
+        monkeypatch.setattr(AzureUpgradeBackend, "read", lambda *_: GatewaySnapshot(
+            previous.program.api_revision, api_properties, state["parent"],
+            {name: {"method": method, "urlTemplate": path}
+             for name, (method, path, _) in state["operations"].items()},
+            {name: policy for name, (_, _, policy) in state["operations"].items()},
+        ))
+        runner = Mock(spec=CommandRunner)
+        runner.run_json.return_value = {"accessToken": "offline-token"}
+        deploy.enable_program_capabilities(
+            runner, deployment_inputs, deployment_outputs, assume_yes=True,
+        )
+        assert [item.upgrade for item in submissions] == [upgrade]
+        assert submissions[0].expected_operation_etags["microsoft-decision"] is None
+        plan = json.loads((deployment_inputs.state_path.with_suffix(".upgrades")
+                           / "capabilities-v1" / "plan.json").read_text())
+        assert plan["upgrade"] == recorded[0]
+        written = len(writes)
+        deploy.enable_program_capabilities(
+            runner, deployment_inputs, deployment_outputs, assume_yes=True,
+        )
+        assert len(submissions) == len(recorded) == 1 and len(writes) == written
+    if scenario.startswith("interrupt_"):
+        with pytest.raises(ValueError, match="capability interruption|authenticated probe"):
+            cutover()
+        assert not recorded and writes[0] == "parent"
+        assert fixed_policy_digest(state["parent"]) == installed.parent_policy_sha256
+        assert ("microsoft-decision" in state["operations"]) == (
+            scenario == "interrupt_verification"
+        )
+    if scenario != "cli":
+        cutover()
+    assert len(recorded) == 1 and recorded[0] == upgrade.model_dump(mode="json")
+    assert fixed_policy_digest(state["parent"]) == installed.parent_policy_sha256
+    assert {name: fixed_policy_digest(policy) for name, (_, _, policy)
+            in state["operations"].items()} == installed.operation_policies_sha256
+    assert state["operations"]["microsoft-decision"][:2] == (
+        "POST", "/providers/microsoft/v1/systemone",
+    )
+    written = len(writes)
+    registration = Mock()
+    monkeypatch.setattr(bootstrap, "AzureApimPublisherClient", Mock(return_value=management))
+    monkeypatch.setattr(bootstrap, "register_verified_program_upgrade", registration)
+    bootstrap.configure_budget_delegation(repository, settings, target)
+    registration.assert_not_called()
+    assert len(writes) == written
 
 
 @pytest.mark.parametrize("phase", ["complete", "failed", "running", "changed_target"])

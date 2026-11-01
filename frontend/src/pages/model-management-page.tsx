@@ -100,6 +100,7 @@ import { useTimezone } from "../providers/timezone-provider"
 import { useAuth } from "../providers/auth-provider"
 import {
   ModelPublicationDialog,
+  publicationCapabilityMessage,
   publicationStatusLabel,
 } from "../components/model-management/model-publication-dialog"
 import { ConnectionDialog } from "../components/model-management/connection-dialog"
@@ -344,8 +345,10 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
         : {
             context: publication.display_name,
             text: "发布失败",
-            detail: publication.failure?.message ?? "发布未完成，生效状态未确认。",
-            actionLabel: "重新发布",
+            detail: publication.failure?.code === "gateway_capability_unavailable"
+              ? publicationCapabilityMessage(publication.failure.profile)
+              : publication.failure?.message ?? "发布未完成，生效状态未确认。",
+            actionLabel: publication.failure?.code === "gateway_capability_unavailable" ? "查看详情" : "重新发布",
             ok: false,
           })
     } else if (publication) {

@@ -96,6 +96,78 @@ def test_decision_program_upgrade_only_adds_native_operation_and_profile(fault: 
             FixedProgramCutover.model_validate_json(json.dumps(values))
 
 
+@pytest.mark.parametrize("case", [
+    "images", "images-and-decision", "images-after-decision", "order", "other-field",
+    "operation", "resize", "disable",
+])
+def test_image_program_upgrade_only_appends_profile_and_capacity(case: str) -> None:
+    from turnstile_core.domain.image_profiles import DEFAULT_IMAGE_GENERATION_LIMITS
+
+    scope = RouteScope(target_id=str(UUID(int=1)), api_id="unit-api", gateway_id="managed")
+    contracts = {
+        "models": ("GET", "/v1/models"), "chat-completions": ("POST", "/chat/completions"),
+        "anthropic-messages": ("POST", "/v1/messages"),
+        "images-generations": ("POST", "/images/generations"),
+    }
+    decision = {"microsoft-decision": ("POST", "/providers/microsoft/v1/systemone")}
+    prior_decision = case == "images-after-decision"
+    prior_images = case in {"resize", "disable"}
+    previous = FixedProgramInstallation(
+        program=ProgramIdentity(scope=scope, api_revision="1", instance_id="managed",
+                                program_sha256="a" * 64, trust_binding_sha256="b" * 64),
+        target_identity_sha256="c" * 64, storage_endpoint="https://unitstore.table.core.windows.net",
+        storage_table="Routes", gateway_endpoint="https://unit.azure-api.net/llm",
+        publisher_subscription_id="unit-publisher", parent_policy_sha256="d" * 64,
+        operation_contracts={**contracts, **(decision if prior_decision else {})},
+        operation_policies_sha256={
+            name: "e" * 64 for name in {**contracts, **(decision if prior_decision else {})}
+        },
+        supported_profiles=(
+            "openai-v1", "anthropic-messages",
+            *(("microsoft-decision",) if prior_decision else ()),
+            *(("openai-images",) if prior_images else ()),
+        ),
+        image_limits=DEFAULT_IMAGE_GENERATION_LIMITS if prior_images else None,
+        decision_enabled=prior_decision, model_additions_enabled=True,
+    )
+    adds_decision = case in {"images-and-decision", "order"}
+    current_contracts = {**previous.operation_contracts, **(decision if adds_decision else {})}
+    if case == "operation":
+        current_contracts["unit-extra"] = ("POST", "/unit-extra")
+    profiles: tuple[Any, ...] = (*previous.supported_profiles, "openai-images")
+    if adds_decision:
+        profiles = (*profiles, "microsoft-decision")
+    if case == "order":
+        profiles = (*previous.supported_profiles, "microsoft-decision", "openai-images")
+    if prior_images:
+        profiles = previous.supported_profiles
+    if case == "disable":
+        profiles = ("openai-v1", "anthropic-messages")
+    current = previous.model_copy(update={
+        "program": previous.program.model_copy(update={"program_sha256": "f" * 64}),
+        "parent_policy_sha256": "f" * 64, "legacy_program_sha256": "a" * 64,
+        "operation_contracts": current_contracts,
+        "operation_policies_sha256": {name: "9" * 64 for name in current_contracts},
+        "supported_profiles": profiles, "decision_enabled": prior_decision or adds_decision,
+        "image_limits": None if case == "disable"
+        else DEFAULT_IMAGE_GENERATION_LIMITS.model_copy(update={"timeout_seconds": 120})
+        if case == "resize" else DEFAULT_IMAGE_GENERATION_LIMITS,
+        **({"storage_table": "OtherRoutes"} if case == "other-field" else {}),
+    })
+
+    def upgrade() -> None:
+        FixedProgramUpgrade(
+            previous_publication_id=str(UUID(int=9)),
+            previous_installation_sha256=document_digest(previous), installation=current,
+        ).require_previous(str(UUID(int=9)), previous)
+
+    if case in {"images", "images-and-decision", "images-after-decision"}:
+        upgrade()
+    else:
+        with pytest.raises(ValueError):
+            upgrade()
+
+
 def route_fixture(alias: str = "Model:one") -> tuple[RouteContent, ConnectionApproval]:
     scope = RouteScope(target_id=str(UUID(int=1)), api_id="unit-api", gateway_id="managed")
     connection = ConnectionRevision(

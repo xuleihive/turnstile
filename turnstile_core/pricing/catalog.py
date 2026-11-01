@@ -153,6 +153,9 @@ class CatalogModel:
                 self.label, self.product,
                 self.context_tier.model_label, self.context_tier.service_tier,
             )))
+        # Azure lists OpenAI's gpt-image-2 as "Image 2"; searching "gpt image" must still find it.
+        if self.text_to_image and not self.label.lower().startswith("gpt"):
+            return f"{self.label} {self.product} gpt {self.label}"
         return f"{self.label} {self.product}"
 
 

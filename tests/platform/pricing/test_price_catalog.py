@@ -595,6 +595,32 @@ def test_every_typed_term_has_to_land() -> None:
     assert [model.label for model in found.models] == ["gpt 4.1 mini"]
 
 
+def test_gpt_image_2_is_found_under_the_image_2_meters_azure_publishes() -> None:
+    rows = [
+        meter("Image 2 txt inp Gl 1M Tokens", 5.0, product="Azure OpenAI Media", unit="1M"),
+        meter("Image 2 txt cd inp Gl 1M Tokens", 1.25, product="Azure OpenAI Media", unit="1M"),
+        meter("Image 2 img opt Gl 1M Tokens", 30.0, product="Azure OpenAI Media", unit="1M"),
+        meter("gpt-image-1-inp-txt-glbl Tokens", 0.005),
+        meter("gpt-image-1-inp-cached-txt-glbl Tokens", 0.00125),
+        meter("gpt-image-1-output-img-glbl Tokens", 0.04),
+    ]
+    catalog = CompositeCatalog([StubAzure(rows)])
+    found = catalog.search_models("gpt-image-2").models
+    assert [(model.label, model.product, model.text_to_image) for model in found] == [
+        ("Image 2", "Azure OpenAI Media", True),
+    ]
+    assert {model.label for model in catalog.search_models("gpt image").models} == {
+        "gpt image 1", "Image 2",
+    }
+    options = catalog.options(found[0].key)
+    assert options is not None
+    entry = options.options[0].entry
+    assert (entry.input_per_million, entry.cached_per_million, entry.output_per_million) == (
+        pytest.approx((5.0, 1.25, 30.0))
+    )
+    assert entry.text_to_image is True
+
+
 def test_the_typed_words_go_into_the_api_filter() -> None:
     """Filtering locally meant guessing a product name, and the guess excluded gpt-5."""
     catalog = StubAzure(GPT_41)

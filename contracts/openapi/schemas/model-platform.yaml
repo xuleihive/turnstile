@@ -2446,6 +2446,7 @@ schemas:
         - parent_policy_changed
         - credential_source_missing
         - apim_infrastructure_upgrade_required
+        - gateway_capability_unavailable
         - publication_failed
         - deployment_not_found
         - deployment_metadata_unavailable
@@ -2489,6 +2490,18 @@ schemas:
         items:
           type: string
         type: array
+      profile:
+        type:
+        - string
+        - 'null'
+        description: Route profile missing from the selected gateway program, present only
+          for gateway_capability_unavailable.
+        enum:
+        - openai-v1
+        - anthropic-messages
+        - openai-images
+        - microsoft-decision
+        - null
     additionalProperties: false
     type: object
     required:

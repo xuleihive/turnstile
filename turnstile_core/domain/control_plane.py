@@ -1171,7 +1171,7 @@ class GatewayPublicationFailure(StrictModel):
     code: Literal[
         "publisher_permissions_missing", "publisher_permissions_unverified",
         "publisher_authorization_failed", "parent_policy_changed", "credential_source_missing",
-        "apim_infrastructure_upgrade_required",
+        "apim_infrastructure_upgrade_required", "gateway_capability_unavailable",
         "publication_failed", "deployment_not_found", "deployment_metadata_unavailable",
         "upstream_request_failed",
     ]
@@ -1180,6 +1180,15 @@ class GatewayPublicationFailure(StrictModel):
     request_id: UUID | None = None
     http_status: int | None = Field(default=None, strict=True, ge=100, le=599)
     missing_actions: list[str] = Field(default_factory=list)
+    profile: Literal[
+        "openai-v1", "anthropic-messages", "openai-images", "microsoft-decision",
+    ] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+_CAPABILITY_NAMES = {
+    "openai-v1": "OpenAI chat", "anthropic-messages": "Anthropic Messages",
+    "openai-images": "image generation", "microsoft-decision": "the Decision API",
+}
 
 
 def publication_failure(
@@ -1188,7 +1197,8 @@ def publication_failure(
     if publication.status is not PublicationStatus.FAILED:
         return None
     failure = GatewayPublicationFailure(
-        code="publication_failed", message="Publication failed; review its diagnostic reference.",
+        code="publication_failed",
+        message="Publication failed; use the publication ID to review server logs.",
         stage=stage,
     )
     if publication.error_code == "InfrastructureUpgradeRequiredError":
@@ -1199,12 +1209,33 @@ def publication_failure(
                 "Ask the deployment administrator to run the APIM infrastructure upgrade."
             ),
         })
+    message = publication.error_message or ""
+    prefix = "Gateway capability unavailable: "
+    if publication.error_code == "GatewayCapabilityUnavailableError" and isinstance(
+        message, str,
+    ) and message.startswith(prefix) and len(message) <= 1024:
+        try:
+            details = json.loads(message.removeprefix(prefix))
+        except ValueError:
+            return failure
+        if (not isinstance(details, dict)
+                or details.get("code") != "gateway_capability_unavailable"
+                or details.get("profile") not in _CAPABILITY_NAMES):
+            return failure
+        profile = details["profile"]
+        return failure.model_copy(update={
+            "code": "gateway_capability_unavailable", "profile": profile,
+            "message": (
+                f"The selected gateway program has not enabled {_CAPABILITY_NAMES[profile]} "
+                f"({profile}). Ask the deployment administrator to run "
+                "scripts.deploy enable-capabilities, then publish again."
+            ),
+        })
     if publication_missing_credential_source(publication):
         return failure.model_copy(update={
             "code": "credential_source_missing",
             "message": "The APIM credential resource is missing; provide the API key to retry.",
         })
-    message = publication.error_message or ""
     if not isinstance(message, str) or len(message) > 8192:
         return failure
     if message.startswith("Deployment validation failed: "):
@@ -1400,8 +1431,10 @@ class GatewayPublicationView(StrictModel):
             display_name=display_name,
             status=publication.status,
             error_code=(
-                "apim_infrastructure_upgrade_required"
-                if failure and failure.code == "apim_infrastructure_upgrade_required"
+                failure.code
+                if failure and failure.code in {
+                    "apim_infrastructure_upgrade_required", "gateway_capability_unavailable",
+                }
                 else "publication_failed"
                 if publication.status is PublicationStatus.FAILED
                 else "provider_authorization_required"

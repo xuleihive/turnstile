@@ -606,6 +606,7 @@ function componentHarness(exportName, props, { operation = null, queryData = {},
     "../../providers/timezone-provider": { useTimezone: () => ({ timezone: "UTC" }) },
     "../components/brand-logos": new Proxy({ providerBrandFromIdentity: () => "generic", gatewayBrandFromIdentity: () => "generic" }, { get: (target, name) => target[name] ?? name }),
     "../components/model-management/apim-gateway-workspace": { MODEL_MANAGEMENT_TABS: ["models", "connections", "gateways", "apim"] },
+    "../components/model-management/model-publication-dialog": { publicationCapabilityMessage: profile => `capability ${profile}` },
     "../components/model-management/model-vendor-select": vendorExports,
     "../components/ui/use-resizable-pane": { useResizablePane: () => ({ width: 336, minWidth: 272, maxWidth: 460 }) },
   }

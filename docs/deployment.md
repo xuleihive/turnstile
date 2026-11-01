@@ -242,9 +242,11 @@ and scoped APIM Credential Manager permissions. Neither method creates upstream 
 The supported Databricks publication path is native Anthropic chat/streaming, not image
 generation or an assumption of every OpenAI-compatible operation.
 
-Foundry text, governed images and an OpenAI-compatible provider have separate model and
-credential prerequisites. Images are available without an enablement setting and require an
-existing Foundry image deployment, image-ready APIM infrastructure and consent for paid probes.
+Foundry text, governed images, Decision models and an OpenAI-compatible provider have separate
+model and credential prerequisites. New installations enable image generation and the Decision
+API in the gateway program; an installation created before this release enables them with
+[`enable-capabilities`](#enable-decision-and-image-generation). Publishing an image model still
+requires an existing Foundry image deployment and consent for paid probes.
 Publication probes also consume upstream
 requests; include them when choosing a validation budget. Never enable an upstream provider's
 local-key authentication or weaken networking merely to complete installation.
@@ -455,11 +457,12 @@ The command runs these phases in order:
 
 Generated packages and deployment state remain under `.turnstile/deployments`. The script prints and stores only non-secret Azure outputs.
 
-Fresh installations include the fixed `POST /images/generations` operation with a default
-deny policy. Creating the operation does not publish an image model, enable image generation
-or authorize a provider call. Model publications inherit the operation into their candidate
-revisions and replace only its model-specific policy. The Control-plane publisher does not
-need `Microsoft.ApiManagement/service/apis/operations/write`.
+Fresh installations include the fixed `POST /images/generations` operation and the Decision
+operation `POST /providers/microsoft/v1/systemone`. Both answer 503 until a model of that type
+is published; creating them does not publish a model or authorize a provider call. Model
+publications inherit the operations into their candidate revisions and replace only
+model-specific policy. The Control-plane publisher does not need
+`Microsoft.ApiManagement/service/apis/operations/write` to publish models.
 
 ## Initial Owner
 
@@ -522,7 +525,8 @@ Apply pending migrations `004_apim_usage_identity_guard`, `005_billable_request_
 
 The API and Control-plane packages both require the pinned Pillow dependency for full image validation. The Control-plane artifact includes the public canonical parent policy at `policies/foundry-finops-policy.xml`; publication and image rollback read it through `CONTROL_PLANE_PARENT_POLICY_PATH`. The publisher verifies the live policy and its readback, and refuses incompatible image policies instead of transforming an unknown live template. Use the APIM infrastructure upgrade below before publishing image models on an older installation; do not rerun the bootstrap template against customer routing.
 
-Image generation has no separate enablement switch. Keep the evidence-v2 cutoff unset during the code and migration rollout; authorizing paid publication probes and scheduling the future evidence cutoff remain separate operational decisions. This upgrade does not provision a Foundry account or model, modify an upstream deployment, or grant new provider roles.
+Image generation needs no backend setting. The gateway program enables it at installation or
+through [`enable-capabilities`](#enable-decision-and-image-generation). Keep the evidence-v2 cutoff unset during the code and migration rollout; authorizing paid publication probes and scheduling the future evidence cutoff remain separate operational decisions. This upgrade does not provision a Foundry account or model, modify an upstream deployment, or grant new provider roles.
 
 ### Incremental APIM infrastructure upgrade
 
@@ -609,6 +613,45 @@ After subsequent model publications or customer configuration changes, automatic
 is refused; review that later state instead of discarding it. Restoring old infrastructure
 does not roll back application packages or migrations and is incompatible with enabling
 new image functionality. Never clear or reschedule an already effective evidence-v2 cutoff.
+
+### Enable Decision and image generation
+
+Installations created with this release enable both capabilities in their gateway program.
+The program of an earlier installation lists only `openai-v1` and `anthropic-messages` in
+`supported_profiles`: the publication dialog then blocks image and Decision models, and a
+publication that reaches the publisher fails with `gateway_capability_unavailable` before any
+APIM write. Enable both on the installation's own APIM API with:
+
+```bash
+uv run python -m scripts.deploy enable-capabilities \
+  --subscription <subscription-id> \
+  --parameters .turnstile/main.parameters.json \
+  --state .turnstile/deployments/<resource-group>.json
+```
+
+Run it after the new API and Control-plane packages are running and no model publication is in
+progress. The command:
+
+1. Signs in as the Owner (`--owner-credentials` or a prompt) and reads the approved program.
+   When both capabilities are already present, it changes nothing.
+2. Reads the live API through Azure Resource Manager and requires it to equal the approved
+   program compiled by the current code. Otherwise it stops; wait for the Control-plane to
+   refresh the program after the package rollout and run it again.
+3. Saves a private plan under `<state-name>.upgrades/capabilities-v1/`, prints the profile and
+   operation changes and asks for confirmation (`--yes` skips it).
+4. Submits the upgrade to the Control-plane `cutover_gateway_program` function, which checks it
+   again, adds the Decision operation, recompiles `images-generations` to route published image
+   models, updates the parent policy with ETag preconditions and records the upgrade.
+5. Reports success only after the recorded upgrade is read back through the Owner API.
+
+The upgrade appends `openai-images` and `microsoft-decision` to `supported_profiles`, sets the
+default image capacity and leaves every other program field, operation, route, model,
+credential and subscription unchanged. It does not publish a model, call a provider or
+authorize paid probes. If it is interrupted, run the same command again: it reuses the saved
+plan, reads the current ETags and finishes the remaining writes. Model publications are not
+processed until it completes. Gateways onboarded in the web console with this release are
+already enabled. This command changes only the installation's own APIM API; it does not upgrade
+gateways onboarded in the web console by an earlier release.
 
 ## Verify
 

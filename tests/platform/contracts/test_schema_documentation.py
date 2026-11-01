@@ -115,10 +115,11 @@ def test_image_upgrade_documents_independent_defaults_and_validation_limits() ->
     configuration = (REPOSITORY_ROOT / "docs/configuration.md").read_text()
     architecture = (REPOSITORY_ROOT / "docs/architecture.md").read_text()
     testing = (REPOSITORY_ROOT / "docs/testing.md").read_text()
-    assert (
-        "Image generation is a standard capability and requires no enablement setting"
-        in configuration
+    assert "Image generation needs no backend setting" in configuration
+    assert "`image_generation_supported` and `decision_supported` describe the backend only" in (
+        configuration
     )
+    assert "deployment.md#enable-decision-and-image-generation" in configuration
     assert "effective_at = NULL" in configuration
     assert configuration.count("## Runtime attribution") == 1
     assert architecture.count("## Ledger finalization") == 1
