@@ -77,7 +77,7 @@ async function loadModelPrices(candidate: ModelPriceCandidate): Promise<ModelPri
  * 24 to 28 regions it is sold in -- is a single choice with no region to pick, and a region is
  * asked for only where two regions genuinely disagree.
  */
-export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false }: {
+export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, initialSearch }: {
   model?: ManagedModel
   modelName?: string
   draft: Draft
@@ -86,6 +86,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   connectionDiscount: number | null
   showAnthropic?: boolean
   imageGeneration?: boolean
+  initialSearch?: string
 }) {
   const restored = model ? restoreContextPrices(model) : null
   const [query, setQuery] = useState<string | null>(() => restored?.model_entry.label ?? null)
@@ -200,6 +201,13 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       if (version === requestVersion.current) setSearching(false)
     }
   }
+
+  useEffect(() => {
+    if (!initialSearch || model || draft.priceSource === "manual") return
+    setQuery(initialSearch)
+    void search(initialSearch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const chooseModel = async (candidate: ModelPriceCandidate) => {
     if (candidate.source !== draft.priceSource) return

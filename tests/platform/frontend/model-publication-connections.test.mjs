@@ -1035,12 +1035,58 @@ test("Decision purpose changes reset prices for shared catalog selection", () =>
     assert.equal(draft.outputPrice, "")
     assert.equal(draft.cacheReadPrice, "")
     assert.equal(draft.cacheWritePrice, "")
-    assert.equal(draft.priceSource, "manual")
+    assert.equal(draft.priceSource, operation === "decision" ? "azure_retail" : "manual")
     assert.equal(draft.priceReference, "")
-    assert.equal(validateModelPricing(draft), null)
+    assert.equal(validateModelPricing(draft), operation === "decision" ? "price_reference" : null)
   }
   assert.doesNotMatch(source, />应用参考价<\/Button>/)
   assert.match(source, /className=\{decision \? "publication-decision-price-fields" : "form-grid"\}/)
+})
+
+test("Decision cannot be published without a price", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url), "utf8")
+  const validation = source.match(/  const validate = \(\) => \{([\s\S]+?)\n  \}\n\n  const submit/)
+  assert.ok(validation)
+  const validate = stripTypeScriptTypes(`(() => {${validation[1]}\n})()`)
+  for (const [priceSource, prices, expected] of [
+    ["manual", ["", ""], "请填写 Decision 的输入和输出单价（可填 0），或从 Azure 官方价目选择。"],
+    ["manual", ["0.042", ""], "请填写 Decision 的输入和输出单价（可填 0），或从 Azure 官方价目选择。"],
+    ["manual", ["0.042", "0"], null],
+    ["azure_retail", ["", ""], null],
+  ]) {
+    const context = {
+      decision: true, decisionSupported: true, imageGeneration: false, foundry: true,
+      topologyBlocked: false, selectedGateway: { id: "unit-gateway" }, programPending: false,
+      programReady: true, selectedRuntime: { id: "unit-runtime" }, selectedProvider: { id: "unit-provider" },
+      pricing: { priceSource }, validateModelPricing: () => null, optionalNumberError: () => null,
+      contextWindow: "", inputPrice: prices[0], outputPrice: prices[1], cacheReadPrice: "",
+      cacheWritePrice: "", requiredCredentialMissing: false, foundryDeployment: "Decision-1",
+      registry: {}, imageConfigurationSupported: true, priceValues: prices,
+    }
+    assert.equal(runInNewContext(validate, context), expected)
+  }
+})
+
+test("Decision opens the Azure catalog search instead of an empty manual price", () => {
+  const dialog = readFileSync(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  assert.match(dialog, /initialSearch=\{decision \? "Microsoft Decision" : undefined\}/)
+  const effect = source.match(/  useEffect\(\(\) => \{\n(    if \(!initialSearch[\s\S]+?)\n    \/\/ eslint-disable-next-line/)
+  assert.ok(effect)
+  for (const [initialSearch, model, priceSource, searched] of [
+    ["Microsoft Decision", undefined, "azure_retail", ["Microsoft Decision"]],
+    ["Microsoft Decision", undefined, "manual", []],
+    ["Microsoft Decision", { id: "saved" }, "azure_retail", []],
+    [undefined, undefined, "azure_retail", []],
+  ]) {
+    const queries = [], searches = []
+    runInNewContext(`(() => {${effect[1]}\n})()`, {
+      initialSearch, model, draft: { priceSource },
+      setQuery: value => queries.push(value), search: value => searches.push(value),
+    })
+    assert.deepEqual(searches, searched)
+    assert.deepEqual(queries, searched)
+  }
 })
 
 for (const mode of ["remove", "publish", "foreign-target", "missing-model"]) {

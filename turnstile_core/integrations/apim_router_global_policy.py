@@ -150,7 +150,7 @@ def fixed_router_operation_stages(
           if ((string)candidate.Value["profile"] != "openai-v1") { return false; }
         }
         foreach (var model in ((JObject)item["routing_models_by_id"]).Properties()) {
-          if ((string)model.Value["decision_protocol"] != "chat_json"
+          if (!new[] { "chat_json", "system_one" }.Contains((string)model.Value["decision_protocol"])
             || (string)model.Value["auth_mode"] != "gateway_route") { return false; }
         }
       }
@@ -188,9 +188,20 @@ def fixed_router_operation_stages(
   assert decision is not None
   destination = decision.find("set-url")
   assert destination is not None
-  destination.text = (
-    '@("https://" + context.Request.OriginalUrl.Host + "/" + '
-    'context.Api.Path.Trim(\'/\') + "/chat/completions")'
+  destination.text = '''@{
+    var st = JObject.Parse((string)context.Variables["routerPlanState"]);
+    var routingModel = ((JObject)st["routing_models_by_id"])[(string)st["routing_model_id"] ?? ""] as JObject;
+    return "https://" + context.Request.OriginalUrl.Host + "/" + context.Api.Path.Trim('/')
+      + ((string)routingModel?["decision_protocol"] == "system_one"
+        ? "/providers/microsoft/v1/systemone" : "/chat/completions");
+  }'''
+  payload = decision.find("set-body")
+  assert payload is not None and payload.text is not None
+  system_one_model = 'new JProperty("model", upstreamModel),'
+  if payload.text.count(system_one_model) != 1:
+    raise ValueError("Fixed Router System One payload changed")
+  payload.text = payload.text.replace(
+    system_one_model, 'new JProperty("model", (string)rmInfo?["apim_alias"] ?? upstreamModel),',
   )
   for node in list(decision):
     if node.tag == "authentication-managed-identity":

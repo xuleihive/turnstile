@@ -329,7 +329,7 @@ Image previews accept validated PNG, JPEG and WebP only. The backend does not st
 
 Publish a Decision model such as Decision-1 on an existing Microsoft Foundry Connection with `model.operation: decision` and the existing deployment name. The gateway serves it at `POST /providers/microsoft/v1/systemone` and forwards to the Foundry resource endpoint `https://<resource>.services.ai.azure.com/providers/microsoft/v1/systemone`. Authentication follows the Connection: with managed identity, APIM requests a token for `https://cognitiveservices.azure.com`, so its identity needs `Cognitive Services User` on that Foundry account; an API-key Connection uses its stored key. Decision models cannot be chat defaults or backend Pool members.
 
-Model Intelligent Router can use a published Decision model for model-based routing: select it as the Router's decision model and publish a new Router version.
+Model Intelligent Router can use a published Decision model for model-based routing: select it as the Router's decision model and publish a new Router version. The gateway sends the routing question to its own Decision operation with the caller's subscription, routes to the candidate the Decision model chooses and records the returned probabilities in Request Trace. The Decision call and the candidate call are each metered and charged once. Publish a Decision model with a price: the publication dialog searches the Azure list price (`Microsoft Decision 1`) by default, and a manual price needs both input and output rates.
 
 ### Pool conversation affinity
 

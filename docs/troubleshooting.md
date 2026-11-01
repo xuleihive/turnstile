@@ -87,6 +87,13 @@ request ID separately. `usage_available=false` is missing measurement, not zero 
 An attempt joins formal telemetry only on an unambiguous identity match; a platform timeout and a
 later Gateway result can both be valid evidence. Do not retry an unknown paid outcome to create a trace.
 
+## A response request ID is not found in Request Trace
+
+Look up Gateway responses by their `x-correlation-id`, which every Gateway response carries. A
+request ID the caller sent as `x-request-id` also finds the request. The response's own
+`x-request-id` is not always a Turnstile identifier: image generation and Decision responses carry
+the provider's request ID.
+
 ## Telemetry is missing
 
 - Verify APIM can send to Event Hubs and the Telemetry Function can receive from it.

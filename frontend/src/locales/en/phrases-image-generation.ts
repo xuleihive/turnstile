@@ -49,6 +49,7 @@ export const IMAGE_GENERATION_PHRASES: Record<string, string> = {
   "模型用途": "Model operation",
   "部署名称": "Deployment name",
   "请填写文字输入、缓存文字和图像输出单价。": "Enter text input, cached text and image output prices.",
+  "请填写 Decision 的输入和输出单价（可填 0），或从 Azure 官方价目选择。": "Enter Decision input and output prices (0 is allowed), or choose an Azure list price.",
   "文字输入单价": "Text input price",
   "图像输出单价": "Image output price",
   "缓存文字单价": "Cached text price",

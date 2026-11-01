@@ -103,7 +103,10 @@ sealed class Request {
 }
 sealed class Operation { public string Id; }
 sealed class Subscription { public string Id; }
-sealed class Api { public string Id = "unit-turnstile"; public string Revision = "candidate"; }
+sealed class Api {
+  public string Id = "unit-turnstile"; public string Revision = "candidate";
+  public string Path = "turnstile";
+}
 sealed class Gateway {
     public string Id = "managed"; public bool IsManaged = true;
     public string InstanceId = "managed";
@@ -226,6 +229,9 @@ def native_router_expressions() -> dict[str, str]:
     )
     assert decision is not None
     result["routerDecisionBody"] = decision.text or ""
+    result["routerDecisionUrl"] = inbound.findtext(
+        ".//send-request[@response-variable-name='routerDecisionHttp']/set-url", "",
+    )
     rewrite = next(node for node in inbound.iter("set-body")
                    if 'context.Variables["routerOriginalRequestBody"]' in (node.text or ""))
     result["routerCandidateBody"] = rewrite.text or ""
@@ -429,7 +435,7 @@ def test_business_denial_event_preserves_non_inference_exclusions(
 
 @pytest.mark.parametrize("fault", [
     None, "digest", "target", "unpublished", "direct-provider", "fallback",
-    "prepared", "multiple-gateways",
+    "prepared", "multiple-gateways", "system-one", "unknown-protocol",
 ])
 def test_native_router_definition_proof_executes_before_paid_routing(
     compiled_expressions: tuple[Path, str], tmp_path: Path, fault: str | None,
@@ -444,7 +450,9 @@ def test_native_router_definition_proof_executes_before_paid_routing(
         "candidates_by_id": {"candidate": {"profile": "openai-v1"}},
         "definition": {"nodes": [{"fallback_on": ["timeout"] if fault == "fallback" else []}]},
         "routing_models_by_id": {"decision": {
-            "decision_protocol": "chat_json",
+            "decision_protocol": {"system-one": "system_one", "unknown-protocol": "unit"}.get(
+                fault or "", "chat_json",
+            ),
             "auth_mode": "managed_identity" if fault == "direct-provider" else "gateway_route",
         }},
     }
@@ -464,7 +472,7 @@ def test_native_router_definition_proof_executes_before_paid_routing(
             "routerLookupRowKey": router_row_key("unit-router"),
         },
     }])[0]
-    assert result is (fault is None)
+    assert result is (fault in {None, "system-one"})
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -569,6 +577,105 @@ def test_native_router_model_decision_rewrites_only_to_an_eligible_gateway_alias
     assert candidate_attempt["status_code"] == status_code
     assert candidate_attempt["outcome"] == outcome
     assert candidate_attempt["sequence"] == 2
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_router_system_one_decision_uses_the_gateway_decision_operation(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, stream: bool,
+) -> None:
+    from tests.platform.api.test_model_router_api import model_based_definition
+
+    first, second, decision = (UUID(int=value) for value in (901, 902, 903))
+    definition = model_based_definition(decision, first, second)
+    definition["nodes"] = [node for node in definition["nodes"] if node["type"] != "fallback"]
+    definition["edges"] = [edge for edge in definition["edges"]
+                           if edge["source"] != "fallback" and edge["target"] != "fallback"]
+    document: dict[str, Any] = {
+        "router_id": str(UUID(int=904)), "router_name": "unit-router", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "status": "published", "owner_email": "offline@example.test",
+        "assigned_user_ids": [], "allowed_subscription_ids": ["unit-subscription"],
+        "definition": definition,
+        "candidates_by_id": {str(model_id): {
+            "model_id": str(model_id), "apim_alias": alias, "display_name": alias,
+            "provider_name": "Unit", "runtime_name": "Unit", "profile": "openai-v1",
+            "capabilities": [], "context_window": 16384,
+            "input_cost_per_million": 1.0, "output_cost_per_million": 2.0,
+            "effective_cost_per_million": 2.0,
+        } for model_id, alias in ((first, "candidate-a"), (second, "candidate-b"))},
+        "routing_models_by_id": {str(decision): {
+            "model_id": str(decision), "apim_alias": "decision-1",
+            "upstream_model": "Decision-1-deployment", "display_name": "Decision-1",
+            "provider_name": "Microsoft Foundry", "runtime_name": "Unit",
+            "decision_protocol": "system_one", "auth_mode": "gateway_route",
+            "capabilities": ["decision"], "input_cost_per_million": 0.042,
+            "output_cost_per_million": 0.0,
+        }},
+    }
+    body = json.dumps({
+        "model": "unit-router", "messages": [{"role": "user", "content": "Prove a theorem"}],
+        "stream": stream,
+    })
+    expressions = native_router_expressions()
+    case: dict[str, Any] = {"body": body, "subscription": True, "operation": "chat-completions",
+            "variables": {
+                "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+                "routerOriginalRequestBody": body,
+                "routerCallerRequestId": str(UUID(int=906)),
+                "routerRequestedModel": "unit-router",
+                "routerDecisionRequestId": str(UUID(int=905)),
+                "routerDecisionHttp": {
+                    "__response": True, "status": 200, "headers": {}, "body": json.dumps({
+                        "answers": {"route": {
+                            "choice": str(second), "confidence": 0.86, "type": "choice",
+                            "probabilities": {str(first): 0.14, str(second): 0.86},
+                        }},
+                        "usage": {"input_tokens": 92, "output_tokens": 3},
+                    }),
+                },
+            }, "steps": [{
+                "variable": "routerPlanState",
+                "expression": expression_id(expressions["routerPlanState"]),
+            }]}
+    decided = [*case["steps"], {
+        "variable": "routerPlanState",
+        "expression": expression_id(expressions["routerDecisionResult"]),
+    }]
+    url, request, routed, stored = run_cases(compiled_expressions, tmp_path, [
+        {**case, "expression": expression_id(expressions["routerDecisionUrl"])},
+        {**case, "expression": expression_id(expressions["routerDecisionBody"])},
+        {**case, "steps": decided, "expression": expression_id(expressions["routerCandidateBody"])},
+        {**case, "steps": [*decided, {
+            "variable": "routerOutboundCompleted",
+            "expression": expression_id(expressions["routerOutboundCompleted"]),
+        }], "expression": expression_id(expressions["routerTraceBody"])},
+    ])
+    assert url == "https://unit.azure-api.net/turnstile/providers/microsoft/v1/systemone"
+    decision_body = json.loads(request)
+    assert set(decision_body) == {"model", "state", "questions"}
+    assert decision_body["model"] == "decision-1"
+    route = decision_body["questions"]["route"]
+    assert route["type"] == "choice" and set(route["criteria"]) == {str(first), str(second)}
+    assert analyze(compiled_expressions, tmp_path, "microsoft-decision", decision_body)[
+        "error"] == ""
+    assert json.loads(routed)["model"] == "candidate-b"
+    trace = json.loads(json.loads(stored)["Document"])
+    assert trace["native_usage_recorded"] is True
+    assert trace["selected_model_id"] == str(second)
+    decision_attempt = trace["attempts"][0]
+    assert decision_attempt["attempt_role"] == "routing_decision"
+    assert decision_attempt["decision_protocol"] == "system_one"
+    assert decision_attempt["outcome"] == "succeeded"
+    assert decision_attempt["request_id"] == str(UUID(int=905))
+    assert decision_attempt["decision_probabilities"] == {str(first): 0.14, str(second): 0.86}
+    chat = {**document["routing_models_by_id"][str(decision)], "decision_protocol": "chat_json"}
+    chat_document = {**document, "routing_models_by_id": {str(decision): chat}}
+    chat_url = run_cases(compiled_expressions, tmp_path, [{
+        **case, "variables": {**case["variables"], "routerCachedEntityJson": json.dumps({
+            "Document": json.dumps(chat_document),
+        })}, "expression": expression_id(expressions["routerDecisionUrl"]),
+    }])[0]
+    assert chat_url == "https://unit.azure-api.net/turnstile/chat/completions"
 
 
 @pytest.mark.parametrize("state_variable,expression_name", [
@@ -1725,6 +1832,89 @@ def test_execution_composition_preserves_public_identity_limits_and_routing() ->
             template,
             enabled=True,
         )
+
+
+def test_execution_composition_settles_image_responses() -> None:
+    from turnstile_core.integrations.apim_policy_components import (
+        _image_usage,
+        serialize_policy,
+        validate_parent_policy,
+    )
+
+    template = (ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
+    composed = compiler.compose_budget_execution_parent(template, template, enabled=True)
+    root = parse_policy(composed)
+    image, text = (root.find(
+        f"./outbound/choose/otherwise/choose/{branch}/set-variable[@name='usagePayload']",
+    ) for branch in ("when", "otherwise"))
+    assert image is not None and image.get("value") == compiler.COMPLETE_IMAGE_USAGE
+    assert text is not None and text.get("value") == compiler.COMPLETE_USAGE
+    image.set("value", _image_usage().attrib["value"])
+    validate_parent_policy(serialize_policy(root), composed)
+
+
+def image_response(change: dict[str, int]) -> str:
+    cached = change.get("cached")
+    usage = {
+        "input_tokens": 20, "output_tokens": 229, "total_tokens": 249 + change.get("total", 0),
+        "input_tokens_details": {
+            "text_tokens": 20 - change.get("input_image", 0),
+            "image_tokens": change.get("input_image", 0),
+            **({"cached_tokens": cached} if cached is not None else {}),
+        },
+        "output_tokens_details": {
+            "text_tokens": change.get("output_text", 0),
+            "image_tokens": 229 - change.get("output_text", 0),
+        },
+    }
+    return json.dumps({"created": 1, "data": [{"b64_json": "A" * 2_000_000}], "usage": usage})
+
+
+@pytest.mark.parametrize("change,complete", [
+    ({}, True), ({"cached": 5}, True), ({"input_image": 3}, False),
+    ({"output_text": 4}, False), ({"total": 1}, False),
+])
+def test_image_completion_usage_settles_only_exact_text_to_image_usage(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    change: dict[str, int], complete: bool,
+) -> None:
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(compiler.COMPLETE_IMAGE_USAGE), "body": "{}",
+        "operation": "images-generations", "response": image_response(change), "variables": {},
+    }])[0]
+    assert result["usage_complete"] is complete
+    if complete:
+        cached = change.get("cached", 0)
+        assert (result["input_tokens"], result["cached_tokens"], result["cache_write_tokens"],
+                result["output_tokens"], result["tokens_consumed"]) == (
+            20 - cached, cached, 0, 229, 249,
+        )
+    else:
+        assert result["ingest_error"] == "usage_parse_failed"
+
+
+def test_image_response_settles_its_ledger_reservation(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+) -> None:
+    initial = summary()
+    reserved, attempt = reserve_ledger(initial, identity(), 500, NOW)
+    receipt = LedgerAdmissionReceipt(identity=identity(), epoch=EPOCH, reserved_tokens=500)
+    expected, expected_attempt = complete_ledger(reserved, attempt, receipt, completion(249), NOW)
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(compiler.COMPLETION), "body": "{}",
+        "operation": "images-generations", "response": image_response({}),
+        "variables": {
+            "executionSummaryRead": stored_response(reserved.model_dump(mode="json")),
+            "executionAttemptRead": stored_response(attempt.model_dump(mode="json")),
+            "executionReceipt": receipt.model_dump(mode="json"),
+        },
+        "steps": [{"variable": "usagePayload",
+                   "expression": expression_id(compiler.COMPLETE_IMAGE_USAGE)}],
+    }])[0]
+    assert result["error"] == "" and result["already_settled"] is False
+    assert result["attempt"]["actual_tokens"] == expected_attempt.actual_tokens == 249
+    for field in ("confirmed_tokens", "active_reserved_tokens", "upper_bound_tokens"):
+        assert result["summary"][field] == getattr(expected, field)
 
 
 @pytest.mark.parametrize(

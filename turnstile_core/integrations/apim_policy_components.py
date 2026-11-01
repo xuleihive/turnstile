@@ -498,7 +498,9 @@ def _branch(normal: ET.Element, image: ET.Element | None) -> ET.Element:
     return choose
 
 
-def _components(reference: dict[str, ET.Element]) -> dict[str, ET.Element]:
+def _components(
+    reference: dict[str, ET.Element], image_usage: ET.Element | None = None,
+) -> dict[str, ET.Element]:
     inference = deepcopy(reference["isInferenceOperation"])
     original = inference.attrib["value"]
     inference.set(
@@ -527,7 +529,9 @@ def _components(reference: dict[str, ET.Element]) -> dict[str, ET.Element]:
             reference[name], ET.Element("set-variable", {"name": name, "value": expression})
         )
     result["request_body"] = _branch(reference["request_body"], None)
-    result["usage"] = _branch(reference["usage"], _image_usage())
+    result["usage"] = _branch(
+        reference["usage"], deepcopy(image_usage) if image_usage is not None else _image_usage(),
+    )
     return result
 
 
@@ -1065,6 +1069,9 @@ def compose_image_parent_policy(
         if not profiles:
             burst_tokens = previous_burst
     reference = legacy_components(template)
+    image_usage = template.find(
+        "./outbound/choose/otherwise/choose/when/set-variable[@name='usagePayload']",
+    )
     actual = _current_components(root) if version == 2 else legacy_components(root)
     _materialize_defaults(reference, actual)
     legacy_hashes = json.loads(Path(__file__).with_name("image_policy_v1.json").read_text())
@@ -1084,7 +1091,13 @@ def compose_image_parent_policy(
         text_usage = actual["usage"].find("otherwise/set-variable[@name='usagePayload']")
         if text_usage is not None and component_digest(text_usage) in legacy_hashes["usage"]:
             reference["usage"] = deepcopy(text_usage)
-    generated = _components(reference)
+        current_image = actual["usage"].find("when/set-variable[@name='usagePayload']")
+        # Parents installed before budget settlement covered images keep their reader valid.
+        if current_image is not None and component_digest(current_image) == component_digest(
+            _image_usage(),
+        ):
+            image_usage = current_image
+    generated = _components(reference, image_usage)
     if version != 1:
         expected = generated if version == 2 else reference
         if any(

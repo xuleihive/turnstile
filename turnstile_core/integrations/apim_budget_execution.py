@@ -12,6 +12,7 @@ from ..domain.image_profiles import ImageGenerationProfile
 from .apim_control_plane_contract import PolicyCompilationError
 from .apim_policy_components import (
   TEXT_CONDITION,
+  _image_usage,
   component_digest,
   parse_policy,
   serialize_policy,
@@ -1194,6 +1195,24 @@ COMPLETE_USAGE = """@{
       return result;
     } catch { return missing; }
 }"""
+
+
+def _complete_image_usage() -> str:
+    # Settlement recomputes USD from these tokens and the admission price snapshot.
+    value = _image_usage().attrib["value"]
+    for anchor, addition in (
+        ('new JProperty("ingest_error", null));',
+         'new JProperty("tokens_consumed", input + output), new JProperty("usage_complete", true),\n          '),
+        ('new JProperty("ingest_error", "usage_parse_failed"));',
+         'new JProperty("usage_complete", false),\n          '),
+    ):
+        if value.count(anchor) != 1:
+            raise PolicyCompilationError("The image usage reader changed")
+        value = value.replace(anchor, addition + anchor)
+    return value
+
+
+COMPLETE_IMAGE_USAGE = _complete_image_usage()
 
 COMPLETION = """@{
     var result = new JObject(new JProperty("error", "budget_completion_unavailable"));
@@ -2392,14 +2411,17 @@ def compose_budget_execution_parent(
                 "condition",
                 '@((bool)context.Variables["isStreamedResponse"] && context.Response.Headers.GetValueOrDefault("Content-Type", "").Split(\';\')[0].Trim().ToLowerInvariant() != "application/json")',
             )
-    buffered = root.find("./outbound/choose/otherwise/set-variable[@name='usagePayload']")
-    if buffered is None:
-      buffered = root.find(
-        "./outbound/choose/otherwise/choose/otherwise/set-variable[@name='usagePayload']"
-      )
-    if buffered is None:
+    # An image-capable parent reads image and text responses in separate branches.
+    buffered = root.findall("./outbound/choose/otherwise/set-variable[@name='usagePayload']") or (
+        root.findall("./outbound/choose/otherwise/choose/otherwise/set-variable[@name='usagePayload']")
+    )
+    if len(buffered) != 1:
         raise PolicyCompilationError("Budget execution requires an explicit buffered usage reader")
-    buffered.set("value", COMPLETE_USAGE)
+    buffered[0].set("value", COMPLETE_USAGE)
+    for image in root.findall(
+        "./outbound/choose/otherwise/choose/when/set-variable[@name='usagePayload']",
+    ):
+        image.set("value", COMPLETE_IMAGE_USAGE)
     for event in root.findall("./outbound//log-to-eventhub") + root.findall(
         "./on-error//log-to-eventhub"
     ):

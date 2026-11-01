@@ -504,6 +504,7 @@ export function ModelPublicationDialog({
       if (imageGeneration && !imageGatewaySupported) return "所选网关未启用图像生成。请由部署管理员运行 scripts.deploy enable-capabilities 升级网关。"
       if (imageGeneration && !imageConfigurationSupported) return "后端尚未支持图像参数透传"
       if (imageGeneration && priceValues.some(value => !value.trim())) return "请填写文字输入、缓存文字和图像输出单价。"
+      if (decision && pricing.priceSource === "manual" && priceValues.some(value => !value.trim())) return "请填写 Decision 的输入和输出单价（可填 0），或从 Azure 官方价目选择。"
       return null
     }
     if (!upstreamModelId.trim()) return "请输入上游模型 ID。"
@@ -783,7 +784,8 @@ export function ModelPublicationDialog({
                 if (operation !== "chat" && operation !== "image_generation" && operation !== "decision") return
                 setModelOperation(operation)
                 setContextWindow("")
-                setPricing(createModelPriceDraft(registry.context_pricing_supported === true, registry.context_price_rules_supported === true))
+                const draft = createModelPriceDraft(registry.context_pricing_supported === true, registry.context_price_rules_supported === true)
+                setPricing(operation === "decision" ? { ...draft, priceSource: "azure_retail" } : draft)
               }}>
                 <SelectTrigger className="registry-select-trigger" aria-label="模型用途"><SelectValue>{decision ? "决策（Decision）" : imageGeneration ? "文生图" : "对话"}</SelectValue></SelectTrigger>
                 <SelectContent align="start" alignItemWithTrigger={false}>
@@ -821,6 +823,7 @@ export function ModelPublicationDialog({
                 draft={pricing} setDraft={setPricing} busy={publishing}
                 showAnthropic={!decision && !imageGeneration}
                 imageGeneration={imageGeneration}
+                initialSearch={decision ? "Microsoft Decision" : undefined}
                 connectionDiscount={selectedRuntime.price_discount_percent ?? null} />
               {!imageGeneration && (!decision || pricing.priceSource !== "manual") && <div className="form-grid">
                 <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input id="publication-context-window" type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>
