@@ -89,10 +89,11 @@ later Gateway result can both be valid evidence. Do not retry an unknown paid ou
 
 ## A response request ID is not found in Request Trace
 
-Look up Gateway responses by their `x-correlation-id`, which every Gateway response carries. A
-request ID the caller sent as `x-request-id` also finds the request. The response's own
-`x-request-id` is not always a Turnstile identifier: image generation and Decision responses carry
-the provider's request ID.
+Look up a Gateway response by its `x-correlation-id`. Responses from model calls carry it, including
+chat, image generation and Decision responses. Some Gateway rejections do not, such as an invalid
+subscription key (401) or `route_configuration_unavailable` (503). A request ID the caller sent as
+`x-request-id` also finds the request. The response's own `x-request-id` is not always a Turnstile
+identifier: image generation and Decision responses carry the provider's request ID.
 
 ## Telemetry is missing
 
