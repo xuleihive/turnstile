@@ -323,7 +323,7 @@ Image generation needs no backend setting. Deploy and verify the API, Control-pl
 
 Publish a model on an existing Foundry Connection with `model.operation: image_generation`, an existing deployment name, and explicit nonnegative text-input, cached-text and image-output prices. Zero is an explicit free rate; an absent rate is not zero. Image models cannot be chat defaults or backend Pool members. Parameter names and values are provider-owned JSON; only one image and non-streaming responses are supported. Registry metadata edits cannot change the immutable profile. New limits use the normal route-reconciliation publication with an `image_configurations` model-key map.
 
-Image previews accept validated PNG, JPEG and WebP only. The backend does not store prompts or image bytes. Unknown post-dispatch usage remains reserved, and the caller and publication worker do not automatically repeat a paid image request. An Owner may explicitly authorize a bounded replacement publication probe with `authorize_image_probes: true`; inspect the previous billable attempt first.
+Microsoft Foundry image models return PNG or JPEG; they reject `output_format: webp` with HTTP 400. A failed image request reports the HTTP status and only the provider's identifier-style error `code` and `param`, never its message. The backend does not store prompts or image bytes. Unknown post-dispatch usage remains reserved, and the caller and publication worker do not automatically repeat a paid image request. An Owner may explicitly authorize a bounded replacement publication probe with `authorize_image_probes: true`; inspect the previous billable attempt first.
 
 ### Decision models
 

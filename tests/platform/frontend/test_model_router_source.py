@@ -571,6 +571,12 @@ def test_model_based_router_preview_and_trace_evidence_are_privacy_safe() -> Non
 
     assert 'selected.strategy_type === "model_based" && <DecisionPromptEditor' in canvas
     assert 'node.strategy_type === "model_based" && <DecisionPromptEditor' in form
+    assert (
+        'placeholder={isSystemOne\n          ? "留空使用内置判路由指令；'
+        '候选模型的名称、单价和路由用途说明会自动作为 Choice 判据"'
+    ) in editor
+    assert '<SelectTrigger aria-label="选择判路由模型"' in canvas
+    assert 'aria-label="选择 Routing Model"' not in canvas
     assert "SAMPLE_PROMPT_PRESETS" not in editor
     assert "previewModelRouterDecision" not in editor
     assert "trialModelRouterDecision" not in editor

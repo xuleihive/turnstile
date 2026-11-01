@@ -373,6 +373,8 @@ class ResolvedApimPublisherClient:
     enforce_identity_snapshot: bool
     client: ApimPublisherClient
     usage_observer: tuple[str | None, str | None] | None = None
+    route_target_identity_sha256: str | None = None
+    legacy_route_target_identity_sha256: str | None = None
 
 
 class ApimPublisherClientResolver(Protocol):

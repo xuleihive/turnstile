@@ -1156,6 +1156,27 @@ export function requestTraceFailed(request: UsageRequestSummary): boolean {
     || (request.status_code != null && request.status_code >= 400);
 }
 
+function requestTraceMatches(
+  item: UsageRequestSummary,
+  search: string,
+  status: "all" | "success" | "error",
+): boolean {
+  const matchesStatus = status === "all"
+    || (item.status_code !== null && (status === "success" ? !requestTraceFailed(item) : requestTraceFailed(item)));
+  return matchesStatus && (!search || [
+    item.request_id,
+    item.correlation_id,
+    item.trace_id,
+    item.upstream_request_id,
+    item.agent_name,
+    item.model_name,
+    item.router_name,
+    item.selected_model_name,
+    item.user_name,
+    item.project_name,
+  ].some((value) => value?.toLocaleLowerCase().includes(search)));
+}
+
 function RequestTrace({
   filters,
   models,
@@ -1175,10 +1196,14 @@ function RequestTrace({
   const overview = useQuery(finopsQueries.executiveOverview(filters))
   const volumeTrend = useQuery(finopsQueries.trends(filters, "none", "day"))
   const detail = useQuery(finopsQueries.requestDetail(selected ?? ""))
-  const firstRequestId = requestRows[0] ? requestTraceId(requestRows[0]) : null
+  const normalizedSearch = searchText.trim().toLocaleLowerCase();
+  const matchingRows = requestRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter))
+  const firstMatchingId = matchingRows[0] ? requestTraceId(matchingRows[0]) : null
+  const selectedMatches = matchingRows.some((item) => requestTraceId(item) === selected)
   useEffect(() => {
-    if (!selected && firstRequestId) setSelected(firstRequestId)
-  }, [firstRequestId, selected])
+    // The detail follows the filter; a deep link outside the loaded rows stays selected.
+    if (firstMatchingId && !selectedMatches) setSelected(firstMatchingId)
+  }, [firstMatchingId, selectedMatches])
   const loadNextPage = () => {
     if (!query.hasNextPage || query.isFetchingNextPage || loadingNextPageRef.current) return
     loadingNextPageRef.current = true
@@ -1207,24 +1232,7 @@ function RequestTrace({
       attemptPositions.set(requestTraceId(item), { index: index + 1, total: attempts.length });
     });
   }
-  const normalizedSearch = searchText.trim().toLocaleLowerCase();
-  const visibleRows = pricedRows.filter((item) => {
-    const matchesStatus = statusFilter === "all"
-      || (item.status_code !== null && (statusFilter === "success" ? !requestTraceFailed(item) : requestTraceFailed(item)));
-    const matchesSearch = !normalizedSearch || [
-      item.request_id,
-      item.correlation_id,
-      item.trace_id,
-      item.upstream_request_id,
-      item.agent_name,
-      item.model_name,
-      item.router_name,
-      item.selected_model_name,
-      item.user_name,
-      item.project_name,
-    ].some((value) => value?.toLocaleLowerCase().includes(normalizedSearch));
-    return matchesStatus && matchesSearch;
-  });
+  const visibleRows = pricedRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter));
   const totals = overview.data?.totals;
   const windowRequests = totals?.total_requests ?? 0;
   const clientErrors = totals?.client_error_requests ?? 0;

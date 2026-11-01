@@ -1,5 +1,6 @@
 import ast
 import gzip
+import os
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from starlette.responses import Response
 from starlette.routing import Mount, Route
 from starlette.testclient import TestClient
 
-from backend.http.static_files import validate_production_web_dist
+from backend.http.static_files import validate_production_web_dist, web_application_file
 from turnstile_core.config import Settings
 
 
@@ -33,6 +34,40 @@ def test_non_production_allows_missing_frontend_build(tmp_path: Path) -> None:
     validate_production_web_dist(
         Settings(production=False, web_dist_dir=tmp_path / "missing")
     )
+
+
+def test_unhashed_web_files_are_revalidated_across_fixed_timestamp_releases(
+    tmp_path: Path,
+) -> None:
+    web_dist = tmp_path / "dist"
+    web_dist.mkdir()
+    index = web_dist / "index.html"
+    index.write_text('<script src="/assets/index-AAAAAAAA.js"></script>', encoding="utf-8")
+    (web_dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    os.utime(index, (1_577_836_800, 1_577_836_800))
+    application = Starlette(routes=[Route(
+        "/{client_path:path}",
+        lambda request: web_application_file(web_dist, request.path_params["client_path"]),
+    )])
+    with TestClient(application) as client:
+        previous = client.get("/")
+        index.write_text('<script src="/assets/index-BBBBBBBB.js"></script>', encoding="utf-8")
+        os.utime(index, (1_577_836_800, 1_577_836_800))
+        for path, body in (
+            ("/", "index-BBBBBBBB"),
+            ("/dashboard/requests", "index-BBBBBBBB"),
+            ("/index.html", "index-BBBBBBBB"),
+            ("/favicon.svg", "<svg/>"),
+        ):
+            response = client.get(path, headers={
+                "If-None-Match": previous.headers["etag"],
+                "If-Modified-Since": previous.headers["last-modified"],
+            })
+            assert response.status_code == 200
+            assert body in response.text
+            assert response.headers["cache-control"] == "no-cache"
+    assert web_application_file(web_dist, "../outside.txt").path == index
 
 
 @pytest.mark.parametrize("encoding", ["gzip", "identity"])

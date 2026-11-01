@@ -198,11 +198,14 @@ def test_resolver_rejects_unproved_targets_before_reading_credentials(
 def test_client_cache_is_bound_to_target_fingerprint() -> None:
     repository, credentials, builder = registered(), Mock(), Mock()
     credentials.resolve.return_value = None
-    resolver = AzureApimPublisherClientResolver(
-        apim_target_client_config_resolver(repository, configured(), credentials),
-        builder,
-    )
+    config_resolver = apim_target_client_config_resolver(repository, configured(), credentials)
+    resolver = AzureApimPublisherClientResolver(config_resolver, builder)
     first = resolver.resolve(TARGET)
+    config = config_resolver.resolve(TARGET)
+    assert config.legacy_route_target_identity_sha256 is not None
+    assert (first.route_target_identity_sha256, first.legacy_route_target_identity_sha256) == (
+        config.route_target_identity_sha256, config.legacy_route_target_identity_sha256,
+    )
     assert resolver.resolve(TARGET).client is first.client
     repository.gateway_deployments[deployment().id]["endpoint_url"] = "https://changed.example.test"
     second = resolver.resolve(TARGET)

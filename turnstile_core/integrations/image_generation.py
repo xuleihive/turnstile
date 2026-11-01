@@ -115,6 +115,30 @@ def generated_image(
     return image
 
 
+_PROVIDER_ERROR_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
+
+
+def _provider_error_reason(response: httpx.Response) -> str:
+    # Only identifier fields leave the provider body; messages can echo prompts.
+    reason = f"HTTP {response.status_code}"
+    body = bytearray()
+    try:
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > 65_536:
+                return reason
+        error = json.loads(body).get("error")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return reason
+    if not isinstance(error, Mapping):
+        return reason
+    return "; ".join([reason, *(
+        f"{name}={value}" for name in ("code", "param")
+        if isinstance(value := error.get(name), str)
+        and _PROVIDER_ERROR_IDENTIFIER.fullmatch(value)
+    )])
+
+
 @dataclass(frozen=True)
 class ImageGatewayResult:
     image: GeneratedImage = field(repr=False)
@@ -167,7 +191,7 @@ class OpenAIImageGatewayAdapter(OpenAICompatibleGatewayAdapter):
                 }
                 if response.is_error:
                     raise GatewayInvocationError(
-                        f"Image gateway request failed (HTTP {response.status_code})",
+                        f"Image gateway request failed ({_provider_error_reason(response)})",
                         status_code=response.status_code,
                         headers=response_headers,
                     )

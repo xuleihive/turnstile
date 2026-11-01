@@ -88,11 +88,17 @@ def test_request_trace_kpis_are_diagnostic_not_executive_duplicates() -> None:
     assert 'title="时延占比分布"' in request_trace
     assert '<RequestLatencyChart totals={totals} percentage />' in request_trace
     assert "<RequestHealthChart" not in request_trace
+    filtered = (
+        "requestRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter))",
+        "pricedRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter))",
+    )
+    assert all(predicate in request_trace for predicate in filtered)
     assert (
-        "const firstRequestId = requestRows[0] ? requestTraceId(requestRows[0]) : null"
+        "const firstMatchingId = matchingRows[0] ? requestTraceId(matchingRows[0]) : null"
         in request_trace
     )
-    assert "if (!selected && firstRequestId) setSelected(firstRequestId)" in request_trace
+    assert "if (firstMatchingId && !selectedMatches) setSelected(firstMatchingId)" in request_trace
+    assert "if (!selected && firstRequestId)" not in request_trace
 
 
 def test_request_trace_selects_attempts_without_losing_the_caller_id() -> None:

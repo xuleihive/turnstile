@@ -792,7 +792,7 @@ function RouterProperties({
         </label>
         {selected.strategy_type === "model_based" && <label className="router-field"><span>Routing Model</span>
           <Select value={selected.routing_model_id ?? ""} onValueChange={(value) => updateNode({ ...selected, routing_model_id: value ?? null })}>
-            <SelectTrigger aria-label="选择 Routing Model" title={selected.routing_model_id ?? undefined}>
+            <SelectTrigger aria-label="选择判路由模型" title={selected.routing_model_id ?? undefined}>
               <SelectValue>{selected.routing_model_id ? <span className="registry-option">
                 <ModelBrandLogo familyKey={routingModel?.family_key} identity={`${routingModel?.display_name ?? ""} ${routingModel?.model_key ?? ""}`} providerName={routingModel?.provider_name ?? ""} size={15} />
                 <span>{routingModel?.display_name ?? "已不可用的模型"}</span>

@@ -449,6 +449,8 @@ class AzureApimPublisherClientResolver:
                 config.settings.apim_usage_observer_url,
                 config.settings.apim_usage_observer_key_named_value,
             ),
+            config.route_target_identity_sha256,
+            config.legacy_route_target_identity_sha256,
         )
 
 

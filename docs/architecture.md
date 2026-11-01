@@ -48,7 +48,7 @@ Image generation uses an explicitly published v4 profile on an existing Foundry 
 
 The internal image API uses the same authenticated identity, model assignment and budget checks as text invocation. Before dispatch it records an immutable billable intent, request identity, model identity, admission month and reservation. A valid measured result creates an exact acknowledgement; uncertain results remain reserved. Publication probes use the same durable journal with explicit authorization and bounded attempts, including independent rollback phases. Worker leases are renewed during long probes and checked again when committing state or activation.
 
-The response carries one validated PNG, JPEG or WebP image. Preview URLs exist only in browser memory and are revoked on replacement or exit. Prompts and image bytes do not become usage records, logs or query-cache entries.
+The response carries one validated PNG or JPEG image; Microsoft Foundry rejects `output_format: webp` with HTTP 400. Preview URLs exist only in browser memory and are revoked on replacement or exit. Prompts and image bytes do not become usage records, logs or query-cache entries.
 
 ## Ledger finalization
 

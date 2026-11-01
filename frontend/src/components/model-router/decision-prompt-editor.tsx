@@ -42,7 +42,9 @@ export function DecisionPromptEditor({
       <Textarea
         rows={6}
         maxLength={20_000}
-        placeholder="留空使用内置提示词；{catalog} 会替换为当前授权候选目录"
+        placeholder={isSystemOne
+          ? "留空使用内置判路由指令；候选模型的名称、单价和路由用途说明会自动作为 Choice 判据"
+          : "留空使用内置提示词；{catalog} 会替换为当前授权候选目录"}
         value={node.decision_prompt ?? ""}
         onChange={(event) => {
           onChange({ ...node, decision_prompt: event.target.value || null })

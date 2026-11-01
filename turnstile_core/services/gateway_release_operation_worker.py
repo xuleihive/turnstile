@@ -42,6 +42,7 @@ from ..integrations.apim_control_plane_contract import (
 )
 from ..integrations.apim_model_availability import compose_availability_parent
 from ..integrations.apim_policy_components import parse_policy, validate_parent_readback
+from ..integrations.apim_target_client_factory import route_target_identity_matches
 from ..persistence.repository import QueryRepository
 from ..security import CredentialCipher
 from .application_access import ApplicationAccessService
@@ -198,7 +199,9 @@ class GatewayReleaseOperationWorker:
             snapshot = publication.resource_manifest.get(
                 "apim_target_identity_sha256"
             )
-            if snapshot is not None and snapshot != resolved.target_identity_sha256:
+            if snapshot is not None and snapshot != resolved.target_identity_sha256 and not (
+                isinstance(snapshot, str) and route_target_identity_matches(resolved, snapshot)
+            ):
                 raise ControlPlaneConflictError(
                     "APIM target identity changed after the Release was created"
                 )

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import { Download, Image as ImageIcon, Maximize2, RefreshCw } from "lucide-react"
 
 import { Button } from "../../../components/ui/button"
@@ -8,14 +8,23 @@ import type { ImageGenerationOptions, ImageInvocationResponse } from "../types"
 import { compact, formatLatency, PanelTitle } from "./dashboard-shared"
 import "./image-generation.css"
 
+// Microsoft Foundry's documented values; other provider values can still be typed.
+const IMAGE_OPTION_FIELDS = [
+  { key: "size", label: "图像尺寸", suggestions: ["1024x1024", "1024x1536", "1536x1024"] },
+  { key: "quality", label: "图像质量", suggestions: ["low", "medium", "high"] },
+  { key: "output_format", label: "文件格式", suggestions: ["png", "jpeg"] },
+] as const
+
 export function ImageOptions({ value, onChange, disabled }: {
   value: ImageGenerationOptions
   onChange: (value: ImageGenerationOptions) => void
   disabled: boolean
 }) {
+  const id = useId()
   return <div className="invoke-image-options">
-    {([{ key: "size", label: "图像尺寸" }, { key: "quality", label: "图像质量" }, { key: "output_format", label: "文件格式" }] as const).map(({ key, label }) => <label key={key} className="registry-field invoke-select"><span>{label}</span>
-      <Input aria-label={label} value={value[key] ?? ""} disabled={disabled} data-no-localize onChange={event => onChange({ ...value, [key]: event.target.value || undefined })} />
+    {IMAGE_OPTION_FIELDS.map(({ key, label, suggestions }) => <label key={key} className="registry-field invoke-select"><span>{label}</span>
+      <Input list={`${id}-${key}`} value={value[key] ?? ""} disabled={disabled} data-no-localize onChange={event => onChange({ ...value, [key]: event.target.value || undefined })} />
+      <datalist id={`${id}-${key}`} data-no-localize>{suggestions.map(option => <option key={option} value={option} />)}</datalist>
     </label>)}
   </div>
 }

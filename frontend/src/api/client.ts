@@ -7,7 +7,7 @@ export const apiUrl = (path: string) => `${baseUrl}${path}`
  * The status decides whether retrying is useful: a 404 or 409 will not become a 200 by
  * asking again, so retry policies should not have to parse a human-readable message. */
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly detail?: string) {
     super(message)
     this.name = "ApiError"
   }
@@ -52,7 +52,8 @@ export const request = async <T,>(
     window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
   }
   if (!response.ok) {
-    throw new ApiError(response.status, `API ${response.status}: ${await responseErrorDetail(response, path)}`)
+    const detail = await responseErrorDetail(response, path)
+    throw new ApiError(response.status, `API ${response.status}: ${detail}`, detail)
   }
   if (response.status === 204) return undefined as T
   const contentType = response.headers.get("content-type") ?? ""

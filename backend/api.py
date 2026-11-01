@@ -47,7 +47,7 @@ from .http.service_dependencies import (
     runtime_service as _runtime_service,
 )
 from .http.session import require_allowed_write_origin, require_authenticated_session
-from .http.static_files import validate_production_web_dist
+from .http.static_files import validate_production_web_dist, web_application_file
 
 logger = logging.getLogger(__name__)
 # Lets deployment checks tell a restarted API process from the one it replaced.
@@ -142,7 +142,4 @@ if web_dist.is_dir():
 
     @app.get("/{client_path:path}", include_in_schema=False)
     def web_application(client_path: str) -> FileResponse:
-        candidate = (web_dist / client_path).resolve()
-        if candidate.is_file() and web_dist.resolve() in candidate.parents:
-            return FileResponse(candidate)
-        return FileResponse(web_dist / "index.html")
+        return web_application_file(web_dist, client_path)

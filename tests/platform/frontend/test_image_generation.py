@@ -46,6 +46,31 @@ def test_image_invocation_keeps_results_in_memory_and_excludes_text_models() -> 
         assert forbidden not in page + result
 
 
+def test_image_options_offer_foundry_values_with_localized_accessible_names() -> None:
+    result = (FRONTEND_SOURCE / "data-sources/apim/pages/image-generation-result.tsx").read_text()
+    options = result.split("function ImageOptions(", 1)[1].split("\n}\n", 1)[0]
+    assert 'suggestions: ["png", "jpeg"]' in result and "webp" not in result
+    assert "aria-label" not in options
+    assert "<Input list={`${id}-${key}`}" in options
+    assert "<datalist id={`${id}-${key}`} data-no-localize>" in options
+
+
+def test_invocation_results_and_denials_are_readable() -> None:
+    page = (FRONTEND_SOURCE / "data-sources/apim/pages/dashboard-invocation.tsx").read_text()
+    client = (FRONTEND_SOURCE / "api/client.ts").read_text()
+    assert ": `$${result.estimated_cost.toFixed(6)}`}" in page
+    assert "currency" not in page
+    for code in ("model_not_assigned", "budget_exceeded", "image_budget_insufficient"):
+        assert f'["{code}", "' in page
+    assert (
+        "error instanceof ApiError && error.detail ? INVOCATION_DENIALS.get(error.detail)" in page
+    )
+    assert (
+        "throw new ApiError(response.status, `API ${response.status}: ${detail}`, detail)"
+        in client
+    )
+
+
 def test_image_editor_requires_prices_and_preserves_operation() -> None:
     editor = (FRONTEND_SOURCE / "components/model-management/model-edit-dialog.tsx").read_text()
     publication = (
@@ -54,6 +79,9 @@ def test_image_editor_requires_prices_and_preserves_operation() -> None:
     assert "[draft.inputPrice, draft.cacheReadPrice, draft.outputPrice]" in editor
     assert "if (busy || !dirty || validation || imagePriceMissing) return" in editor
     assert "disabled={busy || imageGeneration || decision}" in editor
+    assert "showAnthropic={!decision} />}" in editor
+    assert "{!draft.contextPricingPreview && !decision && <div className=\"form-grid\">" in editor
+    assert "这四个值" not in editor
     assert (
         'operation: decision ? "decision" : imageGeneration ? "image_generation" : undefined'
         in publication

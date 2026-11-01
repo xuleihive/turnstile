@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "../../../components/ui/select"
 import { dataSource } from "../api"
+import { ApiError } from "../../../api/client"
 import { finopsQueries, invalidateFinOps } from "../queries"
 import { useAuth } from "../../../providers/auth-provider"
 import { gatewayInvocationChoices, resolveInvocationModel, type GatewaySelection } from "../../../lib/gateway-topology"
@@ -27,7 +28,6 @@ import type { DecisionInvocationRequest, DecisionInvocationResponse, EnterpriseE
 import { ImageGenerationResult, ImageOptions } from "./image-generation-result"
 import {
   compact,
-  currency,
   EmptyState,
   ErrorState,
   FilterSelect,
@@ -52,6 +52,12 @@ const DECISION_STATE_JSON_SAMPLE = JSON.stringify({
 
 type InvocationDraft = { owner: string; mode: "chat" | "image" | "decision"; prompt: string; stateFormat: "text" | "json"; questions: string }
 let invocationDraft: InvocationDraft | null = null
+
+const INVOCATION_DENIALS = new Map([
+  ["model_not_assigned", "你尚未获得该模型的使用权限，请联系管理员分配。"],
+  ["budget_exceeded", "本月预算已用完，调用已被拦截。"],
+  ["image_budget_insufficient", "剩余预算不足以预留本次图像生成所需额度。"],
+])
 
 function InvocationModelLogo({ model, runtime }: { model: ManagedModel; runtime?: ModelRuntime }) {
   if (model.capabilities.includes("decision")) return <MicrosoftLogo size={16} />
@@ -276,7 +282,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
       }
       void invalidateFinOps(queryClient);
     } catch (error) {
-      setInvokeError(queryError(error));
+      setInvokeError((error instanceof ApiError && error.detail ? INVOCATION_DENIALS.get(error.detail) : undefined) ?? queryError(error));
     } finally {
       setIsInvoking(false);
     }
@@ -556,7 +562,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
                 <dd>
                   {result.estimated_cost == null
                     ? "未计价"
-                    : currency.format(result.estimated_cost)}
+                    : `$${result.estimated_cost.toFixed(6)}`}
                 </dd>
               </div>
             </dl>

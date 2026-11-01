@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -37,6 +38,7 @@ from turnstile_core.domain.runtime_models import ProviderTarget
 from turnstile_core.integrations.apim_control_plane_contract import (
     PolicyCompilationError,
     ProbeRequestLimitExceeded,
+    ResolvedApimPublisherClient,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.security import CredentialCipher
@@ -1495,6 +1497,37 @@ def test_gc_operation_is_retention_aware_dry_run_only() -> None:
     )
     assert str(first.id) not in client.last_gc_retained_ids
     assert completed.checkpoint == {"dry_run_only": True}
+
+
+@pytest.mark.parametrize(
+    "recorded", ["route-identity", "legacy-route-identity", "client-identity", "changed"],
+)
+def test_release_operation_accepts_the_identity_flavor_recorded_by_the_release(
+    recorded: str,
+) -> None:
+    repository, service, client, _, second = _two_active_releases()
+    row = repository.get_gateway_publication(second.id)
+    assert row is not None
+    row["resource_manifest"] = {
+        **row["resource_manifest"], "apim_target_identity_sha256": recorded,
+    }
+    accepted = service.request_gc_plan(APIM_ID, "owner@example.com")
+    resolver = Mock()
+    resolver.resolve.return_value = ResolvedApimPublisherClient(
+        APIM_ID, "client-identity", True, client,
+        route_target_identity_sha256="route-identity",
+        legacy_route_target_identity_sha256="legacy-route-identity",
+    )
+    worker = GatewayReleaseOperationWorker(repository, resolver)
+
+    first = worker.run_once("release-worker")
+    if recorded == "changed":
+        assert first is not None and first.status == "failed"
+        assert first.error_message == "APIM target identity changed after the Release was created"
+        return
+    completed = worker.run_once("release-worker")
+    assert completed is not None and completed.id == accepted.operation.id
+    assert completed.status == "succeeded" and completed.gc_plan is not None
 
 
 @pytest.mark.parametrize("projection_state", ["ready", "missing", "error", "unconfigured"])

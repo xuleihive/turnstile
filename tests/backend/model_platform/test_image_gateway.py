@@ -149,6 +149,30 @@ def test_provider_error_is_not_retried_or_exposed(status_code: int) -> None:
     assert len(captured) == 1
 
 
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (
+            {"code": "invalid_value", "param": "output_format",
+             "message": "Invalid value: 'webp'. Prompt: A ceramic cup"},
+            "HTTP 400; code=invalid_value; param=output_format",
+        ),
+        ({"code": "contentFilter", "param": None}, "HTTP 400; code=contentFilter"),
+        ({"code": "A ceramic cup", "param": "x" * 65}, "HTTP 400"),
+    ],
+)
+def test_provider_error_reason_keeps_identifiers_but_never_messages(
+    error: dict[str, Any], reason: str,
+) -> None:
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda incoming: httpx.Response(400, json={"error": error}),
+    )) as client, pytest.raises(GatewayInvocationError) as raised:
+        OpenAIImageGatewayAdapter(client).generate(_request(), _route())
+    assert str(raised.value) == f"Image gateway request failed ({reason})"
+    assert raised.value.status_code == 400
+    assert "ceramic" not in str(raised.value)
+
+
 def test_invalid_image_response_preserves_measured_usage() -> None:
     with httpx.Client(
         transport=httpx.MockTransport(
