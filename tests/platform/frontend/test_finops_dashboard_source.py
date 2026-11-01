@@ -131,6 +131,34 @@ def test_request_trace_cost_availability_is_per_request() -> None:
     assert "costAvailable={costAvailable}" not in request_trace
 
 
+def test_request_trace_blocked_before_the_model_shows_zero_usage_and_cost() -> None:
+    detail = read_apim_dashboard_source().split("function RequestTraceDetail(", 1)[1]
+
+    # The blocked explanation says no tokens and no cost; the figures must agree with it.
+    assert (
+        'const blockedBeforeModel = admissionWarning?.tone === "blocked" '
+        '|| modelWarning?.tone === "blocked";'
+    ) in detail
+    assert "const inputOutputMeasured = blockedBeforeModel || (request.usage_available" in detail
+    assert ": costAvailable || blockedBeforeModel ? `" in detail
+
+
+def test_pages_nest_no_main_landmark_and_name_model_options() -> None:
+    nested = [
+        str(path.relative_to(FRONTEND_SOURCE)) for path in FRONTEND_SOURCE.rglob("*.tsx")
+        if path.name != "app.tsx" and "<main" in path.read_text(encoding="utf-8")
+    ]
+    budget = (FRONTEND_SOURCE / "data-sources/apim/pages/budget-page.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert nested == []
+    assert (
+        "toggleModel(model.id, checked === true)} aria-label={`选择模型：${model.display_name}`} />"
+        in budget
+    )
+
+
 def test_request_trace_cost_formula_uses_the_recorded_request() -> None:
     source = read_apim_dashboard_source()
     calculation = source.split("export function RequestCostCalculation(", 1)[1].split(

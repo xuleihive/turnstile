@@ -325,8 +325,9 @@ function ApplicationBudgetDialog({ application, open, writeAvailable, onOpenChan
       onOpenChange(false)
     },
   })
+  const usdValid = /^\d{1,16}(\.\d{1,2}0*)?$/.test(usdLimit) && Number(usdLimit) > 0
   const valid = (budgetMode === "usd"
-    ? /^\d{1,16}(\.\d{1,2}0*)?$/.test(usdLimit) && Number(usdLimit) > 0
+    ? usdValid
     : Number(tokenLimit) > 0 && Number.isSafeInteger(Number(tokenLimit)))
     && Number(tokensPerMinute) > 0
     && Number.isSafeInteger(Number(tokensPerMinute))
@@ -348,6 +349,7 @@ function ApplicationBudgetDialog({ application, open, writeAvailable, onOpenChan
           }}><SelectTrigger aria-label="预算单位"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tokens">Token</SelectItem><SelectItem value="usd">USD</SelectItem></SelectContent></Select></div>
           <div className="form-grid"><label className="registry-field"><span className="registry-field-label">{budgetMode === "usd" ? "月度金额上限（USD）" : "月度 Token 上限"}</span><Input name={budgetMode === "usd" ? "usd_limit" : "token_limit"} type={budgetMode === "usd" ? "text" : "number"} min={budgetMode === "usd" ? undefined : "1"} step={budgetMode === "usd" ? undefined : "1"} inputMode={budgetMode === "usd" ? "decimal" : "numeric"} value={budgetMode === "usd" ? usdLimit : tokenLimit} disabled={!writeAvailable || mutation.isPending} onChange={(event) => budgetMode === "usd" ? setUsdLimit(event.target.value) : setTokenLimit(event.target.value)} /></label><label className="registry-field"><span className="registry-field-label">每分钟 Token 上限</span><Input type="number" min="1" step="1" inputMode="numeric" value={tokensPerMinute} disabled={!writeAvailable || mutation.isPending} onChange={(event) => setTokensPerMinute(event.target.value)} /></label></div>
           <div className="form-grid"><label className="registry-field"><span className="registry-field-label">预警阈值（%）</span><Input type="number" min="1" max="100" step="1" inputMode="numeric" value={warningThreshold} disabled={!writeAvailable || mutation.isPending} onChange={(event) => setWarningThreshold(event.target.value)} /></label><label className="application-governance-toggle"><Checkbox checked={enforce} disabled={!writeAvailable || mutation.isPending} onCheckedChange={(checked) => setEnforce(checked === true)} /><span><b>超额时阻断</b><small>关闭后仅记录，不拒绝调用</small></span></label></div>
+          {budgetMode === "usd" && usdLimit.trim() !== "" && !usdValid && <div className="registry-error" role="alert">请输入有效的 USD 金额</div>}
           {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
         </div>
         <DialogFooter className="registry-editor-footer"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button><Button type="submit" disabled={!writeAvailable || !valid || mutation.isPending}>{mutation.isPending ? <RefreshCw className="spin" size={14} /> : null}{mutation.isPending ? "正在保存" : "保存额度"}</Button></DialogFooter>
@@ -876,7 +878,7 @@ export function ApplicationsPage() {
       </div>
     </header>
     {detail.error && !detail.data ? <div className="smh-empty application-detail-error"><KeyRound size={28} /><b>无法加载订阅详情</b><span>{String(detail.error)}</span><a className="ghost-button" href={applicationRouteHref(null)} onClick={openApplicationRoute(null)}>返回订阅</a></div>
-      : <main className="application-detail"><ApplicationDetailView application={detail.data} loading={detail.isLoading} refreshing={detail.isFetching} refreshError={detail.isRefetchError} onRefresh={() => { void detail.refetch() }} modelNames={modelNames} canEditAvatar={detail.data?.avatar_url !== undefined} canManage={user?.role === "owner"} governanceWriteAvailable={detail.data?.governance_write_available === true} models={registry.data?.models ?? []} registry={registry.data} /></main>}
+      : <section className="application-detail"><ApplicationDetailView application={detail.data} loading={detail.isLoading} refreshing={detail.isFetching} refreshError={detail.isRefetchError} onRefresh={() => { void detail.refetch() }} modelNames={modelNames} canEditAvatar={detail.data?.avatar_url !== undefined} canManage={user?.role === "owner"} governanceWriteAvailable={detail.data?.governance_write_available === true} models={registry.data?.models ?? []} registry={registry.data} /></section>}
   </div>
   }
 

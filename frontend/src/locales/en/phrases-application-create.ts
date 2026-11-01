@@ -61,4 +61,5 @@ export const APPLICATION_CREATE_PHRASES: Record<string, string> = {
   "后台密钥加密尚未就绪。": "Backend key encryption is not ready.",
   "请求结果尚未确认。请先刷新库存，避免重复创建；已创建订阅的密钥可在详情中按需复制。": "The request outcome is unconfirmed. Refresh the inventory before retrying. If the subscription exists, use its detail page to copy a key when key management is available.",
   "部分资源已创建，但创建流程未完成。请检查现有订阅和操作记录；不会自动删除资源或重复生成密钥。": "Some resources were created, but provisioning did not complete. Inspect the existing subscription and operation record. Resources are not deleted and keys are not regenerated automatically.",
+  "上次检查尚未通过，系统正在自动重试。": "The last check has not passed yet. Retrying automatically.",
 }

@@ -842,16 +842,16 @@
         <choose>
           <when condition="@((string)context.Variables[&quot;applicationAdmission&quot;] == &quot;ok&quot;)">
             <set-header name="x-org-id" exists-action="override">
-              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationId&quot;])</value>
+              <value>@((bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Request.Headers.GetValueOrDefault(&quot;x-org-id&quot;, &quot;unattributed&quot;) : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationId&quot;])</value>
             </set-header>
             <set-header name="x-org-name" exists-action="override">
-              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationName&quot;])</value>
+              <value>@((bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Request.Headers.GetValueOrDefault(&quot;x-org-name&quot;, &quot;unattributed&quot;) : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;organizationName&quot;])</value>
             </set-header>
             <set-header name="x-department-id" exists-action="override">
-              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentId&quot;])</value>
+              <value>@((bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Request.Headers.GetValueOrDefault(&quot;x-department-id&quot;, &quot;unattributed&quot;) : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentId&quot;])</value>
             </set-header>
             <set-header name="x-department-name" exists-action="override">
-              <value>@((string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentName&quot;])</value>
+              <value>@((bool)context.Variables[&quot;hasEmployeeToken&quot;] ? context.Request.Headers.GetValueOrDefault(&quot;x-department-name&quot;, &quot;unattributed&quot;) : (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;departmentName&quot;])</value>
             </set-header>
             <set-variable name="applicationLedgerPartition" value="@(&quot;app|&quot; + (string)((JObject)context.Variables[&quot;applicationMapState&quot;])[&quot;applicationId&quot;] + &quot;|&quot; + DateTime.UtcNow.ToString(&quot;yyyy-MM&quot;))" />
             <set-variable name="applicationLedgerUrl" value="@{

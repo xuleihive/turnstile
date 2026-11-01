@@ -15,6 +15,7 @@ import {
   applicationOperationTerminal,
   applicationProvisionBlocker,
   applicationProvisionStage,
+  applicationRetryDetail,
   applicationSubscriptionIdFromName,
   applicationTagsError,
   provisionedApplicationId,
@@ -59,6 +60,7 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
   const currentOperation = accepted && operation?.id === accepted.operation.id ? operation : accepted?.operation
   const terminal = applicationOperationTerminal(currentOperation)
   const failed = terminal && currentOperation?.status !== "succeeded"
+  const retryDetail = applicationRetryDetail(currentOperation)
   const applicationId = provisionedApplicationId(currentOperation)
   const blocker = inventoryError ? "无法读取创建能力，请重试。" : applicationProvisionBlocker(inventory)
   const draft: GatewayApplicationSubscriptionCreate = {
@@ -189,7 +191,9 @@ export function ApplicationCreateDialog({ gateways, inventory, inventoryError, a
           </> : <>
             <div className={`application-create-operation ${failed ? "failed" : currentOperation?.status}`} role="status"><span>{failed || currentOperation?.worker_available === false ? <AlertTriangle size={15} /> : terminal ? <CheckCircle2 size={15} /> : <RefreshCw className="spin" size={15} />}</span><b>{applicationProvisionStage(currentOperation)}</b></div>
             <dl className="application-create-defaults"><div><dt>订阅 ID</dt><dd><code>{accepted.operation.semantic_preview.apim_subscription_id as string}</code></dd></div><div><dt>操作 ID</dt><dd><code>{accepted.operation.id}</code></dd></div></dl>
-            {currentOperation?.error_message && <div className="registry-error" role="alert">{currentOperation.error_message}</div>}
+            {failed && currentOperation?.error_message && <div className="registry-error" role="alert">{currentOperation.error_message}</div>}
+            {!terminal && currentOperation?.error_message && <p className="application-create-note" role="status">上次检查尚未通过，系统正在自动重试。</p>}
+            {retryDetail && <p className="application-create-note">{retryDetail}</p>}
             {failed && currentOperation?.checkpoint.apim_subscription_created === true && <p className="registry-error">部分资源已创建，但创建流程未完成。请检查现有订阅和操作记录；不会自动删除资源或重复生成密钥。</p>}
             {currentOperation?.worker_available === false && !terminal && <div className="registry-error">{currentOperation.worker_unavailable_reason ?? "Release Worker 未部署。"}</div>}
             {operationError && <div className="registry-error" role="alert">{operationError}</div>}

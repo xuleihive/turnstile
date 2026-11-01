@@ -5,7 +5,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
-import { clientSampleFor, gatewayApiOperations, operationSampleModels } from "../../../frontend/src/lib/application-client-samples.ts"
+import { clientSampleFor, gatewayApiOperations, modelSampleOperations, operationSampleModels } from "../../../frontend/src/lib/application-client-samples.ts"
 
 const endpoint = "https://gateway.example.test/llm"
 const headers = { "x-user-id": "person@example.test", "x-project-id": "project-unit" }
@@ -174,4 +174,60 @@ test("copy success expires after two seconds and repeated copies restart the fee
   assert.equal(timers.size, 1)
   cleanup()
   assert.equal(timers.size, 0)
+})
+
+test("subscription samples offer only operations the model's API format serves", async () => {
+  const require = createRequire(new URL("../../../frontend/package.json", import.meta.url))
+  const { rolldown } = await import(require.resolve("rolldown"))
+  const entry = fileURLToPath(new URL("../../../frontend/src/components/finops/application-client-quickstart.tsx", import.meta.url))
+  const bundle = await rolldown({ input: entry, external: name => name !== entry, transform: { jsx: { runtime: "automatic" } } })
+  let code
+  try { code = (await bundle.generate({ format: "cjs" })).output[0].code }
+  finally { await bundle.close() }
+  const states = [], exports = {}
+  let cursor = 0
+  runInNewContext(code, { exports, require(name) {
+    if (name === "react") return { useEffect() {}, useState(initial) {
+      const index = cursor++
+      if (!(index in states)) states[index] = initial
+      return [states[index], value => { states[index] = value }]
+    } }
+    if (name === "react/jsx-runtime") return require(name)
+    if (name === "../../lib/application-client-samples") {
+      return { clientSampleFor, gatewayApiOperations, modelSampleOperations, operationSampleModels }
+    }
+    if (name === "../ui/select") return { Select: "Select", SelectContent: "SelectContent", SelectItem: "SelectItem", SelectTrigger: "SelectTrigger", SelectValue: "SelectValue" }
+    if (name.startsWith("highlight.js/")) return { registerLanguage() {} }
+    return {}
+  } })
+  const model = (id, runtime) => ({ id, runtime_id: runtime, family_key: id, enabled: true, capabilities: ["chat"], display_name: id, model_key: id })
+  const models = [model("gpt", "foundry"), model("claude", "anthropic")]
+  const registry = {
+    gateways: [{ id: "gateway", enabled: true, base_url: "https://gateway.example.test" }],
+    runtimes: [{ id: "foundry", brand_key: "microsoft_foundry", config: {} }, { id: "anthropic", brand_key: "anthropic", config: {} }],
+    apim_target_topology: { items: [{ target: { gateway_profile_id: "gateway" }, published_models_available: true, published_models: models.map(({ id }) => ({ id })) }] },
+  }
+  const render = (available, operation) => {
+    states.length = 0
+    if (operation) states[1] = operation
+    cursor = 0
+    const tree = exports.ApplicationClientQuickstart({ registry, models: available, application: {
+      gateway_profile_id: "gateway", status: "active", model_policy_configured: false, allowed_model_ids: [],
+      subscriptions: [{ state: "active", scope_exists: true }],
+    } })
+    const selects = []
+    const visit = node => {
+      if (!node || typeof node !== "object") return
+      if (node.type === "Select") selects.push(node.props)
+      ;[node.props?.children].flat(Infinity).forEach(visit)
+    }
+    visit(tree)
+    const [modelSelect, operationSelect] = selects
+    return { operation: operationSelect.value, operations: operationSelect.items.map(item => item.value), models: modelSelect.items.map(item => item.value) }
+  }
+
+  assert.deepEqual(render([models[0]]).operations, ["models", "chat_completions", "responses", "responses_compact"])
+  assert.deepEqual(render([models[1]]), { operation: "anthropic_messages", operations: ["models", "anthropic_messages", "anthropic_count_tokens"], models: ["claude"] })
+  assert.deepEqual(render(models, "anthropic_count_tokens").models, ["claude"])
+  assert.deepEqual(render(models, "responses").models, ["gpt"])
 })

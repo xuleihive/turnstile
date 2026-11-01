@@ -7,6 +7,19 @@ export function applicationOperationTerminal(operation: GatewayReleaseOperation 
   return Boolean(operation && APPLICATION_TERMINAL_STATUSES.some((status) => status === operation.status))
 }
 
+export function applicationRetryDetail(operation: GatewayReleaseOperation | undefined) {
+  const message = operation?.error_message
+  if (!message || applicationOperationTerminal(operation)) return null
+  const prefix = "Application data-plane authentication: "
+  if (message.startsWith(prefix)) {
+    try {
+      const diagnostic: unknown = JSON.parse(message.slice(prefix.length))
+      if (diagnostic && typeof diagnostic === "object" && "category" in diagnostic && diagnostic.category === "subscription_not_ready") return null
+    } catch {}
+  }
+  return message
+}
+
 export function applicationOperationIdFromUrl(href: string) {
   const value = new URL(href).searchParams.get(APPLICATION_OPERATION_PARAMETER)
   return value && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null

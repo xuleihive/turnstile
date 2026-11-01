@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from tests.support.paths import REPOSITORY_ROOT
 
 EXPECTED_DOCUMENTS = {
@@ -60,6 +62,18 @@ def test_repository_documents_one_database_entry_point() -> None:
         text = path.read_text(encoding="utf-8")
         assert "database-baseline" not in text
         assert "migration-manifest" not in text
+
+
+def test_clean_install_verification_lists_every_migration() -> None:
+    testing = (REPOSITORY_ROOT / "docs/testing.md").read_text(encoding="utf-8")
+    clean_install = next(
+        line for line in testing.splitlines() if line.startswith("For a clean installation")
+    )
+
+    assert re.findall(r"`(\d{3}_[a-z0-9_]+)`", clean_install) == sorted(
+        path.name.removesuffix(".up.sql")
+        for path in (REPOSITORY_ROOT / "migrations").glob("*.up.sql")
+    )
 
 
 def test_documentation_contains_no_original_environment_identifiers() -> None:

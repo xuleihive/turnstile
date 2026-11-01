@@ -632,11 +632,34 @@ def test_apim_attributes_admitted_subscriptions_to_their_registered_organization
     ):
         assert f'state["{field}"] = (string)row["{column}"] ?? "unattributed";' in state
         assert headers[header] == (
-            f'@((string)((JObject)context.Variables["applicationMapState"])["{field}"])'
+            '@((bool)context.Variables["hasEmployeeToken"] ? '
+            f'context.Request.Headers.GetValueOrDefault("{header}", "unattributed") : '
+            f'(string)((JObject)context.Variables["applicationMapState"])["{field}"])'
         )
     # Telemetry snapshots these headers later, so a client-supplied value never reaches it.
     assert policy.index('name="applicationLedgerPartition"') < policy.index(
         'name="telemetryOrganizationId"'
+    )
+
+
+def test_apim_person_attribution_is_set_from_the_validated_identity_first() -> None:
+    policy = POLICY_PATH.read_text()
+    root = ElementTree.fromstring(policy)
+    employee = next(
+        node for node in root.iter("when")
+        if node.attrib.get("condition") == '@((bool)context.Variables["hasEmployeeToken"])'
+        and node.find("validate-azure-ad-token") is not None
+    )
+    overridden = {
+        node.attrib["name"] for node in employee.findall("set-header")
+        if node.attrib.get("exists-action") == "override"
+    }
+
+    # Person traffic keeps these headers in the application branch, so a person request must
+    # never carry client-supplied attribution into it.
+    assert {"x-org-id", "x-org-name", "x-department-id", "x-department-name"} <= overridden
+    assert policy.index("<validate-azure-ad-token") < policy.index(
+        'name="applicationLedgerPartition"'
     )
 
 

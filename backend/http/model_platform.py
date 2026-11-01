@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from traceback import extract_tb
 from typing import Annotated, Any, Literal, TypeVar
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import httpx
@@ -1896,6 +1897,12 @@ def invoke_model(
     return service.invoke(request)
 
 
+def _header_text(value: str) -> str:
+    if value.isascii():
+        return value
+    return quote(value, safe="")
+
+
 @protected_router.post(
     "/api/v1/model-gateway/chat/completions",
     response_model=ChatCompletionsResponse,
@@ -2116,7 +2123,7 @@ def chat_completions(
         None,
     )
     response.headers["x-request-id"] = result.request_id
-    response.headers["x-routed-model"] = served_model
+    response.headers["x-routed-model"] = _header_text(result.model)
     response.headers["x-auth-method"] = identity.method
     if identity.apim_subscription_id:
         response.headers["x-apim-subscription-id"] = identity.apim_subscription_id
@@ -2135,7 +2142,7 @@ def chat_completions(
                 winning_attempt["sticky_bound_by"]
             )
     if result.router_name:
-        response.headers["x-router-name"] = result.router_name
+        response.headers["x-router-name"] = _header_text(result.router_name)
     if interaction_id:
         response.headers["x-router-interaction-id"] = interaction_id
     if session_id:

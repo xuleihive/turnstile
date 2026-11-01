@@ -196,8 +196,21 @@ def application_tpm_expressions() -> dict[str, str]:
             for node in root.iter("set-variable") if node.get("name") in names}
 
 
+def application_attribution_expressions() -> dict[str, str]:
+    root = parse_policy((ROOT / "infra/policies/foundry-finops-policy.xml").read_text())
+    return {
+        node.attrib["name"]: node.findtext("value", "")
+        for node in root.iter("set-header")
+        if "applicationMapState" in node.findtext("value", "")
+        and node.get("name") in {"x-org-id", "x-org-name", "x-department-id", "x-department-name"}
+    }
+
+
 def native_router_expressions() -> dict[str, str]:
-    from turnstile_core.integrations.apim_router_global_policy import fixed_router_operation_stages
+    from turnstile_core.integrations.apim_router_global_policy import (
+        build_router_global_service_policy,
+        fixed_router_operation_stages,
+    )
 
     inbound, outbound = fixed_router_operation_stages(
         "https://unitstore.table.core.windows.net", "Ledger", "unit-turnstile",
@@ -221,6 +234,21 @@ def native_router_expressions() -> dict[str, str]:
         if name in {"routerPlanState", "routerOutboundCompleted"}:
             key = "routerFailedAttempt" if name == "routerPlanState" else name
             result[key] = node.attrib["value"]
+    result["routerNameHeader"] = next(
+        node.findtext("value", "") for node in outbound.iter("set-header")
+        if node.get("name") == "x-router-name"
+    )
+    legacy = parse_policy(build_router_global_service_policy(
+        "<policies><inbound></inbound><outbound></outbound></policies>",
+        ledger_table_endpoint="https://unitstore.table.core.windows.net",
+        ledger_table_name="Ledger", api_id="unit-turnstile",
+    ))
+    for state_variable in ("routerPlanState", "routerAnthropicCompleted"):
+        result[f"{state_variable}NameHeader"] = next(
+            node.findtext("value", "") for node in legacy.iter("set-header")
+            if node.get("name") == "x-router-name"
+            and state_variable in node.findtext("value", "")
+        )
     trace = outbound.find(
         ".//send-request[@response-variable-name='routerOutboundTraceWrite']/set-body",
     )
@@ -543,6 +571,29 @@ def test_native_router_model_decision_rewrites_only_to_an_eligible_gateway_alias
     assert candidate_attempt["sequence"] == 2
 
 
+@pytest.mark.parametrize("state_variable,expression_name", [
+    ("routerOutboundCompleted", "routerNameHeader"),
+    ("routerPlanState", "routerPlanStateNameHeader"),
+    ("routerAnthropicCompleted", "routerAnthropicCompletedNameHeader"),
+])
+def test_native_router_name_header_is_ascii_for_any_router_name(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    state_variable: str, expression_name: str,
+) -> None:
+    expression = native_router_expressions()[expression_name]
+    names = ["Unified Router 1", "统一条件路由", "50% router"]
+
+    values = run_cases(compiled_expressions, tmp_path, [{
+        "body": "{}", "expression": expression_id(expression),
+        "variables": {state_variable: json.dumps({"router_name": name})},
+    } for name in names])
+
+    assert values == [
+        "Unified Router 1", "%E7%BB%9F%E4%B8%80%E6%9D%A1%E4%BB%B6%E8%B7%AF%E7%94%B1",
+        "50% router",
+    ]
+
+
 def test_native_router_keeps_other_owner_name_access_after_stale_backfill(
     compiled_expressions: tuple[Path, str], tmp_path: Path,
     router_repository: Any, monkeypatch: pytest.MonkeyPatch,
@@ -614,6 +665,7 @@ def compiled_expressions(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path
         if name.isupper() and isinstance(value, str) and value.startswith("@")
     }
     expressions.update(application_tpm_expressions().values())
+    expressions.update(application_attribution_expressions().values())
     expressions.update(native_router_expressions().values())
     expressions.update(business_denial_expressions().values())
     expressions.update(value for name, value in vars(availability).items()
@@ -949,6 +1001,28 @@ def test_execution_tpm_rejects_unproven_or_invalid_rate_without_a_default(
         },
     }])[0]
     assert result == 0
+
+
+@pytest.mark.parametrize("person", [True, False])
+def test_application_traffic_keeps_validated_person_organization(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, person: bool,
+) -> None:
+    expressions = application_attribution_expressions()
+    person_headers = {
+        "x-org-id": "org-person", "x-org-name": "Person Org",
+        "x-department-id": "department-person", "x-department-name": "Person Department",
+    }
+    registered = {
+        "organizationId": "org-application", "organizationName": "Application Org",
+        "departmentId": "department-application", "departmentName": "Application Department",
+    }
+    values = run_cases(compiled_expressions, tmp_path, [{
+        "body": "{}", "expression": expression_id(expression), "headers": person_headers,
+        "variables": {"hasEmployeeToken": person, "applicationMapState": registered},
+    } for expression in expressions.values()])
+    assert dict(zip(expressions, values, strict=True)) == (
+        person_headers if person else dict(zip(person_headers, registered.values(), strict=True))
+    )
 
 
 def analyze(

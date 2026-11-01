@@ -2192,7 +2192,10 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                           <value>@((string)JObject.Parse((string)context.Variables["routerPlanState"])["router_id"])</value>
                         </set-header>
                         <set-header name="x-router-name" exists-action="override">
-                          <value>@((string)JObject.Parse((string)context.Variables["routerPlanState"])["router_name"])</value>
+                          <value>@{
+                            var routerName = (string)JObject.Parse((string)context.Variables["routerPlanState"])["router_name"];
+                            return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                          }</value>
                         </set-header>
                         <set-body>@((string)JObject.Parse((string)context.Variables["routerPlanState"])["anthropic_error_body"])</set-body>
                       </return-response>
@@ -2457,6 +2460,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                           new JProperty(&quot;sse_body&quot;, sseBody),
                           new JProperty(&quot;response&quot;, chatResp),
                           new JProperty(&quot;model_name&quot;, (string)sel[&quot;display_name&quot;]),
+                          new JProperty(&quot;model_alias&quot;, (string)sel[&quot;apim_alias&quot;]),
                           new JProperty(&quot;router_id&quot;, (string)st[&quot;router_id&quot;]),
                           new JProperty(&quot;router_name&quot;, (string)st[&quot;router_name&quot;]),
                           new JProperty(&quot;decision_basis&quot;, (string)st[&quot;decision_basis&quot;]),
@@ -2594,13 +2598,16 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                           <value>@((string)context.Variables["routerCallerRequestId"])</value>
                         </set-header>
                         <set-header name="x-routed-model" exists-action="override">
-                          <value>@((string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["model_name"])</value>
+                          <value>@((string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["model_alias"])</value>
                         </set-header>
                         <set-header name="x-router-id" exists-action="override">
                           <value>@((string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["router_id"])</value>
                         </set-header>
                         <set-header name="x-router-name" exists-action="override">
-                          <value>@((string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["router_name"])</value>
+                          <value>@{
+                            var routerName = (string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["router_name"];
+                            return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                          }</value>
                         </set-header>
                         <set-header name="x-router-reason" exists-action="override">
                           <value>@((string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["decision_basis"])</value>
@@ -3266,6 +3273,7 @@ _OUTBOUND_ROUTER_ENGINE_XML = r"""<outbound>
                 new JProperty(&quot;has_json_body&quot;, hasJsonBody),
                 new JProperty(&quot;body&quot;, hasJsonBody ? (JToken)rBody : JValue.CreateNull()),
                 new JProperty(&quot;model_name&quot;, (string)sel[&quot;display_name&quot;]),
+                new JProperty(&quot;model_alias&quot;, (string)sel[&quot;apim_alias&quot;]),
                 new JProperty(&quot;router_id&quot;, (string)st[&quot;router_id&quot;]),
                 new JProperty(&quot;router_name&quot;, (string)st[&quot;router_name&quot;]),
                 new JProperty(&quot;decision_basis&quot;, (string)st[&quot;decision_basis&quot;]),
@@ -3282,13 +3290,16 @@ _OUTBOUND_ROUTER_ENGINE_XML = r"""<outbound>
                 <value>@((string)context.Variables["routerCallerRequestId"])</value>
               </set-header>
               <set-header name="x-routed-model" exists-action="override">
-                <value>@((string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["model_name"])</value>
+                <value>@((string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["model_alias"])</value>
               </set-header>
               <set-header name="x-router-id" exists-action="override">
                 <value>@((string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["router_id"])</value>
               </set-header>
               <set-header name="x-router-name" exists-action="override">
-                <value>@((string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["router_name"])</value>
+                <value>@{
+                  var routerName = (string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["router_name"];
+                  return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                }</value>
               </set-header>
               <set-header name="x-router-reason" exists-action="override">
                 <value>@((string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["decision_basis"])</value>

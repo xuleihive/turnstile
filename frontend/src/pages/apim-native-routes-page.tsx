@@ -21,13 +21,11 @@ import type {
   GatewayBackendPoolSummary,
   GatewayPublication,
   GatewayPublicationStatus,
-  ManagedModel,
-  ModelRuntime,
 } from "../data-sources/apim/types"
 import { useIsMobile } from "../hooks/use-mobile"
 import {
   clientSampleFor,
-  gatewayApiOperations,
+  modelSampleOperations,
   type ClientSampleOperation,
 } from "../lib/application-client-samples"
 import { Button } from "../components/ui/button"
@@ -69,29 +67,6 @@ function writeSelectedModelId(modelId: string | null) {
     else sessionStorage.removeItem(SELECTED_MODEL_STORAGE_KEY)
   } catch {
     // Ignore storage write failures
-  }
-}
-
-function modelSampleOperations(model: ManagedModel, runtime: ModelRuntime | undefined) {
-  const configuredFormat = String(runtime?.config.api_format ?? "")
-  const isAnthropic = (runtime?.brand_key === "microsoft_foundry" && model.family_key === "claude")
-    || configuredFormat === "anthropic_messages"
-    || (!configuredFormat && (
-      runtime?.brand_key === "amazon_bedrock"
-      || runtime?.brand_key === "anthropic"
-      || runtime?.brand_key === "azure_databricks"
-    ))
-  const allowedIds = new Set<ClientSampleOperation>(
-    isAnthropic
-      ? ["anthropic_messages", "anthropic_count_tokens", "models"]
-      : ["chat_completions", "responses", "responses_compact", "models"],
-  )
-  const defaultOperation: ClientSampleOperation = isAnthropic
-    ? "anthropic_messages"
-    : "chat_completions"
-  return {
-    defaultOperation,
-    operations: gatewayApiOperations().filter((operation) => allowedIds.has(operation.id)),
   }
 }
 

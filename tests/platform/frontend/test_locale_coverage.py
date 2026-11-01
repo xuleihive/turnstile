@@ -171,6 +171,7 @@ assert.equal(translate("发现 1 个配置问题。"), "1 configuration issue fo
 assert.equal(translate("发现 3 个配置问题。"), "3 configuration issues found.")
 assert.equal(translate("A model still uses it；Detach it first"),
     "A model still uses it; Detach it first")
+assert.equal(translate("选择模型：gpt-5.4-mini"), "Select model: gpt-5.4-mini")
 """,
         ],
         cwd=REPOSITORY_ROOT,

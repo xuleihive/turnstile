@@ -688,10 +688,10 @@ export function GatewayReleasesPage({
       : <div className="gateway-release-layout" style={{ "--gateway-release-pane-width": `${width}px` } as React.CSSProperties}>
         {!isMobile && <aside className="gateway-release-list-pane">{releaseListContent(false)}</aside>}
         <button className="runtime-pane-handle" type="button" role="separator" aria-label="调整发布列表宽度" aria-orientation="vertical" aria-valuemin={minWidth} aria-valuemax={maxWidth} aria-valuenow={width} onPointerDown={startResize} onKeyDown={resizeWithKeyboard} onDoubleClick={resetWidth} />
-        <main className="gateway-release-detail">
+        <section className="gateway-release-detail">
           {releaseActionError && <div className="gateway-release-action-error" role="alert"><AlertTriangle size={14} /><span>{String(releaseActionError)}</span></div>}
           <ReleaseDetail release={detail.data} loading={detail.isLoading} canManage={user?.role === "owner"} operationsEnabled={operationsEnabled} busy={busy} operation={releaseOperation} onPin={() => detail.data && protectionMutation.mutate(detail.data)} onCheck={() => detail.data && integrityMutation.mutate(detail.data.id)} onRollback={() => detail.data && setRollbackId(detail.data.id)} showMobileActions={isMobile} />
-        </main>
+        </section>
       </div>}
     {isMobile && releases.data && items.length > 0 && <Dialog open={releaseDrawerOpen} onOpenChange={onReleaseDrawerOpenChange}>
       <DialogContent className="apim-native-route-drawer gateway-release-drawer" finalFocus={false}>

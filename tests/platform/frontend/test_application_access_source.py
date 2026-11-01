@@ -83,6 +83,38 @@ def test_usd_limit_editors_follow_the_api_decimal_contract() -> None:
         assert [bool(item.fullmatch(value)) for item in validators] == [accepted] * 3, value
 
 
+def test_subscription_dialogs_explain_usd_limits_retries_and_key_rotation() -> None:
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+    creation = (
+        FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    card = (
+        FRONTEND_SOURCE / "components/finops/application-subscription-card.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        '!usdValid && <div className="registry-error" role="alert">'
+        "请输入有效的 USD 金额</div>"
+    ) in page
+    # A retryable readiness miss is progress; only a terminal failure is an error.
+    assert (
+        '{failed && currentOperation?.error_message && '
+        '<div className="registry-error" role="alert">'
+    ) in creation
+    assert (
+        '{!terminal && currentOperation?.error_message && '
+        '<p className="application-create-note" role="status">'
+    ) in creation
+    # Only the expected key-propagation wait hides the latest retry reason.
+    assert "const retryDetail = applicationRetryDetail(currentOperation)" in creation
+    assert (
+        '{retryDetail && <p className="application-create-note">{retryDetail}</p>}'
+    ) in creation
+    # APIM propagates a regenerated key before the old one stops authenticating.
+    assert "立即失效" not in card
+    assert "将在网关同步后失效" in card
+
+
 def test_subscriptions_are_a_model_platform_domain() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     source = (FRONTEND_SOURCE / "data-sources/apim/source.tsx").read_text(encoding="utf-8")

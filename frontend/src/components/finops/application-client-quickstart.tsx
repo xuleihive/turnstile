@@ -15,6 +15,7 @@ import type {
 import {
   clientSampleFor,
   gatewayApiOperations,
+  modelSampleOperations,
   operationSampleModels,
   type ClientSampleLanguage,
   type ClientSampleOperation,
@@ -110,11 +111,15 @@ export function ApplicationClientQuickstart({
   })
   const [selectedModelId, setSelectedModelId] = useState(eligibleModels[0]?.id ?? "")
   const [selectedOperation, setSelectedOperation] = useState<ClientSampleOperation>("chat_completions")
-  const operations = gatewayApiOperations().filter(operation => operation.id === "decision"
-    ? registry?.decision_supported === true && operationSampleModels(eligibleModels, "decision").length > 0
-    : operation.id !== "image_generations" || operationSampleModels(eligibleModels, operation.id).length > 0)
-  const operation = operations.find(item => item.id === selectedOperation)?.id ?? "chat_completions"
-  const operationModels = operationSampleModels(eligibleModels, operation)
+  const sampleModels = (operation: ClientSampleOperation) => operationSampleModels(eligibleModels, operation)
+    .filter(model => operation === "models" || operation === "decision" || operation === "image_generations"
+      || modelSampleOperations(model, registry?.runtimes.find(runtime => runtime.id === model.runtime_id))
+        .operations.some(item => item.id === operation))
+  const operations = gatewayApiOperations().filter(operation => operation.id === "models"
+    || (operation.id !== "decision" || registry?.decision_supported === true) && sampleModels(operation.id).length > 0)
+  const operation = operations.find(item => item.id === selectedOperation)?.id
+    ?? operations.find(item => item.id !== "models")?.id ?? "models"
+  const operationModels = sampleModels(operation)
   const selectedModel = operationModels.find(model => model.id === selectedModelId) ?? operationModels[0]
   const modelOptions = operationModels.map(model => ({ value: model.id, label: `${model.display_name} · ${model.model_key}` }))
   const baseUrl = endpoint?.replace(/\/+$/, "") ?? ""

@@ -1455,10 +1455,16 @@ function RequestTraceDetail({
       { label: "缓存读取", value: cacheRead, className: "cached" },
       { label: "输出", value: request.completion_tokens, className: "completion" },
     ];
+  // The gateway admission check fails open so a ledger outage cannot stop employees working.
+  // That trade-off is only acceptable while it stays visible: a degraded request must not look
+  // identical to one that was actually checked against a budget.
+  const admissionWarning = budgetAdmissionWarnings[request.budget_admission ?? ""];
+  const modelWarning = modelAdmissionWarnings[request.model_admission ?? ""];
+  const blockedBeforeModel = admissionWarning?.tone === "blocked" || modelWarning?.tone === "blocked";
   // Gateway-log reconciliation measures input/output but cannot measure streamed cache usage.
   // Keep those known buckets visible without presenting the legacy numeric cache zero as fact.
-  const inputOutputMeasured = request.usage_available
-    ?? (!request.estimated || Boolean(request.reconciled_at));
+  const inputOutputMeasured = blockedBeforeModel || (request.usage_available
+    ?? (!request.estimated || Boolean(request.reconciled_at)));
   const cacheUsageUnmeasured = request.ingest_error === "stream_cache_usage_unavailable";
   const state = usageState(!inputOutputMeasured, request.timestamp);
   const usagePlaceholder = state === "pending" ? "待对账" : "不可用";
@@ -1471,11 +1477,6 @@ function RequestTraceDetail({
   const traceSteps = request.ingest_source === "policy"
     ? [request.request_source, "Cloud API 策略"]
     : [request.request_source, request.provider, request.runtime, request.ingest_source].filter(Boolean);
-  // The gateway admission check fails open so a ledger outage cannot stop employees working.
-  // That trade-off is only acceptable while it stays visible: a degraded request must not look
-  // identical to one that was actually checked against a budget.
-  const admissionWarning = budgetAdmissionWarnings[request.budget_admission ?? ""];
-  const modelWarning = modelAdmissionWarnings[request.model_admission ?? ""];
   const routerTotalLatency = request.router_attempts.reduce(
     (total, attempt) => total + (attempt.latency_ms ?? 0), 0,
   );
@@ -1766,7 +1767,7 @@ function RequestTraceDetail({
         {tokenSegments.map((item) => <div className={`trace-token-fact ${item.className}`} key={item.label}><dt>{item.label}</dt><dd>{tokenValue(item)}</dd></div>)}
         <div className="trace-token-cost">
           <dt>估算费用</dt>
-          <dd>{!inputOutputMeasured ? usagePlaceholder : costAvailable ? `${cacheUsageUnmeasured ? "≥ " : ""}${currency.format(request.estimated_cost)}` : "未计价"}</dd>
+          <dd>{!inputOutputMeasured ? usagePlaceholder : costAvailable || blockedBeforeModel ? `${cacheUsageUnmeasured ? "≥ " : ""}${currency.format(request.estimated_cost)}` : "未计价"}</dd>
           {inputOutputMeasured && costAvailable && <dd className="trace-cost-calculation"><RequestCostCalculation request={request} /></dd>}
         </div>
       </dl>

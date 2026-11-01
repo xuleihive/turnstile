@@ -2392,6 +2392,105 @@ def test_direct_model_streams_expose_the_trace_request_id() -> None:
     assert "application/json" in conditions(body)
 
 
+@pytest.mark.parametrize("completed_variable", [
+    "routerOutboundCompleted", "routerAnthropicCompleted",
+])
+def test_routed_model_header_uses_the_selected_ascii_gateway_alias(completed_variable: str) -> None:
+    import xml.etree.ElementTree as ET
+
+    from turnstile_core.integrations.apim_router_global_policy import (
+        build_router_global_service_policy,
+        fixed_router_operation_stages,
+    )
+
+    if completed_variable == "routerAnthropicCompleted":
+        outbound = ET.fromstring(build_router_global_service_policy(
+            "<policies><inbound></inbound><outbound></outbound></policies>",
+            ledger_table_endpoint="https://unitstore.table.core.windows.net",
+            ledger_table_name="Ledger", api_id="unit-api",
+        ))
+    else:
+        _, outbound = fixed_router_operation_stages(
+            "https://unitstore.table.core.windows.net", "Ledger", "unit-api", str(OWNER_ID),
+        )
+    completed = next(
+        node.get("value", "") for node in outbound.iter("set-variable")
+        if node.get("name") == completed_variable
+    )
+    routed = next(
+        node.findtext("value", "") for node in outbound.iter("set-header")
+        if node.get("name") == "x-routed-model"
+        and completed_variable in node.findtext("value", "")
+    )
+
+    # Display names such as "gpt-5.4-mini · Microsoft Foundry" are not valid ASCII header values.
+    assert 'new JProperty("model_alias", (string)sel["apim_alias"])' in completed
+    assert routed == (
+        f'@((string)JObject.Parse((string)context.Variables["{completed_variable}"])'
+        '["model_alias"])'
+    )
+
+
+@pytest.mark.parametrize("router_name,header", [
+    ("统一条件路由", "%E7%BB%9F%E4%B8%80%E6%9D%A1%E4%BB%B6%E8%B7%AF%E7%94%B1"),
+    ("Unified Router 1", "Unified Router 1"), ("50% router", "50% router"),
+])
+@pytest.mark.parametrize("path", [
+    "/api/v1/model-gateway/chat/completions", "/api/v1/model-gateway/v1/chat/completions",
+    "/v1/chat/completions", "/chat/completions",
+])
+def test_routed_chat_headers_carry_non_latin_router_and_model_names(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    router_name: str, header: str, path: str,
+) -> None:
+    repository, _ = router_repository
+    model_id = enabled_model_ids(repository)[0]
+    model = next(item for item in repository.models if item["id"] == model_id)
+    model["display_name"] = "统一模型 · Foundry"
+
+    class KeyedRuntimeService:
+        def invoke(
+            self, request: ModelInvocationRequest, *, request_id: str | None = None,
+            timeout_ms: int | None = None,
+        ) -> ModelInvocationResponse:
+            del request, timeout_ms
+            return ModelInvocationResponse(
+                request_id=request_id or "req-routed", correlation_id="corr-routed",
+                content="ok", provider="Azure OpenAI", runtime=str(model["runtime_name"]),
+                model=str(model["model_key"]), gateway="APIM", latency_ms=1,
+                usage=InvocationUsage(
+                    input_tokens=1, cached_tokens=0, cache_write_tokens=0, output_tokens=1,
+                    estimated=False,
+                ),
+                estimated_cost=0.0,
+            )
+
+    app.dependency_overrides[runtime_service] = KeyedRuntimeService
+    try:
+        router_id = client.post(
+            "/api/v1/model-routers",
+            json={"name": router_name, "definition": valid_definition(model_id)},
+        ).json()["id"]
+        assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+        assert client.put(
+            f"/api/v1/model-routers/{router_id}/assignment",
+            json={"user_id": "owner@contoso.com", "assigned": True},
+        ).status_code == 200
+        response = client.post(
+            path,
+            json={"model": router_name, "messages": [{"role": "user", "content": "Hello"}]},
+        )
+    finally:
+        app.dependency_overrides.pop(runtime_service, None)
+
+    # The model was already invoked and billed; the headers must not turn it into a 500.
+    assert response.status_code == 200
+    assert response.headers["x-router-name"] == header
+    assert response.headers["x-routed-model"] == model["model_key"]
+    assert response.json()["turnstile_routing"]["router_name"] == router_name
+    assert response.json()["model"] == model["display_name"]
+
+
 def router_table_transport(monkeypatch: pytest.MonkeyPatch) -> Any:
     from email import policy
     from email.parser import BytesParser

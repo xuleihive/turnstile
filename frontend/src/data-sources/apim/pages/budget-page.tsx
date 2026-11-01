@@ -824,7 +824,7 @@ function ModelAccessPicker({
         <label className="people-model-search"><Search size={14} /><Input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型或提供方" aria-label="搜索允许模型" /></label>
         <div className="people-model-select-actions"><span>{selectedIds.size.toLocaleString(getIntlLocale())} / {models.length.toLocaleString(getIntlLocale())} 已选</span><button type="button" onClick={() => onChange(new Set(models.map((model) => model.id)))}>全选可用</button><button type="button" onClick={() => onChange(new Set())}>清空</button></div>
         <div className="people-model-select-list" role="group" aria-label="允许模型选项">
-          {filteredModels.map((model) => <div className="people-model-option" key={model.id} onClick={(event) => { if (!(event.target as HTMLElement).closest('[data-slot="checkbox"]')) toggleModel(model.id, !selectedIds.has(model.id)) }}><Checkbox checked={selectedIds.has(model.id)} onCheckedChange={(checked) => toggleModel(model.id, checked === true)} /><span><b>{model.display_name}</b><small>{model.provider_name} · {model.model_key}</small></span></div>)}
+          {filteredModels.map((model) => <div className="people-model-option" key={model.id} onClick={(event) => { if (!(event.target as HTMLElement).closest('[data-slot="checkbox"]')) toggleModel(model.id, !selectedIds.has(model.id)) }}><Checkbox checked={selectedIds.has(model.id)} onCheckedChange={(checked) => toggleModel(model.id, checked === true)} aria-label={`选择模型：${model.display_name}`} /><span><b>{model.display_name}</b><small>{model.provider_name} · {model.model_key}</small></span></div>)}
           {filteredModels.length === 0 && <div className="people-model-empty">没有匹配的模型</div>}
         </div>
       </PopoverContent>

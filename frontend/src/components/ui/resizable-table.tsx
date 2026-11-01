@@ -204,7 +204,7 @@ function useResizableColumns({
       <span
         className="table-column-resizer"
         role="separator"
-        aria-label={label ? `Resize ${label} column` : `Resize column ${index + 1}`}
+        aria-label={`调整列宽：${label || index + 1}`}
         aria-orientation="vertical"
         aria-valuemin={minWidths[index] ?? DEFAULT_MIN_COLUMN_WIDTH}
         aria-valuemax={MAX_COLUMN_WIDTH}
@@ -212,7 +212,6 @@ function useResizableColumns({
         aria-keyshortcuts="ArrowLeft ArrowRight Enter Space"
         data-active={activeColumn === index || undefined}
         data-resize-at-all-widths={resizeAtAllWidths || undefined}
-        data-no-localize
         tabIndex={0}
         onPointerDown={(event) => beginResize(index, event)}
         onDoubleClick={(event) => {

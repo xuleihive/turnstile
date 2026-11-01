@@ -157,7 +157,7 @@ export function ApplicationSubscriptionCard({
       <AlertDialogContent className="application-key-rotate-dialog" data-tone="destructive">
         <div className="application-key-rotate-body">
           <AlertDialogTitle>{rotateTarget ? `轮换 ${keyLabels[rotateTarget.keyKind]}？` : "轮换订阅密钥？"}</AlertDialogTitle>
-          <AlertDialogDescription>{rotateTarget?.keyKind === "primary" ? "当前 Primary Key 将立即失效。请先让调用方切换到 Secondary Key。" : "当前 Secondary Key 将立即失效。请确认没有调用方仍在使用它。"}</AlertDialogDescription>
+          <AlertDialogDescription>{rotateTarget?.keyKind === "primary" ? "当前 Primary Key 将在网关同步后失效，在此之前可能仍短暂可用。请先让调用方切换到 Secondary Key。" : "当前 Secondary Key 将在网关同步后失效，在此之前可能仍短暂可用。请确认没有调用方仍在使用它。"}</AlertDialogDescription>
           {rotateTarget && <code data-no-localize>{rotateTarget.subscription.apim_subscription_id}</code>}
           {rotateMutation.error && <div className="application-key-rotate-error" role="alert"><AlertTriangle size={13} />{String(rotateMutation.error)}</div>}
         </div>

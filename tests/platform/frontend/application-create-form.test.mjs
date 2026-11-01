@@ -1,7 +1,7 @@
 // Pure helper tests only; these fixtures are not browser or cloud validation evidence.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applicationCreateError, applicationOperationIdFromUrl, applicationOperationTerminal, applicationProvisionBlocker, applicationProvisionStage, applicationSubscriptionIdFromName, applicationTagsError, provisionedApplicationId } from '../../../frontend/src/components/applications/application-create-form.ts'
+import { applicationCreateError, applicationOperationIdFromUrl, applicationOperationTerminal, applicationProvisionBlocker, applicationProvisionStage, applicationRetryDetail, applicationSubscriptionIdFromName, applicationTagsError, provisionedApplicationId } from '../../../frontend/src/components/applications/application-create-form.ts'
 
 const gateway = { id: 'gateway-a', enabled: true, implementation: 'apim' }
 const value = { display_name: 'Invoice Service', subscription_id: 'invoice-service', application_type: 'service', description: null }
@@ -59,4 +59,17 @@ test('refresh recovery accepts only operation UUIDs, never arbitrary or secret v
   assert.equal(applicationOperationIdFromUrl('https://unit.test/?applicationOperation=' + applicationId), applicationId)
   assert.equal(applicationOperationIdFromUrl('https://unit.test/?applicationOperation=invalid'), null)
   assert.equal(applicationOperationIdFromUrl('https://unit.test/'), null)
+})
+test('retry details suppress only a parsed subscription readiness diagnostic', () => {
+  const prefix = 'Application data-plane authentication: '
+  const waiting = { status: 'verifying_readback', error_message: prefix + JSON.stringify({ category: 'subscription_not_ready', status_code: 401, correlation_id: null }) }
+  assert.equal(applicationRetryDetail(undefined), null)
+  assert.equal(applicationRetryDetail({ ...waiting, error_message: null }), null)
+  assert.equal(applicationRetryDetail(waiting), null)
+  for (const message of [
+    prefix + JSON.stringify({ category: 'transport_error', status_code: null, correlation_id: null }),
+    'APIM permissions failed while checking subscription_not_ready',
+    prefix + '{"category":"subscription_not_ready"',
+  ]) assert.equal(applicationRetryDetail({ ...waiting, error_message: message }), message)
+  for (const status of ['failed', 'restored', 'succeeded']) assert.equal(applicationRetryDetail({ ...waiting, status }), null)
 })
