@@ -2502,6 +2502,19 @@ def upgrade_fixed_program_parent(
     for index, node in enumerate(expected_branch):
         if node.tag == "set-header" and node.get("name") in attribution_headers:
             actual_branch.insert(index, deepcopy(node))
+    model_denials = [
+        [node for node in policy.iter("when")
+         if '"modelAdmission"' in node.get("condition", "")
+         and node.find("return-response") is not None]
+        for policy in (root, outcome_template)
+    ]
+    if [len(nodes) for nodes in model_denials] != [1, 1]:
+        raise PolicyCompilationError("Fixed program upgrade model denial is ambiguous")
+    actual_denial, expected_denial = model_denials[0][0], model_denials[1][0]
+    denial_response = actual_denial.find("return-response")
+    expected_response = expected_denial.find("return-response")
+    assert denial_response is not None and expected_response is not None
+    actual_denial[list(actual_denial).index(denial_response)] = deepcopy(expected_response)
     for node, expected_node in zip(usage_nodes, expected_usage, strict=True):
         node.set("value", expected_node.attrib["value"])
         if "stream_usage_breakdown_unavailable" in node.get("value", ""):

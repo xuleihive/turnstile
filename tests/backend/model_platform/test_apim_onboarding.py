@@ -214,6 +214,47 @@ def test_onboarding_fixed_program_scope_matches_apim_tier(
     assert upgraded.operation_policies == program.operation_policies
 
 
+@pytest.mark.parametrize("tier", ["Developer", "StandardV2"])
+def test_program_refresh_adopts_the_current_model_assignment_denial(tier: str) -> None:
+    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_policy_components import component_digest
+    from turnstile_core.integrations.apim_storage_routes import (
+        refresh_fixed_budget_execution_policy,
+        upgrade_fixed_pool_program,
+    )
+
+    plan = onboarding_plan(service_tier=tier)
+    capability = self_hosted_gateway_capability_for_tier(plan.service_tier)
+    template = (REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
+    denial = (
+        '{"type":"error","error":{"type":"permission_error","code":"model_not_assigned",'
+        '"param":"model","message":"The requested model is not assigned to you"}}'
+    )
+    assert template.count(denial) == 1
+    installed = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(),
+        template.replace(denial, '{"error":"model_not_assigned"}'),
+        self_hosted_gateway=capability,
+    )
+    current = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), template, self_hosted_gateway=capability,
+    )
+    canonical = compose_availability_parent(
+        onboarding_canonical_parent(template, plan.request.api_id),
+    )
+
+    refreshed = upgrade_fixed_pool_program(
+        refresh_fixed_budget_execution_policy(
+            installed.parent_policy, installed.binding, canonical,
+        ),
+        installed.binding,
+    )
+
+    assert component_digest(parse_policy(refreshed.parent_policy)) == component_digest(
+        parse_policy(current.parent_policy)
+    )
+
+
 def assert_decision_and_image_program(
     binding: Any, parent_policy: str, policies: dict[str, str],
     contracts: dict[str, tuple[str, str]],

@@ -25,6 +25,7 @@ from turnstile_core.integrations.ledger import (
     TableStorageLedger,
     application_map_partition_key,
     application_partition_key,
+    model_access_periods,
     model_access_value,
     partition_key,
     period_start_for,
@@ -597,8 +598,9 @@ def test_upper_bound_mark_failure_retries_after_database_evidence_is_saved() -> 
     row_key = reservation_row_key(PERIOD_START, "mark-attempt")
     store.entities[(partition, row_key)] = {"Reserved": 900}
     service = LedgerSyncService(repository, store, FakeTerminalLog())
-    with pytest.raises(RuntimeError, match="interrupted Table mark"):
+    with pytest.raises(ExceptionGroup) as failed:
         service.run(PERIOD_START + timedelta(days=2))
+    assert failed.group_contains(RuntimeError, match="interrupted Table mark")
     assert len(repository.budget_reservation_finalizations) == 1
     outcome = service.run(PERIOD_START + timedelta(days=2, minutes=5))
     assert outcome.person_finalizations_written == 0
@@ -1498,6 +1500,104 @@ def test_router_assignment_does_not_pollute_direct_model_access_m_row() -> None:
     revoked_row = store.entities[(partition_key(unconfigured_user, "2026-10"), "M")]
     assert revoked_row["Configured"] is False
     assert revoked_row["Models"] == "||"
+
+
+LEDGER_GATEWAY = UUID("10000000-0000-4000-8000-000000000001")
+MONTH_END = datetime(2026, 7, 31, 23, 55, tzinfo=UTC)
+
+
+def _restricted_access_fixture() -> tuple[InMemoryRepository, UUID, str]:
+    repository, application_id, _ = _application_fixture()
+    model = next(item for item in repository.models if item["enabled"])
+    repository.user_model_policies[USER] = {
+        "user_id": USER,
+        "model_ids": [model["id"]],
+        "updated_at": PERIOD_START,
+        "updated_by": "owner@contoso.com",
+    }
+    repository.update_gateway_application_model_access(
+        application_id, "restricted", [model["id"]], "owner@contoso.com"
+    )
+    return repository, application_id, model_access_value(
+        [str(model["id"]), str(model["model_key"])]
+    )
+
+
+def test_model_access_is_in_place_before_the_month_turns_over() -> None:
+    repository, application_id, models = _restricted_access_fixture()
+    store = FakeLedgerStore()
+
+    LedgerSyncService(repository, store).run(MONTH_END)
+
+    for month in ("2026-07", "2026-08"):
+        assert store.entities[(partition_key(USER, month), "M")] == {
+            "Configured": True, "Models": models,
+        }
+        assert store.entities[(application_partition_key(application_id, month), "M")] == {
+            "Configured": True, "Models": models,
+        }
+    assert model_access_periods(datetime(2026, 12, 31, 23, 59, tzinfo=UTC)) == (
+        "2026-12", "2027-01",
+    )
+
+
+def test_failed_application_snapshot_still_projects_model_access_and_mappings() -> None:
+    from unittest.mock import patch
+
+    repository, application_id, models = _restricted_access_fixture()
+    store = FakeLedgerStore()
+    with (
+        patch.object(
+            repository,
+            "save_gateway_application_ledger_snapshot",
+            side_effect=RuntimeError("column finalized_upper_bound_tokens does not exist"),
+        ),
+        pytest.raises(ExceptionGroup) as failed,
+    ):
+        LedgerSyncService(repository, store).run(MONTH_END)
+
+    assert failed.group_contains(RuntimeError, match="finalized_upper_bound_tokens")
+    assert len(failed.value.exceptions) == 1
+    assert store.entities[(partition_key(USER, "2026-08"), "M")]["Models"] == models
+    assert store.entities[(application_partition_key(application_id, "2026-08"), "M")][
+        "Models"
+    ] == models
+    assert (application_map_partition_key(LEDGER_GATEWAY), "ledger-client") in store.entities
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [
+        "model_access_ledger_snapshot",
+        "gateway_application_model_ledger_snapshot",
+        "gateway_application_ledger_mappings",
+    ],
+)
+def test_one_failed_access_section_does_not_block_the_others(failing: str) -> None:
+    from unittest.mock import patch
+
+    repository, application_id, _ = _restricted_access_fixture()
+    store = FakeLedgerStore()
+    with (
+        patch.object(repository, failing, side_effect=RuntimeError(f"{failing} failed")),
+        pytest.raises(ExceptionGroup) as failed,
+    ):
+        LedgerSyncService(repository, store).run(MONTH_END)
+
+    assert failed.group_contains(RuntimeError, match=f"{failing} failed")
+    assert len(failed.value.exceptions) == 1
+    assert store.entities[(partition_key(USER, "2026-07"), "Q")]["Limit"] == 10_000
+    sections = {
+        "model_access_ledger_snapshot": (partition_key(USER, "2026-08"), "M"),
+        "gateway_application_model_ledger_snapshot": (
+            application_partition_key(application_id, "2026-08"), "M",
+        ),
+        "gateway_application_ledger_mappings": (
+            application_map_partition_key(LEDGER_GATEWAY), "ledger-client",
+        ),
+    }
+    for section, row in sections.items():
+        assert (row in store.entities) is (section != failing)
 
 
 AUGUST = datetime(2026, 8, 1, tzinfo=UTC)

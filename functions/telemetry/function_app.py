@@ -7,7 +7,7 @@ from uuid import UUID
 
 import azure.functions as func
 
-from turnstile_core.config import get_settings
+from turnstile_core.config import Settings, get_settings
 from turnstile_core.ingestion.processor import CoefficientResolver, UsageProcessor
 from turnstile_core.integrations.atomic_ledger import AtomicTableLedger
 from turnstile_core.integrations.ledger import (
@@ -24,6 +24,7 @@ from turnstile_core.integrations.reconciliation import (
     ReconciliationService,
 )
 from turnstile_core.persistence.factory import create_repository
+from turnstile_core.persistence.repository import QueryRepository
 from turnstile_core.services.application_provisioning_ledger import project_application_rate_limit
 from turnstile_core.services.budget_settlement import (
     BudgetRecoveryRepository,
@@ -199,6 +200,7 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
     """
     settings = get_settings()
     repository = create_repository(settings)
+    failures: list[Exception] = []
     try:
         # Deliberately ahead of the ledger guards. Budgets are period-scoped while
         # `department_enforcement` is not, so a new month starts with `block` still set and no
@@ -206,81 +208,104 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
         # blocked". The console path checks PostgreSQL directly and never touches the ledger,
         # so gating this behind a ledger feature flag would let that path lapse every month
         # whenever the flag was off. The marker inside makes it exactly-once per period.
-        rolled = repository.roll_forward_budgets(
-            period_start_for(datetime.now(UTC)), ROLL_FORWARD_ACTOR
-        )
-        if rolled is not None:
-            logger.info(
-                "Budget roll-forward carried %s scopes into %s from %s",
-                rolled["scope_count"],
-                rolled["period_start"],
-                rolled["source_period_start"],
+        try:
+            rolled = repository.roll_forward_budgets(
+                period_start_for(datetime.now(UTC)), ROLL_FORWARD_ACTOR
             )
-        application_rolled = repository.roll_forward_gateway_application_budgets(
-            period_start_for(datetime.now(UTC)), ROLL_FORWARD_ACTOR
-        )
-        if application_rolled:
-            logger.info(
-                "Application budget roll-forward carried %s scopes into the current period",
-                application_rolled,
+            if rolled is not None:
+                logger.info(
+                    "Budget roll-forward carried %s scopes into %s from %s",
+                    rolled["scope_count"],
+                    rolled["period_start"],
+                    rolled["source_period_start"],
+                )
+        except Exception as error:
+            logger.exception("Budget roll-forward failed; the ledger projection continues")
+            failures.append(error)
+        try:
+            application_rolled = repository.roll_forward_gateway_application_budgets(
+                period_start_for(datetime.now(UTC)), ROLL_FORWARD_ACTOR
             )
-
-        if not settings.ledger_sync_enabled:
-            return
-        if not settings.ledger_table_endpoint:
-            logger.warning("Ledger sync skipped: LEDGER_TABLE_ENDPOINT is not configured")
-            return
-
-        terminal_log = (
-            LogAnalyticsReservationTerminalLog(
-                settings.log_analytics_workspace_id, settings.apim_api_id
+            if application_rolled:
+                logger.info(
+                    "Application budget roll-forward carried %s scopes into the current period",
+                    application_rolled,
+                )
+        except Exception as error:
+            logger.exception(
+                "Application budget roll-forward failed; the ledger projection continues"
             )
-            if settings.log_analytics_workspace_id
-            else None
-        )
-        if terminal_log is None:
-            logger.warning(
-                "Application reservation recovery skipped: "
-                "LOG_ANALYTICS_WORKSPACE_ID is not configured"
-            )
-        with TableStorageLedger(
-            settings.ledger_table_endpoint, settings.ledger_table_name
-        ) as store:
-            for application in repository.list_gateway_applications():
-                application_id = UUID(str(application["id"]))
-                try:
-                    project_application_rate_limit(repository, store, application_id)
-                except Exception:
-                    logger.warning("Application TPM projection pending for %s", application_id)
-            outcome = LedgerSyncService(
-                repository,
-                store,
-                terminal_log=terminal_log,
-                recovery_lag=timedelta(
-                    minutes=settings.ledger_reservation_recovery_lag_minutes
-                ),
-                finalization_lag=timedelta(
-                    hours=settings.ledger_reservation_finalization_lag_hours
-                ),
-            ).run()
-        logger.info(
-            "Budget ledger sync projected %s people, %s person model policies, %s applications "
-            "and %s application model policies with %s mappings; settled %s person and %s "
-            "application reservations; persisted %s Person and %s Application finalizations "
-            "(%s conservative upper bounds), settled %s upgraded upper bounds, with %s stale "
-            "Application reservations unresolved",
-            outcome.people,
-            outcome.model_policies,
-            outcome.applications,
-            outcome.application_model_policies,
-            outcome.application_mappings,
-            outcome.reservations_settled,
-            outcome.application_reservations_settled,
-            outcome.person_finalizations_written,
-            outcome.application_finalizations_written,
-            outcome.reservations_finalized_upper_bound,
-            outcome.upper_bounds_settled,
-            outcome.stale_application_reservations,
-        )
+            failures.append(error)
+        _project_ledger(settings, repository, failures)
     finally:
         _close_repository(repository)
+    if failures:
+        raise ExceptionGroup("Budget ledger sync failed", failures)
+
+
+def _project_ledger(
+    settings: Settings, repository: QueryRepository, failures: list[Exception],
+) -> None:
+    if not settings.ledger_sync_enabled:
+        return
+    if not settings.ledger_table_endpoint:
+        logger.warning("Ledger sync skipped: LEDGER_TABLE_ENDPOINT is not configured")
+        return
+
+    terminal_log = (
+        LogAnalyticsReservationTerminalLog(
+            settings.log_analytics_workspace_id, settings.apim_api_id
+        )
+        if settings.log_analytics_workspace_id
+        else None
+    )
+    if terminal_log is None:
+        logger.warning(
+            "Application reservation recovery skipped: "
+            "LOG_ANALYTICS_WORKSPACE_ID is not configured"
+        )
+    with TableStorageLedger(
+        settings.ledger_table_endpoint, settings.ledger_table_name
+    ) as store:
+        try:
+            applications = repository.list_gateway_applications()
+        except Exception as error:
+            logger.exception("Application TPM projection failed; the ledger sync continues")
+            failures.append(error)
+            applications = []
+        for application in applications:
+            application_id = UUID(str(application["id"]))
+            try:
+                project_application_rate_limit(repository, store, application_id)
+            except Exception:
+                logger.warning("Application TPM projection pending for %s", application_id)
+        outcome = LedgerSyncService(
+            repository,
+            store,
+            terminal_log=terminal_log,
+            recovery_lag=timedelta(
+                minutes=settings.ledger_reservation_recovery_lag_minutes
+            ),
+            finalization_lag=timedelta(
+                hours=settings.ledger_reservation_finalization_lag_hours
+            ),
+        ).run()
+    logger.info(
+        "Budget ledger sync projected %s people, %s person model policies, %s applications "
+        "and %s application model policies with %s mappings; settled %s person and %s "
+        "application reservations; persisted %s Person and %s Application finalizations "
+        "(%s conservative upper bounds), settled %s upgraded upper bounds, with %s stale "
+        "Application reservations unresolved",
+        outcome.people,
+        outcome.model_policies,
+        outcome.applications,
+        outcome.application_model_policies,
+        outcome.application_mappings,
+        outcome.reservations_settled,
+        outcome.application_reservations_settled,
+        outcome.person_finalizations_written,
+        outcome.application_finalizations_written,
+        outcome.reservations_finalized_upper_bound,
+        outcome.upper_bounds_settled,
+        outcome.stale_application_reservations,
+    )

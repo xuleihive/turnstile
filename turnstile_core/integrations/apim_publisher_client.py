@@ -2429,7 +2429,7 @@ class AzureApimPublisherClient(AzureSelfHostedGatewayManagementMixin):
         if isinstance(error, str):
             return error == "model_not_assigned"
         if isinstance(error, dict):
-            return error.get("type") == "model_not_assigned"
+            return "model_not_assigned" in (error.get("code"), error.get("type"))
         return False
 
     def promote_revision(self, revision: str, release_name: str) -> None:

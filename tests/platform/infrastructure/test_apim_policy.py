@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from xml.etree import ElementTree
 
@@ -369,6 +370,26 @@ def test_apim_checks_model_access_before_spending_budget_headroom() -> None:
     assert policy.index("modelAdmission&quot;] == &quot;denied&quot;") < policy.index(
         '&quot;monthly_token_budget_exhausted&quot;'
     )
+
+
+def test_model_assignment_denial_uses_the_standard_error_envelope() -> None:
+    root = parse_policy(POLICY_PATH.read_text())
+    denial = next(
+        node for node in root.iter("when")
+        if node.get("condition") == '@((string)context.Variables["modelAdmission"] == "denied")'
+    )
+    status = denial.find("return-response/set-status")
+    body = denial.find("return-response/set-body")
+    assert status is not None and status.get("code") == "403"
+    assert body is not None and json.loads(body.text or "") == {
+        "type": "error",
+        "error": {
+            "type": "permission_error",
+            "code": "model_not_assigned",
+            "param": "model",
+            "message": "The requested model is not assigned to you",
+        },
+    }
 
 
 def test_apim_employee_quota_moved_off_the_token_counter() -> None:

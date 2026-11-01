@@ -53,6 +53,8 @@ var eventHubNamespaceName = 'eh-${resourcePrefix}-${suffix}'
 var eventHubName = 'token-usage'
 var workspaceName = 'log-${resourcePrefix}-${suffix}'
 var appInsightsName = 'appi-${resourcePrefix}-${suffix}'
+var actionGroupName = 'ag-${resourcePrefix}-${suffix}'
+var ledgerSyncAlertName = 'alert-${resourcePrefix}-ledger-sync-${suffix}'
 var keyVaultName = 'kv-${resourcePrefix}-${take(suffix, 8)}'
 var credentialVaultName = 'kv-${resourcePrefix}-rt-${take(suffix, 6)}'
 var planName = 'plan-${resourcePrefix}-${suffix}'
@@ -929,6 +931,58 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }
         { name: 'LEDGER_TABLE_NAME', value: ledgerTableName }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+      ]
+    }
+  }
+}
+
+resource operatorActionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
+  name: actionGroupName
+  location: 'global'
+  properties: {
+    enabled: true
+    groupShortName: take(resourcePrefix, 12)
+    emailReceivers: [
+      {
+        name: 'owner'
+        emailAddress: bootstrapOwnerEmail
+        useCommonAlertSchema: true
+      }
+    ]
+  }
+}
+
+// The timer runs every five minutes; a window in which every run failed means the APIM ledger has stopped refreshing.
+resource ledgerSyncAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
+  name: ledgerSyncAlertName
+  location: location
+  properties: {
+    displayName: 'Turnstile budget ledger sync is failing'
+    description: 'Every sync_budget_ledger run in the last 30 minutes failed. Model access and budgets in the APIM ledger are not being refreshed.'
+    severity: 1
+    enabled: true
+    scopes: [
+      appInsights.id
+    ]
+    evaluationFrequency: 'PT15M'
+    windowSize: 'PT30M'
+    criteria: {
+      allOf: [
+        {
+          query: 'requests | where name == "sync_budget_ledger" | summarize failed = countif(success == false), succeeded = countif(success == true) | where failed > 0 and succeeded == 0'
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [
+        operatorActionGroup.id
       ]
     }
   }

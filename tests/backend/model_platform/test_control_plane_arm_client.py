@@ -1689,11 +1689,26 @@ def test_text_removal_probe_requires_all_responses_rejections(
     assert requests[-1].url.path == f"/llm{failed_path}"
 
 
-def test_only_new_model_assignment_denial_is_retryable() -> None:
+@pytest.mark.parametrize(
+    "denial",
+    [
+        {"error": "model_not_assigned"},
+        {
+            "type": "error",
+            "error": {
+                "type": "permission_error",
+                "code": "model_not_assigned",
+                "param": "model",
+                "message": "The requested model is not assigned to you",
+            },
+        },
+    ],
+)
+def test_only_new_model_assignment_denial_is_retryable(denial: dict[str, Any]) -> None:
     responses = iter(
         [
-            httpx.Response(403, json={"error": "model_not_assigned"}),
-            httpx.Response(403, json={"error": "model_not_assigned"}),
+            httpx.Response(403, json=denial),
+            httpx.Response(403, json=denial),
         ]
     )
 

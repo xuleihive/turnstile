@@ -36,6 +36,7 @@ from turnstile_core.integrations.ledger import (
     application_map_partition_key,
     application_partition_key,
     application_rate_limit_partition_key,
+    model_access_periods,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.persistence.repository_applications import PostgreSqlApplicationRepositoryMixin
@@ -1158,7 +1159,11 @@ def test_application_ledger_prepare_preserves_confirmed_usage_and_reservations()
     assert store.rows[(application_rate_limit_partition_key(spec.application_id), "T")] == {
         "TokensPerMinute": 100,
     }
-    assert len(store.rows) == 7
+    next_partition = application_partition_key(
+        spec.application_id, model_access_periods(datetime.now(UTC))[1]
+    )
+    assert store.rows[next_partition, "M"] == store.rows[partition, "M"]
+    assert len(store.rows) == 8
 
 
 @pytest.mark.parametrize("missing", ("Q", "C", "M", "unit-application"))

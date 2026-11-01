@@ -4,7 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal, cast
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 from uuid import UUID, uuid4
 
 import httpx
@@ -542,7 +542,7 @@ def test_application_model_access_save_projects_only_own_application(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.http.service_dependencies import application_access_service
-    from turnstile_core.integrations.ledger import application_partition_key
+    from turnstile_core.integrations.ledger import application_partition_key, model_access_periods
 
     repository = InMemoryRepository()
     access = ApplicationAccessService(repository, sync_available=False)
@@ -573,11 +573,14 @@ def test_application_model_access_save_projects_only_own_application(
             GatewayApplicationModelAccessUpdate(mode=mode, model_ids=[]),
             "owner@example.com",
         )
-        store.upsert.assert_called_once_with(
-            application_partition_key(application_id, datetime.now(UTC).strftime("%Y-%m")),
-            "M",
-            {"Configured": mode == "restricted", "Models": "||"},
-        )
+        assert store.upsert.call_args_list == [
+            call(
+                application_partition_key(application_id, period),
+                "M",
+                {"Configured": mode == "restricted", "Models": "||"},
+            )
+            for period in model_access_periods(datetime.now(UTC))
+        ]
     assert result.model_policy_configured == (mode == "restricted")
 
 

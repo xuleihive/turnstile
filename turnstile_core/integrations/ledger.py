@@ -10,7 +10,7 @@ Row layout, one partition per person or application per month:
 
     RowKey  "Q"                       Limit, Enforce            written here
     RowKey  "C"                       ConfirmedUsed             written here
-    RowKey  "M"                       Configured, Models        written here
+    RowKey  "M"                       Configured, Models        written here, current and next month
     RowKey  "R|<iso ts>|<correlation>"  Reserved                  written by APIM
              FinalizationKind on R       Unverified upper bound    written here
 
@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
@@ -84,6 +84,13 @@ def period_start_for(now: datetime) -> date:
     they are working on.
     """
     return date(now.year, now.month, 1)
+
+
+def model_access_periods(now: datetime) -> tuple[str, str]:
+    """Current and next UTC month, so a new month opens with model access already projected."""
+    start = period_start_for(now)
+    following = date(start.year + start.month // 12, start.month % 12 + 1, 1)
+    return f"{start:%Y-%m}", f"{following:%Y-%m}"
 
 
 def model_access_value(identifiers: Sequence[str]) -> str:
@@ -1014,8 +1021,7 @@ class LedgerSyncService:
         takes effect on the next request instead of at the next timer tick; the timer then
         only has to repair a write that failed.
         """
-        moment = now or datetime.now(UTC)
-        _, _, period = self._period_bounds(moment)
+        periods = model_access_periods(now or datetime.now(UTC))
         written = 0
         for policy in policies:
             value = model_access_value(policy.identifiers)
@@ -1027,11 +1033,12 @@ class LedgerSyncService:
                     policy.user_id,
                 )
                 continue
-            self._store.upsert(
-                partition_key(policy.user_id, period),
-                MODEL_ACCESS_ROW_KEY,
-                {"Configured": policy.configured, "Models": value},
-            )
+            for period in periods:
+                self._store.upsert(
+                    partition_key(policy.user_id, period),
+                    MODEL_ACCESS_ROW_KEY,
+                    {"Configured": policy.configured, "Models": value},
+                )
             written += 1
         return written
 
@@ -1040,8 +1047,7 @@ class LedgerSyncService:
         policies: Sequence[LedgerApplicationModelAccess],
         now: datetime | None = None,
     ) -> int:
-        moment = now or datetime.now(UTC)
-        _, _, period = self._period_bounds(moment)
+        periods = model_access_periods(now or datetime.now(UTC))
         written = 0
         for policy in policies:
             value = model_access_value(policy.identifiers)
@@ -1051,11 +1057,12 @@ class LedgerSyncService:
                     policy.application_id,
                 )
                 continue
-            self._store.upsert(
-                application_partition_key(policy.application_id, period),
-                MODEL_ACCESS_ROW_KEY,
-                {"Configured": policy.configured, "Models": value},
-            )
+            for period in periods:
+                self._store.upsert(
+                    application_partition_key(policy.application_id, period),
+                    MODEL_ACCESS_ROW_KEY,
+                    {"Configured": policy.configured, "Models": value},
+                )
             written += 1
         return written
 
@@ -1089,7 +1096,37 @@ class LedgerSyncService:
         return written
 
     def run(self, now: datetime | None = None) -> LedgerSyncOutcome:
+        """Write every ledger section even when another fails, then raise all failures."""
         moment = now or datetime.now(UTC)
+        failures: list[Exception] = []
+        outcome = LedgerSyncOutcome(people=0, reservations_settled=0)
+        try:
+            outcome = self._project_budgets(moment)
+        except Exception as error:
+            logger.exception("Ledger budget projection failed; the other sections continue")
+            failures.append(error)
+        # Model policies are projected independently of budgets: a person may be restricted
+        # to a model set without ever being given an allowance, so iterating budgets alone
+        # would leave their policy unenforced.
+        sections: dict[str, Callable[[], int]] = {
+            "model_policies": lambda: self.project_model_access(self.model_access(), moment),
+            "application_model_policies": lambda: self.project_application_model_access(
+                self.application_model_access(), moment
+            ),
+            "application_mappings": self.project_application_mappings,
+        }
+        counts: dict[str, int] = {}
+        for name, project in sections.items():
+            try:
+                counts[name] = project()
+            except Exception as error:
+                logger.exception("Ledger %s projection failed; the other sections continue", name)
+                failures.append(error)
+        if failures:
+            raise ExceptionGroup("Ledger sync failed", failures)
+        return replace(outcome, **counts)
+
+    def _project_budgets(self, moment: datetime) -> LedgerSyncOutcome:
         self._evidence_effective_at = self._repository.budget_evidence_effective_at()
         current_start = period_start_for(moment)
         previous_moment = datetime.combine(
@@ -1350,22 +1387,11 @@ class LedgerSyncService:
             self._repository.save_gateway_application_ledger_snapshot(
                 application_states, application_finalization_states,
             )
-        # Model policies are projected independently of budgets: a person may be restricted
-        # to a model set without ever being given an allowance, so iterating budgets alone
-        # would leave their policy unenforced.
-        policies = self.project_model_access(self.model_access(), moment)
-        application_policies = self.project_application_model_access(
-            self.application_model_access(), moment
-        )
-        application_mappings = self.project_application_mappings()
         return LedgerSyncOutcome(
             people=people_count,
             reservations_settled=settled_count,
-            model_policies=policies,
             applications=application_count,
             application_reservations_settled=application_settled_count,
-            application_model_policies=application_policies,
-            application_mappings=application_mappings,
             stale_application_reservations=stale_application_reservations,
             person_finalizations_written=person_finalizations_written,
             application_finalizations_written=application_finalizations_written,

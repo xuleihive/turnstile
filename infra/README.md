@@ -8,6 +8,7 @@
 - Event Hubs namespace and usage event hub;
 - Key Vault;
 - Application Insights and Log Analytics;
+- an Azure Monitor alert that emails `bootstrapOwnerEmail` when every budget ledger sync in 30 minutes failed;
 - a Linux Web App for the API and frontend on its own App Service Plan;
 - telemetry and control-plane Function Apps, each on its own Flex Consumption plan;
 - a separately deployed observer on its own App Service Plan;

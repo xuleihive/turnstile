@@ -178,6 +178,41 @@ def test_ledger_timer_only_enables_evidence_when_configured(
         assert service.call_args.kwargs["finalization_lag"] == timedelta(hours=24)
 
 
+@pytest.mark.parametrize(
+    "failing",
+    (
+        "roll_forward_budgets",
+        "roll_forward_gateway_application_budgets",
+        "list_gateway_applications",
+    ),
+)
+def test_ledger_timer_projects_even_when_an_earlier_step_fails(failing: str) -> None:
+    settings = Settings.model_construct(
+        ledger_sync_enabled=True,
+        ledger_table_endpoint="https://ledger.example.com",
+        log_analytics_workspace_id=None,
+    )
+    repository = MagicMock()
+    repository.roll_forward_budgets.return_value = None
+    repository.roll_forward_gateway_application_budgets.return_value = 0
+    getattr(repository, failing).side_effect = RuntimeError("earlier step failure")
+    with (
+        patch("functions.telemetry.function_app.get_settings", return_value=settings),
+        patch("functions.telemetry.function_app.create_repository", return_value=repository),
+        patch("functions.telemetry.function_app.TableStorageLedger"),
+        patch("functions.telemetry.function_app.LedgerSyncService") as service,
+        pytest.raises(ExceptionGroup) as failed,
+    ):
+        sync_budget_ledger.build().get_user_function()(None)
+    assert failed.group_contains(RuntimeError, match="earlier step failure")
+    assert len(failed.value.exceptions) == 1
+    repository.roll_forward_budgets.assert_called_once()
+    repository.roll_forward_gateway_application_budgets.assert_called_once()
+    repository.list_gateway_applications.assert_called_once_with()
+    service.return_value.run.assert_called_once_with()
+    repository.close.assert_called_once_with()
+
+
 @pytest.mark.parametrize("enabled,endpoint", [(False, "https://ledger.example.com"), (True, None)])
 def test_ledger_timer_closes_repository_on_early_return(
     enabled: bool, endpoint: str | None,

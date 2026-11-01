@@ -468,7 +468,7 @@
                   <set-header name="Content-Type" exists-action="override">
                     <value>application/json</value>
                   </set-header>
-                  <set-body>{"error":"model_not_assigned"}</set-body>
+                  <set-body>{"type":"error","error":{"type":"permission_error","code":"model_not_assigned","param":"model","message":"The requested model is not assigned to you"}}</set-body>
                 </return-response>
               </when>
             </choose>

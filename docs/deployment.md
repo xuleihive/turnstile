@@ -2,7 +2,7 @@
 
 ## Scope
 
-Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, the Web App, telemetry and control-plane Functions, and APIM configuration. FastAPI and the observer each have a dedicated App Service Plan. The telemetry and control-plane Functions each have a separate Flex Consumption plan, deployment container, and VNet subnet. The templates do not create Azure AI Foundry projects or provider model deployments.
+Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, the Web App, telemetry and control-plane Functions, and APIM configuration. FastAPI and the observer each have a dedicated App Service Plan. The telemetry and control-plane Functions each have a separate Flex Consumption plan, deployment container, and VNet subnet. An Azure Monitor alert emails `bootstrapOwnerEmail` when every budget ledger sync in 30 minutes failed. The templates do not create Azure AI Foundry projects or provider model deployments.
 
 The API, telemetry and control-plane Functions, observer, and budget ledger require public service endpoints for package deployment or runtime traffic. They explicitly enable public network access and carry the resource-level `SecurityControl=Ignore` tag so an organization-level network Modify policy does not silently disable them. The exemption is not applied at resource-group scope; platform Storage and Key Vault resources designed for private-link access remain private.
 
@@ -380,9 +380,10 @@ account, resource group or subscription. Configuration waits for the role deploy
 Azure RBAC propagation must still be checked with the API identity before admitting traffic.
 
 After restoring service, save a model grant, replace the allowed set, then revoke all models
-for an authorized test person. Verify the affected ledger `M` row contains the latest full UUID
-and alias set immediately after each save; deny-all must retain `Configured=true` and
-`Models="||"`. Other users and budgets must remain unchanged. Check a direct APIM client:
+for an authorized test person. Verify the affected ledger `M` rows for the current and next UTC
+month contain the latest full UUID and alias set immediately after each save; deny-all must
+retain `Configured=true` and `Models="||"`. Other users and budgets must remain unchanged. Check
+a direct APIM client:
 Invocation Test also reads PostgreSQL, so its success alone does not prove Desktop synchronization.
 
 PostgreSQL commits before immediate projection. A ledger write failure preserves the saved

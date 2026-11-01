@@ -17,6 +17,7 @@ from ..integrations.ledger import (
     application_map_partition_key,
     application_partition_key,
     application_rate_limit_partition_key,
+    model_access_periods,
     model_access_value,
 )
 from ..persistence.repository import QueryRepository
@@ -98,6 +99,10 @@ def prepare_application_ledger(
         None,
     )
     partition = application_partition_key(application_id, now.strftime("%Y-%m"))
+    access_partitions = [
+        application_partition_key(application_id, period)
+        for period in model_access_periods(now)
+    ]
     quota = {
         "Limit": snapshot.token_limit,
         "TokensPerMinute": snapshot.tokens_per_minute,
@@ -126,18 +131,18 @@ def prepare_application_ledger(
     if snapshot.budget_mode == "tokens":
         store.upsert(partition, "Q", quota)
         store.insert_if_missing(partition, "C", {"ConfirmedUsed": snapshot.confirmed_tokens})
-    store.upsert(partition, "M", access)
+    for access_partition in access_partitions:
+        store.upsert(access_partition, "M", access)
     map_partition = application_map_partition_key(gateway_id)
     subscription_id = str(mapping["apim_subscription_id"])
     store.upsert(map_partition, subscription_id, identity)
     if project_application_rate_limit(repository, store, application_id) is None:
         raise RetryablePublicationError("Application rate limit is not ready")
     expected_rows = (
-        (("Q", quota), ("M", access))
-        if snapshot.budget_mode == "tokens" else (("M", access),)
-    )
-    for key, expected in expected_rows:
-        actual = store.read_entity(partition, key)
+        [(partition, "Q", quota)] if snapshot.budget_mode == "tokens" else []
+    ) + [(access_partition, "M", access) for access_partition in access_partitions]
+    for row_partition, key, expected in expected_rows:
+        actual = store.read_entity(row_partition, key)
         if actual is None or any(actual.get(field) != value for field, value in expected.items()):
             raise RetryablePublicationError("Application admission ledger readback is incomplete")
     confirmed = store.read_entity(partition, "C")

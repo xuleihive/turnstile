@@ -314,6 +314,25 @@ def test_templates_create_platform_resources_without_foundry_projects_or_models(
     assert "Microsoft.CognitiveServices/accounts/deployments" not in combined
 
 
+def test_ledger_sync_failures_alert_the_owner() -> None:
+    telemetry = (ROOT / "functions/telemetry/function_app.py").read_text(encoding="utf-8")
+    head, timer_function, _ = telemetry.partition("\ndef sync_budget_ledger(")
+    timer = head.rsplit("@app.timer_trigger(", 1)[1]
+    alert = DATA_PLANE.split("resource ledgerSyncAlert", 1)[1].split("\nresource ", 1)[0]
+    group = DATA_PLANE.split("resource operatorActionGroup", 1)[1].split("\nresource ", 1)[0]
+
+    assert timer_function and 'schedule="0 */5 * * * *"' in timer
+    assert (
+        "query: 'requests | where name == \"sync_budget_ledger\" | summarize failed = "
+        "countif(success == false), succeeded = countif(success == true) | where failed > 0 "
+        "and succeeded == 0'"
+    ) in alert
+    assert "windowSize: 'PT30M'" in alert
+    assert "scopes: [\n      appInsights.id\n    ]" in alert
+    assert "actionGroups: [\n        operatorActionGroup.id\n      ]" in alert
+    assert "emailAddress: bootstrapOwnerEmail" in group
+
+
 def test_api_python_path_contains_package_root_and_prebuilt_dependencies() -> None:
     assert (
         "{ name: 'PYTHONPATH', value: "
