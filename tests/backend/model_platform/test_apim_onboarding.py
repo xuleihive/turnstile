@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
@@ -306,6 +307,104 @@ def test_program_refresh_adopts_the_current_application_denial(tier: str) -> Non
     assert refreshed.operation_policies == current.operation_policies
     assert again.parent_policy == refreshed.parent_policy
     assert again.operation_policies == refreshed.operation_policies
+
+
+_APIM_EXPRESSION = re.compile(r"(>\s*|<!\[CDATA\[\s*|=[\"'])@[({]")
+_APIM_EXPRESSION_END = {
+    ">": re.compile(r"\s*<"), "<": re.compile(r"\s*\]\]>"),
+    '="': re.compile('"'), "='": re.compile("'"),
+}
+_SINGLE_QUOTED = re.compile(r"'(?:[^'\\\n]|\\.)*'")
+
+
+def apim_quote_errors(policy: str) -> list[str]:
+    # APIM delimits expressions in the policy text as sent, where &quot; is no string quote to it:
+    # a single quote outside literal "..." strings and // comments must close on its own line.
+    errors: list[str] = []
+    for match in _APIM_EXPRESSION.finditer(policy):
+        opener = match.group(1)
+        end = _APIM_EXPRESSION_END[opener[:2] if opener[0] == "=" else opener[0]]
+        index, depth = match.end() - 1, 0
+        while index < len(policy):
+            if policy.startswith("//", index):
+                newline = policy.find("\n", index)
+                index = len(policy) if newline < 0 else newline
+                continue
+            character = policy[index]
+            if character == '"':
+                index += 1
+                while index < len(policy) and policy[index] not in '"\n':
+                    index += 2 if policy[index] == "\\" else 1
+            elif character == "'":
+                quoted = _SINGLE_QUOTED.match(policy, index)
+                if quoted is None:
+                    break
+                index = quoted.end() - 1
+            elif character in "({":
+                depth += 1
+            elif character in ")}":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        if depth != 0 or not end.match(policy, index + 1):
+            line = max(policy.rfind("\n", 0, index) + 1, index - 80)
+            errors.append(policy[line:index + 40].strip())
+    return errors
+
+
+@pytest.mark.parametrize(("policy", "valid"), [
+    ("<value>@(path.Split('/')[0])</value>", True),
+    ("<value>@(now.ToString(&quot;yyyy-MM-dd'T'HH&quot;) + '\\'')</value>", True),
+    ('<set-body>@{\n  // the caller\'s body\n  return "it\'s";\n}</set-body>', True),
+    ('<set-variable name="filter" value="@(&quot;eq \'&quot; + key + &quot;\'&quot;)" />', True),
+    ("<value>@(&quot;The application's budget&quot;)</value>", False),
+    (
+        '<set-variable name="filter" value="@{\n  return &quot;eq \'&quot; + key\n'
+        '    + &quot;\'&quot;;\n}" />',
+        False,
+    ),
+    ("<value>@(&quot;it's&quot;) + x('y')</value>", False),
+])
+def test_apim_quote_check_rejects_unclosed_single_quotes(policy: str, valid: bool) -> None:
+    assert (apim_quote_errors(policy) == []) is valid
+
+
+@pytest.mark.parametrize("tier", ["Developer", "StandardV2"])
+def test_policies_sent_to_apim_close_every_single_quote(tier: str) -> None:
+    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_storage_routes import (
+        refresh_fixed_budget_execution_policy,
+        upgrade_fixed_pool_program,
+    )
+
+    plan = onboarding_plan(service_tier=tier)
+    template = (REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
+    program = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), template,
+        self_hosted_gateway=self_hosted_gateway_capability_for_tier(plan.service_tier),
+    )
+    canonical = compose_availability_parent(
+        onboarding_canonical_parent(template, plan.request.api_id),
+    )
+    refreshed = upgrade_fixed_pool_program(
+        refresh_fixed_budget_execution_policy(program.parent_policy, program.binding, canonical),
+        program.binding,
+    )
+    policies = {
+        path.name: path.read_text()
+        for path in sorted((REPOSITORY_ROOT / "infra/policies").glob("*.xml"))
+    }
+    for label, compiled in (("compiled", program), ("refreshed", refreshed)):
+        policies[f"{label} parent"] = compiled.parent_policy
+        policies.update({f"{label} {name}": xml for name, xml in compiled.operation_policies})
+
+    assert all(_APIM_EXPRESSION.search(policies[name]) for name in (
+        "foundry-finops-policy.xml", "compiled parent", "refreshed parent",
+    ))
+    assert {
+        name: errors for name, policy in policies.items() if (errors := apim_quote_errors(policy))
+    } == {}
 
 
 def assert_decision_and_image_program(

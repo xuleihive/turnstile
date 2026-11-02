@@ -1123,7 +1123,7 @@
                         new JProperty(&quot;param&quot;, model ? (JToken)new JValue(&quot;model&quot;) : JValue.CreateNull()),
                         new JProperty(&quot;message&quot;, model
                           ? &quot;The requested model is not assigned to this application&quot;
-                          : &quot;The application's token budget cannot admit this request&quot;)
+                          : &quot;The application token budget cannot admit this request&quot;)
                       ))
                     ).ToString(Newtonsoft.Json.Formatting.None);
                   }</set-body>
