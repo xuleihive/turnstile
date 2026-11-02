@@ -195,7 +195,7 @@ The Bicep templates create Turnstile platform resources such as PostgreSQL, Even
 
 For **Turnstile v1.3**, choose the matching deployment path:
 
-- **Upgrading an existing installation:** review the [infrastructure and protocol upgrade requirements](docs/deployment.md#prepare-for-v12). Keep the original state, database, ledger, APIM, identities and history; apply pending migrations and the required infrastructure changes as well as the application packages.
+- **Upgrading an existing installation:** review the [infrastructure and protocol upgrade requirements](docs/deployment.md#prepare-for-v13). Keep the original state, database, ledger, APIM, identities and history; apply pending migrations and the required infrastructure changes as well as the application packages.
 - **Installing from zero:** follow the step-by-step [website deployment guide](https://turn-stile.com/docs/deployment) (repository reference: [fresh-install guide](docs/deployment.md#deploy-v11-from-zero)). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
 
 StandardV2 does not support self-hosted gateways. That optional feature requires a compatible

@@ -187,7 +187,7 @@ Bicep 模板会创建 PostgreSQL、Event Hubs、Storage、Key Vault、Applicatio
 
 对于 **Turnstile v1.3**，请先选择对应路径：
 
-- **升级已有安装：**核对[基础设施与协议升级要求](docs/deployment.md#prepare-for-v12)。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需应用待执行迁移和必要的基础设施配置。
+- **升级已有安装：**核对[基础设施与协议升级要求](docs/deployment.md#prepare-for-v13)。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需应用待执行迁移和必要的基础设施配置。
 - **完全从零安装：**按照官网[部署指南](https://turn-stile.com/docs/deployment)逐步操作（仓库参考：[全新部署指南](docs/deployment.md#deploy-v11-from-zero)）。使用独立前缀和新状态，默认新建 StandardV2 APIM；提供商模型与凭据需要另行准备。
 
 StandardV2 不支持自托管网关。该可选功能需要兼容的 Developer 或经典 Premium APIM 实例，并完成相应网络配置。

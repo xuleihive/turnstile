@@ -2,10 +2,10 @@
 
 ## Version scope
 
-**Turnstile v1.2 is the current public release.** The v1.2 documentation below
+**Turnstile v1.3 is the current public release.** The documentation below
 describes the release workflows and operational boundaries.
 
-| v1.2 task | Start here | Important boundary |
+| Task | Start here | Important boundary |
 | --- | --- | --- |
 | Configure list prices, discounts and context tiers | [Pricing](configuration.md#context-tier-pricing) | Unknown thresholds and missing prices are not zero; historical requests retain their price snapshots. |
 | Register and inspect an APIM target | [Registered targets](configuration.md#registered-apim-targets) | Registration references an existing Azure service; it does not create one. |
@@ -13,7 +13,7 @@ describes the release workflows and operational boundaries.
 | Diagnose a Connection | [Connection diagnostics](configuration.md#connection-diagnostics) | Planning is non-inference; a confirmed check may incur provider charges. |
 | Select a Gateway and inspect a failed invocation | [Platform invocation trace](configuration.md#platform-invocation-trace) | A request-attempt record is not billing evidence; unknown usage must remain unknown. |
 | Understand a disabled model switch | [Availability](configuration.md#versioned-model-availability) and [troubleshooting](troubleshooting.md#model-switch-is-disabled-or-unverified) | Accepted intent is not verified Gateway enforcement; availability requires verified Gateway coverage. |
-| Prepare an existing installation | [v1.2 preparation](deployment.md#prepare-for-v12) | Review application, migration and Gateway protocol changes separately; retain existing state and history. |
+| Prepare an existing installation | [Upgrade preparation](deployment.md#prepare-for-v13) | Review application, migration and Gateway protocol changes separately; retain existing state and history. |
 
 ## Operator references
 

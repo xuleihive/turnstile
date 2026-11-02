@@ -6,10 +6,14 @@ Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Ap
 
 The API, telemetry and control-plane Functions, observer, and budget ledger require public service endpoints for package deployment or runtime traffic. They explicitly enable public network access and carry the resource-level `SecurityControl=Ignore` tag so an organization-level network Modify policy does not silently disable them. The exemption is not applied at resource-group scope; platform Storage and Key Vault resources designed for private-link access remain private.
 
-## Prepare for v1.2
+## Prepare for v1.3
 
-Turnstile v1.2 is the current public release. Upgrading an existing v1.1 installation requires
+Turnstile v1.3 is the current public release. Upgrading an existing installation requires
 reviewing the migrations and protocol steps below in addition to uploading application packages.
+The table lists the changes introduced in v1.2; an installation already on v1.2 has them. v1.3 adds
+migration `029_model_intelligent_router`, and installations created by an earlier release must
+[enable Decision and image generation](#enable-decision-and-image-generation) before publishing
+those models.
 
 | Change | Required preparation | Verify before use |
 | --- | --- | --- |
