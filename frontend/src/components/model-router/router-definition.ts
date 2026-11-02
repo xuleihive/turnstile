@@ -2,6 +2,7 @@ import { graphlib, layout } from "@dagrejs/dagre"
 
 import type {
   ManagedModel,
+  ModelRouter,
   ModelRouterDefinition,
   ModelRouterEdge,
   ModelRouterModelReference,
@@ -9,9 +10,23 @@ import type {
   ModelRouterNodeType,
   ModelRouterStrategyModel,
 } from "../../data-sources/apim/types"
+import type { LocalePreference } from "../../locales/index"
 
 export type RouterLayoutDirection = "horizontal" | "vertical"
 export const ROUTER_GRAPH_PRESENTATION_VERSION = 6
+
+const COPY_SUFFIX: Record<LocalePreference, string> = {
+  "zh-CN": "副本",
+  "zh-TW": "副本",
+  en: "copy",
+  ja: "コピー",
+  ko: "사본",
+}
+
+/** A prefilled name is stored data, which the page translator never rewrites. */
+export function copyName(name: string, locale: LocalePreference) {
+  return `${name} ${COPY_SUFFIX[locale]}`
+}
 
 export const ROUTER_NODE_WIDTH = 240
 export const ROUTER_NODE_HEIGHT = 88
@@ -486,6 +501,18 @@ export function autoLayoutDefinition(
     }
   }
   return normalizeRouterDefinition(arranged)
+}
+
+/** Published Routers whose saved graph can send requests to the model. */
+export function publishedRoutersUsingModel(
+  routers: ReadonlyArray<Pick<ModelRouter, "name" | "status" | "definition">>,
+  modelId: string,
+): string[] {
+  return routers.filter((router) => router.status === "published"
+    && router.definition.nodes.some((node) => node.routing_model_id === modelId
+      || node.candidates.some((candidate) => candidate.model_id === modelId)
+      || node.model_configs.some((config) => config.model_id === modelId)))
+    .map((router) => router.name)
 }
 
 export function enabledCandidateModelIds(definition: ModelRouterDefinition): string[] {

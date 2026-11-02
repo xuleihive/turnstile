@@ -457,6 +457,25 @@ def test_validation_rejects_quality_fallback() -> None:
     }
 
 
+def test_validation_rejects_redundant_start_branches() -> None:
+    model_id = UUID("00000000-0000-4000-8000-000000000919")
+    definition = valid_definition(model_id)
+    definition["edges"].append(
+        {"id": "start-strategy", "source": "start", "target": "strategy"},
+    )
+
+    validation = ModelRouterService.validate_definition(
+        ModelRouterDefinition.model_validate(definition)
+    )
+
+    assert validation.valid is False
+    assert "start_branches_ambiguous" in {issue.code for issue in validation.issues}
+    single = ModelRouterService.validate_definition(
+        ModelRouterDefinition.model_validate(valid_definition(model_id))
+    )
+    assert "start_branches_ambiguous" not in {issue.code for issue in single.issues}
+
+
 def test_validation_rejects_extra_condition_branch() -> None:
     model_id = UUID("00000000-0000-4000-8000-000000000918")
     definition = valid_definition(model_id)
@@ -2125,7 +2144,7 @@ def test_chat_completions_and_invoke_treat_router_like_a_model(
             json={
                 "model": "Unified Condition Router",
                 "messages": [{"role": "user", "content": "Turn 2 within 30m"}],
-                "router_context": {"task_type": "general"},
+                "router_context": {"task_type": "code"},
             },
         )
         assert (
@@ -2136,7 +2155,7 @@ def test_chat_completions_and_invoke_treat_router_like_a_model(
             reused.json()["turnstile_routing"]["decision_basis"]
             == "session_sticky"
         )
-        # 2. Once idle for > 30 minutes, the binding expires and re-routes to second_model
+        # 2. Once idle for > 30 minutes, the binding expires and the branch routes afresh
         for row in repository.model_router_run_bindings.values():
             row["updated_at"] = datetime.now(UTC) - timedelta(minutes=31)
         expired_reroute = client.post(
@@ -2145,12 +2164,12 @@ def test_chat_completions_and_invoke_treat_router_like_a_model(
             json={
                 "model": "Unified Condition Router",
                 "messages": [{"role": "user", "content": "Turn 3 after 31m idle"}],
-                "router_context": {"task_type": "general"},
+                "router_context": {"task_type": "code"},
             },
         )
         assert (
             expired_reroute.json()["turnstile_routing"]["selected_model_id"]
-            == str(second_model)
+            == str(first_model)
         )
         assert (
             expired_reroute.json()["turnstile_routing"]["decision_basis"]
@@ -5024,3 +5043,145 @@ def test_router_security_audit_spoofing_failclosed_and_same_name_isolation(
         monkeypatch.setattr(repository, "write_token_usage", orig_write_usage)
         httpx.Client = orig_client  # type: ignore[misc]
 
+
+
+def _branch_router_turns(
+    code_model: UUID, general_model: UUID, turns: list[tuple[str, list[dict[str, Any]]]],
+) -> tuple[list[dict[str, Any]], list[UUID]]:
+    """Send the turns to a code/general condition Router in one session."""
+    def branch(name: str, model: UUID, y: int) -> list[dict[str, Any]]:
+        return [
+            {"id": f"pool-{name}", "type": "candidate_models", "label": name,
+             "position": {"x": 420, "y": y}, "candidates": [{"model_id": str(model)}]},
+            {"id": f"strat-{name}", "type": "strategy", "label": name,
+             "position": {"x": 620, "y": y}, "strategy_type": "priority",
+             "model_configs": [{"model_id": str(model), "priority": 1, "weight": 100}]},
+        ]
+
+    definition = {
+        "schema_version": 2,
+        "nodes": [
+            {"id": "start", "type": "start", "label": "Start", "position": {"x": 40, "y": 160}},
+            {"id": "cond-task", "type": "condition", "label": "Task",
+             "position": {"x": 220, "y": 160},
+             "condition": {"field": "task_type", "operator": "equals", "value": "code"}},
+            *branch("code", code_model, 80), *branch("general", general_model, 240),
+            {"id": "output", "type": "output", "label": "Output", "position": {"x": 840, "y": 160}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "start", "target": "cond-task"},
+            {"id": "e2", "source": "cond-task", "target": "pool-code", "label": "Match"},
+            {"id": "e3", "source": "cond-task", "target": "pool-general", "label": "Else"},
+            {"id": "e4", "source": "pool-code", "target": "strat-code"},
+            {"id": "e5", "source": "pool-general", "target": "strat-general"},
+            {"id": "e6", "source": "strat-code", "target": "output"},
+            {"id": "e7", "source": "strat-general", "target": "output"},
+        ],
+    }
+    served: list[UUID] = []
+
+    class EchoRuntimeService:
+        def invoke(
+            self, request: ModelInvocationRequest, *, request_id: str | None = None,
+            timeout_ms: int | None = None,
+        ) -> ModelInvocationResponse:
+            del timeout_ms
+            assert request.model_id is not None
+            served.append(request.model_id)
+            return ModelInvocationResponse(
+                request_id=request_id or "req", correlation_id=request_id or "req",
+                content="OK", provider="Microsoft Foundry", runtime=request.metadata.runtime,
+                model=request.metadata.model, gateway="Azure API Management", latency_ms=5,
+                usage=None,
+            )
+
+    app.dependency_overrides[runtime_service] = EchoRuntimeService
+    try:
+        router_id = client.post(
+            "/api/v1/model-routers", json={"name": "Branch Router", "definition": definition},
+        ).json()["id"]
+        assert client.post(f"/api/v1/model-routers/{router_id}/publish").status_code == 200
+        assert client.put(
+            f"/api/v1/model-routers/{router_id}/assignment",
+            json={"user_id": "owner@contoso.com", "assigned": True},
+        ).status_code == 200
+        routings = []
+        for task_type, messages in turns:
+            response = client.post(
+                "/api/v1/model-gateway/chat/completions",
+                headers={"x-session-id": "sess-branch"},
+                json={"model": "Branch Router", "messages": messages,
+                      "router_context": {"task_type": task_type}},
+            )
+            assert response.status_code == 200
+            routings.append(dict(response.json()["turnstile_routing"]))
+    finally:
+        app.dependency_overrides.pop(runtime_service, None)
+    return routings, served
+
+
+def _branch_user_turn(multi_turn: bool) -> list[dict[str, Any]]:
+    earlier = [{"role": "user", "content": "Summarize the news"},
+               {"role": "assistant", "content": "Here is the summary."}] if multi_turn else []
+    return [*earlier, {"role": "user", "content": "Refactor queue.ts"}]
+
+
+@pytest.mark.parametrize("multi_turn", [False, True])
+def test_condition_branch_takes_precedence_over_a_sticky_model_outside_it(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    multi_turn: bool,
+) -> None:
+    repository, _ = router_repository
+    # Index 0 is the cheaper model, so the code branch is an upgrade from the sticky model.
+    general_model, code_model = enabled_model_ids(repository)[:2]
+    (general, continuation, code), served = _branch_router_turns(code_model, general_model, [
+        ("general", [{"role": "user", "content": "Summarize the news"}]),
+        ("code", [
+            {"role": "user", "content": "Summarize the news"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "content": "headlines"},
+        ]),
+        ("code", _branch_user_turn(multi_turn)),
+    ])
+    assert general["selected_model_id"] == str(general_model)
+    # A tool continuation keeps the sticky model even though a pricier branch matched.
+    assert continuation["selected_model_id"] == str(general_model)
+    # A user turn that matches a branch with a pricier model is served by that branch.
+    assert code["selected_model_id"] == str(code_model)
+    assert code["decision_basis"] not in {"session_sticky", "interaction_sticky"}
+    assert served == [general_model, general_model, code_model]
+
+
+@pytest.mark.parametrize("multi_turn", [False, True])
+def test_user_turns_keep_the_sticky_model_when_the_branch_is_cheaper(
+    router_repository: tuple[InMemoryRepository, dict[str, SessionIdentity]],
+    multi_turn: bool,
+) -> None:
+    repository, _ = router_repository
+    code_model, general_model = enabled_model_ids(repository)[:2]
+    (general, code), served = _branch_router_turns(code_model, general_model, [
+        ("general", [{"role": "user", "content": "Summarize the news"}]),
+        ("code", _branch_user_turn(multi_turn)),
+    ])
+    assert general["selected_model_id"] == str(general_model)
+    assert code["selected_model_id"] == str(general_model)
+    assert code["decision_basis"] == "session_sticky"
+    assert served == [general_model, general_model]
+
+
+@pytest.mark.parametrize("prompt", [
+    "Pick the cheaper model.\n{catalog}", "Answer with model_id only.",
+])
+def test_custom_decision_prompt_always_asks_for_json(prompt: str) -> None:
+    system, is_default, _ = ModelRouterExecutionService._render_decision_prompt(
+        prompt, [{"model_id": "unit", "display_name": "Unit", "provider_name": "Unit",
+                  "description": "", "input_cost_per_million": 1.0,
+                  "output_cost_per_million": 2.0}],
+    )
+    assert is_default is False
+    assert system.startswith(prompt.split("\n")[0])
+    # json_object responses are rejected unless the messages mention JSON.
+    assert "json" in system.casefold()

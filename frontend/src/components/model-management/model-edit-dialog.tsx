@@ -1,6 +1,8 @@
 import { useId, useState, type FormEvent } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { LoaderCircle, Save, X } from "lucide-react"
 
+import { finopsQueries } from "../../data-sources/apim/queries"
 import type { ManagedModel, ModelAvailabilityReadback, ModelRegistry } from "../../data-sources/apim/types"
 import {
   GatewayBrandLogo,
@@ -76,6 +78,9 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
   const isOpenAICompatible = provider?.provider_kind === "openai_compatible"
   const imageGeneration = model.capabilities.includes("image_generation")
   const decision = model.capabilities.includes("decision")
+  const pools = useQuery(finopsQueries.modelBackendPools())
+  const inPool = pools.data?.some((item) => item.model_id === model.id
+    || item.pool.members.some((member) => member.model_id === model.id)) === true
   const vendor = runtime && isOpenAICompatible
     ? modelVendorFromMetadata(runtime.config, `${runtime.name} ${runtime.provider_name}`)
     : null
@@ -127,7 +132,7 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
           <section className="simple-model-section simple-connection-section" aria-labelledby={`${id}-pricing`}>
             <div className="publication-section-heading"><span className="simple-section-title"><b id={`${id}-pricing`}>价格与限制</b></span><span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span></div>
             {!imageGeneration && <ModelPriceSourceFields model={model} draft={draft} setDraft={setDraft}
-              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null} showAnthropic={!decision} />}
+              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null} showAnthropic={!decision} decision={decision} />}
             <div className={imageGeneration || draft.contextPricingPreview ? "form-grid" : "form-grid three"}>
               {!imageGeneration && <EditNumberField id={`${id}-context`} label="上下文窗口" unit="Tokens" integer value={draft.contextWindow} onChange={(value) => update("contextWindow", value)} busy={busy} />}
               {!draft.contextPricingPreview && <EditNumberField id={`${id}-input`} label={imageGeneration ? "文字输入单价" : "输入单价"} value={draft.inputPrice} onChange={(value) => update("inputPrice", value)} busy={busy || followingListPrice} />}
@@ -148,6 +153,7 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
               <div className="model-availability-summary"><ModelAvailabilityStatus readback={availability} loading={availabilityLoading} pending={availabilityAction.submitting} requestedEnabled={availabilityAction.requestedEnabled} error={availabilityAction.error} /><ModelAvailabilitySwitch readback={availability} loading={availabilityLoading} registryEnabled={model.enabled} pending={availabilityAction.submitting} requestedEnabled={availabilityAction.requestedEnabled} disabled={busy} onChange={availabilityAction.change} /></div>
               <div className="registry-field-label-row"><label className="model-editor-checkbox"><Checkbox checked={draft.isDefault} disabled={busy || imageGeneration || decision} onCheckedChange={(checked) => update("isDefault", checked)} /><span>设为默认</span></label><FieldHelp>{decision ? "Decision 模型不能设为聊天默认" : imageGeneration ? "图片模型不能设为聊天默认" : "设为整个模型目录的默认模型，并将其连接设为默认；不改变网关路由优先级。"}</FieldHelp></div>
               {!imageGeneration && !decision && <div className="registry-field-label-row"><label className="model-editor-checkbox"><Checkbox checked={draft.toolCalling} disabled={busy} onCheckedChange={(checked) => update("toolCalling", checked)} /><span>支持工具调用</span></label><FieldHelp>智能助手只会选用支持工具调用的模型；仅在模型确实支持函数调用时勾选。</FieldHelp></div>}
+              {inPool && draft.toolCalling !== initial.toolCalling && <div className="application-governance-unavailable" role="status"><span>此模型属于 APIM 后端池：池成员需具备主部署的全部能力，否则后端池发布会被拒绝。</span></div>}
             </div>
             {availabilityAction.error && <div className="registry-error" role="alert">{availabilityAction.error}</div>}
             <details className="model-editor-advanced">

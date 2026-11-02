@@ -13,6 +13,8 @@ protects against.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -183,6 +185,99 @@ assert.equal(translate("选择模型：gpt-5.4-mini"), "Select model: gpt-5.4-mi
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_kpi_comparisons_translate_with_their_period_and_cap() -> None:
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for locale translation tests"
+    result = subprocess.run(
+        [
+            node, "--input-type=module", "-e", """
+import assert from "node:assert/strict"
+import { createRequire } from "node:module"
+import { resolve } from "node:path"
+import { runInNewContext } from "node:vm"
+
+const frontendRequire = createRequire(resolve("frontend/package.json"))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+const expected = {
+  en: ["translateToEnglish", "-59.8% vs same period last month", "> 999% vs previous period"],
+  ja: ["translateToJapanese", "前月同期比 -59.8%", "前期間比 > 999%"],
+  ko: ["translateToKorean", "전월 동기 대비 -59.8%", "이전 기간 대비 > 999%"],
+}
+for (const [locale, [name, month, capped]] of Object.entries(expected)) {
+  const bundle = await rolldown({ input: resolve(`frontend/src/locales/${locale}.ts`) })
+  let code
+  try { code = (await bundle.generate({ format: "cjs" })).output[0].code }
+  finally { await bundle.close() }
+  const exports = {}
+  runInNewContext(code, { exports })
+  assert.equal(exports[name]("-59.8% 较上月同期"), month)
+  assert.equal(exports[name]("> 999% 较上期"), capped)
+}
+""",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_confirm_dialog_templates_translate_as_whole_sentences() -> None:
+    # Template literals escape the catalog coverage scan above, so a confirm dialog that
+    # interpolates a name can still render half-translated text.
+    sentences = sorted({
+        re.sub(r"\$\{[^}]*\}", "unit-name", template)
+        for path in sorted(FRONTEND_SRC.rglob("*.tsx")) if LOCALES not in path.parents
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "<AlertDialogDescription>" in line
+        for template in re.findall(r"`([^`]*\$\{[^`]*)`", line)
+    })
+    assert len(sentences) >= 5
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for locale translation tests"
+    result = subprocess.run(
+        [
+            node, "--input-type=module", "-e", """
+import assert from "node:assert/strict"
+import { createRequire } from "node:module"
+import { resolve } from "node:path"
+import { runInNewContext } from "node:vm"
+
+const frontendRequire = createRequire(resolve("frontend/package.json"))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+async function load(locale, name) {
+    const bundle = await rolldown({ input: resolve(`frontend/src/locales/${locale}.ts`) })
+    let code
+    try { code = (await bundle.generate({ format: "cjs" })).output[0].code }
+    finally { await bundle.close() }
+    const exports = {}
+    runInNewContext(code, { exports })
+    return exports[name]
+}
+const english = await load("en", "translateToEnglish")
+const korean = await load("ko", "translateToKorean")
+const japanese = await load("ja", "translateToJapanese")
+const han = /[\\u4e00-\\u9fff]/
+for (const sentence of JSON.parse(process.env.CONFIRM_SENTENCES)) {
+    assert.equal(han.test(english(sentence)), false, english(sentence))
+    assert.equal(han.test(korean(sentence)), false, korean(sentence))
+    // Japanese keeps kanji; its whole-sentence rules quote names with 「」.
+    assert.match(japanese(sentence), /「unit-name」/, japanese(sentence))
+}
+""",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, "CONFIRM_SENTENCES": json.dumps(sentences)},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_assistant_starter_prompts_enter_the_composer_in_the_active_locale() -> None:
     conversation = (
         FRONTEND_SRC / "components" / "assistant" / "assistant-conversation.tsx"
@@ -270,6 +365,7 @@ def test_standalone_labels_have_exact_catalog_entries() -> None:
         "Retry-After · 最多 2 次",
         "撤销",
         "重做",
+        "使用者",
     )
     for locale in ("en", "ko", "ja"):
         catalog = _catalog_source(locale)

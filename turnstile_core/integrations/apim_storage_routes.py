@@ -1778,6 +1778,11 @@ REWRITE_FIXED_MODEL = r"""@{
     return body.ToString(Newtonsoft.Json.Formatting.None);
 }"""
 
+POOL_RATE_LIMITED_BODY = canonical_document({"type": "error", "error": {
+    "type": "rate_limit_error", "code": "rate_limit_exceeded", "param": None,
+    "message": "Every deployment for this model is rate limited; retry after Retry-After",
+}})
+
 
 def observer_headers(parent: ET.Element) -> None:
     for name, value in (
@@ -1966,17 +1971,8 @@ def fixed_operation(
         pooled = ET.SubElement(choices, "when", {
             "condition": f'@({route}["connection"]["pool"] is JObject)',
         })
-        retry_choices = ET.SubElement(pooled, "choose")
-        budgeted = ET.SubElement(retry_choices, "when", {
-            "condition": '@(context.Variables.ContainsKey("executionReceiptHeader"))',
-        })
-        ET.SubElement(budgeted, "forward-request", {
-            "timeout": "120", "buffer-request-body": "true",
-            "buffer-response": "true" if operation == "microsoft-decision" else "false",
-            "fail-on-error-status-code": "false",
-        })
-        unbudgeted = ET.SubElement(retry_choices, "otherwise")
-        retry_node = ET.SubElement(unbudgeted, "retry", {
+        # A 429 consumed no tokens, so a budgeted request retries within its one reservation.
+        retry_node = ET.SubElement(pooled, "retry", {
             "condition": "@(context.Response != null && context.Response.StatusCode == 429)",
             "count": "1",
             "interval": "1",
@@ -2005,6 +2001,13 @@ def fixed_operation(
     ET.SubElement(outbound, "base")
     if router_outbound is not None:
         outbound.extend(list(router_outbound))
+    if binding.pool_enabled and operation != "images-generations":
+        # The provider's 429 body names the member deployment and region.
+        limited = ET.SubElement(ET.SubElement(outbound, "choose"), "when", {
+            "condition": f'@(context.Response.StatusCode == 429 && {route}["connection"]["pool"] is JObject)',
+        })
+        header_value(limited, "Content-Type", "application/json")
+        ET.SubElement(limited, "set-body").text = POOL_RATE_LIMITED_BODY
     if operation == "anthropic-messages":
         from .apim_policy_compiler import ApimPolicyCompiler
 
@@ -2502,19 +2505,21 @@ def upgrade_fixed_program_parent(
     for index, node in enumerate(expected_branch):
         if node.tag == "set-header" and node.get("name") in attribution_headers:
             actual_branch.insert(index, deepcopy(node))
-    model_denials = [
-        [node for node in policy.iter("when")
-         if '"modelAdmission"' in node.get("condition", "")
-         and node.find("return-response") is not None]
-        for policy in (root, outcome_template)
-    ]
-    if [len(nodes) for nodes in model_denials] != [1, 1]:
-        raise PolicyCompilationError("Fixed program upgrade model denial is ambiguous")
-    actual_denial, expected_denial = model_denials[0][0], model_denials[1][0]
-    denial_response = actual_denial.find("return-response")
-    expected_response = expected_denial.find("return-response")
-    assert denial_response is not None and expected_response is not None
-    actual_denial[list(actual_denial).index(denial_response)] = deepcopy(expected_response)
+    for marker, subject in (
+        ('"modelAdmission"', "model"), ('"applicationDenialReason"', "application"),
+    ):
+        denials = [
+            [node for node in policy.iter("when")
+             if marker in node.get("condition", "") and node.find("return-response") is not None]
+            for policy in (root, outcome_template)
+        ]
+        if [len(nodes) for nodes in denials] != [1, 1]:
+            raise PolicyCompilationError(f"Fixed program upgrade {subject} denial is ambiguous")
+        actual_denial, expected_denial = denials[0][0], denials[1][0]
+        denial_response = actual_denial.find("return-response")
+        expected_response = expected_denial.find("return-response")
+        assert denial_response is not None and expected_response is not None
+        actual_denial[list(actual_denial).index(denial_response)] = deepcopy(expected_response)
     for node, expected_node in zip(usage_nodes, expected_usage, strict=True):
         node.set("value", expected_node.attrib["value"])
         if "stream_usage_breakdown_unavailable" in node.get("value", ""):

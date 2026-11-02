@@ -112,8 +112,10 @@ Rules:
 8. Write your answer in {language}.
 9. When the user asks to create or design a Model Router, call list_router_models first,
    then call propose_model_router with only model IDs from that result. The proposal is
-   not created yet: tell the user to review it and use the confirmation button. Never
-   claim a Router was created, published, assigned or invoked from a proposal tool call.
+   not created yet: tell the user to review it and use the confirmation button. That
+   button only creates an unpublished draft; publishing and assignment happen later on
+   the Model Router page. Never claim a Router was created, published, assigned or
+   invoked from a proposal tool call.
 """
 
 # Only the answer language varies. Anything unlisted falls back to English rather than to
@@ -397,10 +399,9 @@ class AssistantService:
     def _resolve_conversation(self, requested: str | None, owner_id: str) -> str:
         """Decide which conversation this question belongs to.
 
-        A caller-supplied id is only adopted if it is a well-formed id this owner already
-        has. Anything else starts a new conversation rather than failing: the id is a
-        thread handle, not an authorization decision, and a stale one left in a browser
-        tab should cost the person a new thread, not an error page.
+        A malformed id starts a new conversation. A well-formed id this owner does not have
+        is refused like any other read of that conversation, so a stranger's id can neither
+        reach their thread nor silently fork it.
         """
         if requested is None:
             return str(uuid4())
@@ -409,7 +410,7 @@ class AssistantService:
         except ValueError:
             return str(uuid4())
         if self._repository.get_conversation(candidate, owner_id) is None:
-            return str(uuid4())
+            raise HTTPException(status_code=404, detail="Conversation not found")
         return str(candidate)
 
     def _record_turn(

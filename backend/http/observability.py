@@ -113,11 +113,20 @@ def get_executive_overview(
     filters: UsageFilterSet,
     from_: Annotated[datetime, Query(alias="from")],
     to: datetime,
+    compare_from: datetime | None = None,
+    compare_to: datetime | None = None,
 ) -> ExecutiveOverviewResponse:
     if to <= from_:
         raise HTTPException(status_code=422, detail="to must be after from")
+    previous_window = None
+    if compare_from is not None or compare_to is not None:
+        if compare_from is None or compare_to is None or compare_to <= compare_from:
+            raise HTTPException(
+                status_code=422, detail="compare_from and compare_to must form a window"
+            )
+        previous_window = (compare_from, compare_to)
     return ExecutiveOverviewResponse.model_validate(
-        repository.executive_overview(from_, to, filters)
+        repository.executive_overview(from_, to, filters, previous_window)
     )
 
 

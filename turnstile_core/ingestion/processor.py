@@ -229,6 +229,18 @@ class UsageProcessor:
             application_admission=event.application_admission,
         )
 
+    def _person_verified(self, event: UsageEvent) -> bool:
+        # An Application key alone cannot name a person: x-user-id is caller-controlled there.
+        if not event.apim_subscription_id or event.application_actor_type == "person":
+            return True
+        attribution = self._application_attribution(event)
+        if attribution is not None and attribution.actor_type == "system":
+            return True
+        user_id = event.user_id or "unattributed"
+        return user_id != "unattributed" and self._repository.platform_request_person_recorded(
+            event.request_id or event.id, user_id,
+        )
+
     def normalize(self, raw_event: Mapping[str, Any]) -> TokenUsageRecord | None:
         try:
             event = UsageEvent.model_validate(raw_event)
@@ -299,6 +311,7 @@ class UsageProcessor:
         )
         model_id = identity.model_id if identity else raw_model_id
         model_name = identity.display_name if identity else event.model
+        person_verified = self._person_verified(event)
         # APIM emits no cost, so it is derived here from the registry and stored with the unit
         # prices used, making the amount reproducible and immune to later price edits.
         price = (
@@ -384,8 +397,8 @@ class UsageProcessor:
             department_id=event.department_id or "unattributed",
             project=event.project or "unattributed",
             project_id=event.project_id or "unattributed",
-            user=event.user or "unattributed",
-            user_id=event.user_id or "unattributed",
+            user=(event.user or "unattributed") if person_verified else "unattributed",
+            user_id=(event.user_id or "unattributed") if person_verified else "unattributed",
             agent=event.agent or "unattributed",
             agent_id=event.agent_id or "unattributed",
             workflow=event.workflow or "unattributed",

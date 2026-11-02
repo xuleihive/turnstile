@@ -26,6 +26,16 @@ import {
   X,
 } from "lucide-react"
 
+import { ApiError } from "../../../api/client"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from "../../../components/ui/alert-dialog"
 import { Button } from "../../../components/ui/button"
 import { Checkbox } from "../../../components/ui/checkbox"
 import {
@@ -187,7 +197,7 @@ function BudgetKpis({ data }: { data: TokenBudgetResponse }) {
     {
       label: "预算余额",
       value: allocatedBudget || usdOrganizations.length ? amount(remainingTokens, "remaining_usd") : "--",
-      detail: skippedUsage ? "按已计费请求计算" : remainingTokens < 0 ? "已超过组织预算" : "本周期剩余额度",
+      detail: skippedUsage ? "按已计费请求计算" : !allocatedBudget && !usdOrganizations.length ? "等待组织预算" : remainingTokens < 0 ? "已超过组织预算" : "本周期剩余额度",
       icon: CheckCircle2,
     },
     {
@@ -332,17 +342,23 @@ function BudgetEditor({
   const [budgetMode, setBudgetMode] = useState<BudgetMode>(inheritedMode)
   const switchingUnit = item.scope_type === "organization"
     && budgetLimit(item) != null && budgetMode !== (item.budget_mode ?? "tokens")
-  const constraint = budgetConstraint(item, items, budgetMode)
   const [tokenLimit, setTokenLimit] = useState(String(item.token_limit ?? ""))
   const [usdLimit, setUsdLimit] = useState(item.usd_limit ?? "")
   const previewRequired = switchingUnit && budgetMode === "usd"
+  // The page list omits people, so a department's own allocations come from the full tree.
+  const departmentScope = item.scope_type === "department"
   const allocationTree = useQuery({
     queryKey: [...finopsKeys.budgets(period), "allocation-preview"],
     queryFn: () => dataSource.budgets(period, true),
-    enabled: previewRequired,
+    enabled: previewRequired || departmentScope,
     staleTime: 0,
     retry: false,
   })
+  const childrenLoading = departmentScope && allocationTree.isPending
+  const constraint = budgetConstraint(
+    item, departmentScope ? allocationTree.data?.items ?? items : items, budgetMode,
+  )
+  const [confirmRemove, setConfirmRemove] = useState(false)
   const allocationRoot = allocationTree.data?.items.find(candidate => candidate.scope_type === "organization"
     && candidate.scope_id === item.scope_id)
   const allocationPreview = previewRequired && allocationRoot
@@ -473,12 +489,32 @@ function BudgetEditor({
         </div>
         <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" disabled={busy} />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
         <DialogFooter className="registry-editor-footer budget-editor-footer">
-          <div>{budgetLimit(item) != null && <Button type="button" variant="destructive" disabled={busy || constraint.childAllocated > 0} onClick={onDelete} title={constraint.childAllocated > 0 ? "请先移除下级预算" : "移除预算"}><Trash2 size={14} />移除预算</Button>}</div>
-          <div><DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>取消</DialogClose><Button type="submit" aria-busy={saving || undefined} disabled={busy || previewBlocked || (item.scope_type !== "organization" && constraint.parentLimit == null)}>{saving ? <RefreshCw className="spin" size={14} aria-hidden="true" /> : <Save size={14} />}保存预算</Button></div>
+          <div>{budgetLimit(item) != null && <Button type="button" variant="destructive" disabled={busy || childrenLoading || constraint.childAllocated > 0} onClick={() => setConfirmRemove(true)} title={constraint.childAllocated > 0 ? "请先移除下级预算" : "移除预算"}><Trash2 size={14} />移除预算</Button>}</div>
+          <div><DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>取消</DialogClose><Button type="submit" aria-busy={saving || undefined} disabled={busy || childrenLoading || previewBlocked || (item.scope_type !== "organization" && constraint.parentLimit == null)}>{saving ? <RefreshCw className="spin" size={14} aria-hidden="true" /> : <Save size={14} />}保存预算</Button></div>
         </DialogFooter>
       </form>
+      {confirmRemove && <RemoveBudgetConfirm name={item.scope_name} onCancel={() => setConfirmRemove(false)} onConfirm={() => { setConfirmRemove(false); onDelete() }} />}
     </DialogContent>
   </Dialog>
+}
+
+function RemoveBudgetConfirm({ name, onCancel, onConfirm }: {
+  name: string
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return <AlertDialog open onOpenChange={(open) => { if (!open) onCancel() }}>
+    <AlertDialogContent className="model-delete-dialog">
+      <div className="model-delete-body">
+        <AlertDialogTitle>移除预算</AlertDialogTitle>
+        <AlertDialogDescription><b data-no-localize>{name}</b> · <span>移除后本月预算将变为未分配，可随时重新分配。</span></AlertDialogDescription>
+      </div>
+      <AlertDialogFooter className="model-delete-footer">
+        <AlertDialogCancel>取消</AlertDialogCancel>
+        <AlertDialogAction variant="destructive" onClick={onConfirm}>移除预算</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
 }
 
 function BudgetProgress({ item }: { item: TokenBudgetItem }) {
@@ -672,6 +708,7 @@ function BulkPeopleEditor({
   error,
   onClose,
   onSave,
+  onRemove,
 }: {
   people: TokenBudgetPeopleResponse
   models: ManagedModel[]
@@ -683,11 +720,18 @@ function BulkPeopleEditor({
   error: string | null
   onClose: () => void
   onSave: (write: TokenBudgetBulkWrite) => void
+  onRemove: (personId: string) => void
 }) {
   const targetCount = selection === "all_matching" ? people.total : selectedIds.length
   const singlePerson = selection === "ids" && selectedIds.length === 1
     ? people.items.find((item) => item.scope_id === selectedIds[0])
     : undefined
+  // The balance check is exact only when every selected person is on this page.
+  const selectedItems = selection === "all_matching"
+    ? people.total <= people.items.length ? people.items : null
+    : selectedIds.every((id) => people.items.some((item) => item.scope_id === id))
+      ? people.items.filter((item) => selectedIds.includes(item.scope_id)) : null
+  const [confirmRemove, setConfirmRemove] = useState(false)
   const [updateBudget, setUpdateBudget] = useState(
     singlePerson ? budgetLimit(singlePerson) != null : true,
   )
@@ -728,6 +772,24 @@ function BulkPeopleEditor({
       : !Number.isSafeInteger(parsedLimit) || parsedLimit < 1)) {
       setFormError(usdMode ? "请输入有效的 USD 金额" : "请输入大于 0 的每人 Token 额度")
       return
+    }
+    if (updateBudget && mode === "fixed" && selectedItems) {
+      if (usdMode) {
+        const cents = (value: string | null | undefined) => Math.round(Number(value ?? 0) * 100)
+        const available = cents(people.department_available_usd)
+          + selectedItems.reduce((total, item) => total + cents(item.usd_limit), 0)
+        if (cents(usdLimit) * targetCount > available) {
+          setFormError("金额超过上级可分配余额")
+          return
+        }
+      } else if (people.department_available_tokens != null) {
+        const available = people.department_available_tokens
+          + selectedItems.reduce((total, item) => total + (item.token_limit ?? 0), 0)
+        if (parsedLimit * targetCount > available) {
+          setFormError(`当前层级最多可分配 ${formatFullTokens(available)} Token`)
+          return
+        }
+      }
     }
     onSave({
       department_id: people.department_id,
@@ -782,8 +844,12 @@ function BulkPeopleEditor({
           {(formError || error) && <div className="registry-error">{formError ?? error}</div>}
         </div>
         <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" disabled={busy} />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
-        <DialogFooter className="registry-editor-footer"><DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>取消</DialogClose><Button type="submit" disabled={busy || targetCount === 0}><Save size={14} />保存分配</Button></DialogFooter>
+        <DialogFooter className="registry-editor-footer budget-editor-footer">
+          <div>{singlePerson && budgetLimit(singlePerson) != null && <Button type="button" variant="destructive" disabled={busy} onClick={() => setConfirmRemove(true)}><Trash2 size={14} />移除预算</Button>}</div>
+          <div><DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>取消</DialogClose><Button type="submit" disabled={busy || targetCount === 0}><Save size={14} />保存分配</Button></div>
+        </DialogFooter>
       </form>
+      {confirmRemove && singlePerson && <RemoveBudgetConfirm name={singlePerson.scope_name} onCancel={() => setConfirmRemove(false)} onConfirm={() => { setConfirmRemove(false); onRemove(singlePerson.scope_id) }} />}
     </DialogContent>
   </Dialog>
 }
@@ -880,6 +946,17 @@ function PeopleBudgetWorkspace({
       void queryClient.invalidateQueries({ queryKey: finopsKeys.budgets(period) })
     },
   })
+  const removePerson = useMutation({
+    mutationFn: (personId: string) => dataSource.deleteBudget(period, "user", personId),
+    onSuccess: (data) => {
+      setBulkOpen(false)
+      setSelectedIds(new Set())
+      setAllMatching(false)
+      setNotice("已移除人员预算")
+      queryClient.setQueryData(finopsKeys.budgets(period), data)
+      void queryClient.invalidateQueries({ queryKey: ["finops", "budgets", "people", period, departmentId] })
+    },
+  })
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), 250)
     return () => window.clearTimeout(timeout)
@@ -890,6 +967,7 @@ function PeopleBudgetWorkspace({
     setAllMatching(false)
     setNotice(null)
     bulk.reset()
+    removePerson.reset()
   }, [departmentId, debouncedSearch, status])
   const pageItems = people.data?.items ?? []
   const pageIds = pageItems.map((item) => item.scope_id)
@@ -954,15 +1032,27 @@ function PeopleBudgetWorkspace({
         <BudgetProgress item={item} />
         <div><strong>{item.budget_mode === "usd" ? budgetUsdMetric(item, "remaining_usd") : item.remaining_tokens == null ? "--" : formatFullTokens(item.remaining_tokens)}</strong><small>{item.budget_mode === "usd" ? "USD" : "Token"}</small></div>
         <div className="budget-status-cell"><span data-status={item.status}>{budgetStatusLabel(item)}</span></div>
-        {canManage ? <Button type="button" variant="ghost" size="icon-sm" className="people-budget-edit-button" title="设置人员预算与模型" onClick={() => { setSelectedIds(new Set([item.scope_id])); setAllMatching(false); bulk.reset(); setBulkOpen(true) }}><Pencil size={14} /></Button> : <span />}
+        {canManage ? <Button type="button" variant="ghost" size="icon-sm" className="people-budget-edit-button" title="设置人员预算与模型" onClick={() => { setSelectedIds(new Set([item.scope_id])); setAllMatching(false); bulk.reset(); removePerson.reset(); setBulkOpen(true) }}><Pencil size={14} /></Button> : <span />}
       </div>)}
     </ResizableGridTable></div>}
     {people.data && <div className="people-table-footer">
       <div><span>{`显示 ${pageStart.toLocaleString(getIntlLocale())}–${pageEnd.toLocaleString(getIntlLocale())}，共 ${total.toLocaleString(getIntlLocale())} 人`}</span>{canManage && allPageSelected && total > pageItems.length && !allMatching && <button type="button" onClick={() => { setAllMatching(true); setSelectedIds(new Set()) }}>{`选择全部 ${total.toLocaleString(getIntlLocale())} 个结果`}</button>}{canManage && allMatching && <><b>已选择全部匹配结果</b><button type="button" onClick={() => setAllMatching(false)}>清除选择</button></>}</div>
       <div><Button type="button" variant="outline" size="icon-sm" aria-label="上一页" disabled={offset === 0 || people.isFetching} onClick={() => setOffset(Math.max(0, offset - limit))}><ChevronLeft size={14} /></Button><Button type="button" variant="outline" size="icon-sm" aria-label="下一页" disabled={offset + limit >= total || people.isFetching} onClick={() => setOffset(offset + limit)}><ChevronRight size={14} /></Button></div>
     </div>}
-    {canManage && bulkOpen && people.data && <BulkPeopleEditor people={people.data} models={models} selection={allMatching ? "all_matching" : "ids"} selectedIds={[...selectedIds]} query={debouncedSearch} status={status} busy={bulk.isPending} error={bulk.error ? queryError(bulk.error) : null} onClose={() => { if (!bulk.isPending) setBulkOpen(false) }} onSave={(write) => bulk.mutate(write)} />}
+    {canManage && bulkOpen && people.data && <BulkPeopleEditor people={people.data} models={models} selection={allMatching ? "all_matching" : "ids"} selectedIds={[...selectedIds]} query={debouncedSearch} status={status} busy={bulk.isPending || removePerson.isPending} error={bulk.error ? peopleAllocationError(bulk.error) : removePerson.error ? queryError(removePerson.error) : null} onClose={() => { if (!bulk.isPending && !removePerson.isPending) setBulkOpen(false) }} onSave={(write) => bulk.mutate(write)} onRemove={(personId) => removePerson.mutate(personId)} />}
   </section>
+}
+
+const PEOPLE_ALLOCATION_CONFLICTS: Record<string, string> = {
+  "User allocations would exceed the department budget": "人员额度合计超过部门可用预算",
+  "The department has no remaining budget to distribute": "部门没有可分配的剩余预算",
+}
+
+function peopleAllocationError(error: unknown) {
+  if (error instanceof ApiError && error.status === 409 && error.detail) {
+    return PEOPLE_ALLOCATION_CONFLICTS[error.detail] ?? error.detail
+  }
+  return queryError(error)
 }
 
 type BudgetListLimit = 5 | 10 | 25
@@ -1092,6 +1182,7 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
   const canManage = user?.role === "owner"
   const [period, setPeriod] = useState(currentPeriod)
   const [editing, setEditing] = useState<TokenBudgetItem | null>(null)
+  const [enforcementTarget, setEnforcementTarget] = useState<{ departmentId: string; mode: EnforcementMode } | null>(null)
   const [peopleDepartmentId, setPeopleDepartmentId] = useState("")
   const periodBounds = useMemo(() => periodBoundsFor(currentPeriod()), [])
   const query = useQuery(finopsQueries.budgets(period))
@@ -1174,7 +1265,7 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
             onManagePeople={managePeople}
             enforcement={query.data.enforcement}
             enforcementBusy={enforcement.isPending}
-            onToggleEnforcement={(departmentId, mode) => enforcement.mutate({ departmentId, mode })}
+            onToggleEnforcement={(departmentId, mode) => setEnforcementTarget({ departmentId, mode })}
           />
           {activePeopleDepartmentId && <PeopleBudgetWorkspace period={period} canManage={canManage} departments={departments} models={enabledModels} departmentId={activePeopleDepartmentId} onDepartmentChange={setPeopleDepartmentId} />}
           <div className="budget-secondary-grid">
@@ -1196,5 +1287,17 @@ export function BudgetManagementPage({ onToggleSidebar }: { onToggleSidebar: () 
       onSave={(value) => save.mutate({ item: editing, value })}
       onDelete={() => remove.mutate(editing)}
     />}
+    {enforcementTarget && <AlertDialog open onOpenChange={(open) => { if (!open) setEnforcementTarget(null) }}>
+      <AlertDialogContent className="model-delete-dialog">
+        <div className="model-delete-body">
+          <AlertDialogTitle>{enforcementTarget.mode === "block" ? "开启超额拦截？" : "关闭超额拦截？"}</AlertDialogTitle>
+          <AlertDialogDescription><b data-no-localize>{departments.find((item) => item.scope_id === enforcementTarget.departmentId)?.scope_name}</b> · <span>{enforcementTarget.mode === "block" ? "拦截中：额度用尽的人员会被网关拒绝" : "仅告警：完整记账，不拦截"}</span></AlertDialogDescription>
+        </div>
+        <AlertDialogFooter className="model-delete-footer">
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction variant={enforcementTarget.mode === "block" ? "destructive" : "default"} onClick={() => { enforcement.mutate(enforcementTarget); setEnforcementTarget(null) }}>{enforcementTarget.mode === "block" ? "开启拦截" : "关闭拦截"}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>}
   </div>
 }

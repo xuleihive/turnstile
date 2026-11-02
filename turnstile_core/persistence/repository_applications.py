@@ -41,7 +41,16 @@ class PostgreSqlApplicationRepositoryMixin:
         now = datetime.now(UTC)
         with self._connection() as connection, connection.transaction():
             for value in items:
-                application_id = UUID(str(value["application_id"]))
+                bound = connection.execute(
+                    """SELECT application_id FROM gateway_application_subscription
+                       WHERE gateway_profile_id = %s AND apim_subscription_id = %s""",
+                    (gateway_profile_id, value["apim_subscription_id"]),
+                ).fetchone()
+                # A subscription keeps the application it is bound to, whatever ID scheme made it.
+                application_id = (
+                    bound["application_id"] if bound is not None
+                    else UUID(str(value["application_id"]))
+                )
                 subscription_id = UUID(str(value["subscription_id"]))
                 existing = connection.execute(
                     "SELECT * FROM gateway_application WHERE id = %s FOR UPDATE",
@@ -712,6 +721,17 @@ class PostgreSqlApplicationRepositoryMixin:
                 (list(application_ids),),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
+
+    def get_gateway_application_subscription(
+        self, gateway_profile_id: UUID, apim_subscription_id: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT * FROM gateway_application_subscription
+                   WHERE gateway_profile_id = %s AND apim_subscription_id = %s""",
+                (gateway_profile_id, apim_subscription_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_gateway_application_budgets(
         self, period_start: date, application_ids: Sequence[UUID]

@@ -79,6 +79,7 @@ export function useAssistantController({
   // while the title is on screen.
   const [conversationTitle, setConversationTitle] = useState<string | undefined>()
   const [loadingConversation, setLoadingConversation] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [pinTarget, setPinTarget] = useState<{ chart: ChartSpec; question: string } | null>(null)
   const [routerProposalResults, setRouterProposalResults] = useState<
     Record<string, RouterProposalResult>
@@ -264,6 +265,7 @@ export function useAssistantController({
     conversations,
     openConversation, loadingConversation,
     removeConversation,
+    deleteTarget, setDeleteTarget,
     pin, pinTarget, setPinTarget, pinnedReports,
     canManageRouters: source === "apim" && user?.role === "owner",
     confirmRouterProposal, routerProposalResults,

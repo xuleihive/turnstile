@@ -959,6 +959,43 @@ def test_people_budgets_support_server_paging_and_bulk_allocation() -> None:
     finally:
         app.dependency_overrides.pop(get_repository, None)
 
+def test_budget_overview_with_people_reports_their_model_assignments() -> None:
+    # The invocation page reads model assignments from this overview, not /budgets/users.
+    repository = InMemoryRepository()
+    app.dependency_overrides[get_repository] = lambda: repository
+    period = datetime.now(UTC).strftime("%Y-%m")
+    model_id = str(next(model["id"] for model in repository.models if model["enabled"]))
+    try:
+        assigned = client.post(
+            "/api/v1/budgets/users/bulk",
+            params={"period": period},
+            json={
+                "department_id": "department-platform",
+                "selection": "ids",
+                "user_ids": ["test.user01@contoso.com"],
+                "status": "all",
+                "allocation_mode": "preserve",
+                "model_ids": [model_id],
+            },
+        )
+        assert assigned.status_code == 200
+        for session in (OWNER_SESSION, MEMBER_SESSION):
+            client.cookies.set("turnstile_session", session)
+            response = client.get(
+                "/api/v1/budgets", params={"period": period, "include_users": "true"},
+            )
+            assert response.status_code == 200
+            people = {
+                item["scope_id"]: (item["model_policy_configured"], item["allowed_model_ids"])
+                for item in response.json()["items"]
+                if item["scope_type"] == "user"
+            }
+            assert people["test.user01@contoso.com"] == (True, [model_id])
+            assert people["test.user02@contoso.com"] == (False, [])
+    finally:
+        client.cookies.set("turnstile_session", OWNER_SESSION)
+        app.dependency_overrides.pop(get_repository, None)
+
 def test_people_budget_directory_is_bounded_at_ten_thousand_users(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

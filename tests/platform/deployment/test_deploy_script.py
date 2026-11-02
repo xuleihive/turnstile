@@ -3563,3 +3563,99 @@ def test_what_if_reads_root_level_changes_and_rejects_delete(tmp_path: Path) -> 
             {"parameters": {}},
             "test-deployment",
         )
+
+
+def test_failed_az_command_prints_its_redacted_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.deploy as deploy
+
+    failure = subprocess.CalledProcessError(
+        1, ["az", "deployment", "sub", "create"], output="",
+        stderr=(
+            "ERROR: InvalidTemplateDeployment: quota exceeded in eastus2\n"
+            "https://unit.blob.core.windows.net/c/x?sv=2024&sig=SECRETSIG&se=1 "
+            "AccountKey=SECRETKEY; Authorization: Bearer SECRETTOKEN\n"
+        ),
+    )
+
+    def fail(*_args: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(deploy, "execute", fail)
+    assert deploy.main([
+        "plan", "--subscription", "00000000-0000-0000-0000-000000000000",
+        "--parameters", "unit.json",
+    ]) == 1
+    printed = capsys.readouterr().err
+    assert "quota exceeded in eastus2" in printed
+    assert "SECRETSIG" not in printed and "SECRETKEY" not in printed
+    assert "SECRETTOKEN" not in printed
+
+
+@pytest.mark.parametrize("raw,secret,redacted", [
+    ("client_secret=abc123", "abc123", "client_secret=[redacted]"),
+    ("access_token=xyz", "xyz", "access_token=[redacted]"),
+    ("https://f.azurewebsites.net/api/x?code=FUNCKEY", "FUNCKEY",
+     "https://f.azurewebsites.net/api/x?code=[redacted]"),
+    ('"password": "P@ss"', "P@ss", '"password": "[redacted]"'),
+    ("?sv=2024&sig=SECRETSIG&se=1", "SECRETSIG", "?sv=2024&sig=[redacted]&se=1"),
+    ("AccountKey=SECRETKEY;", "SECRETKEY", "AccountKey=[redacted];"),
+    ("password=hunter2", "hunter2", "password=[redacted]"),
+    ("Authorization: Bearer SECRETTOKEN", "SECRETTOKEN", "Authorization: Bearer [redacted]"),
+])
+def test_az_stderr_redaction_covers_common_secret_shapes(
+    raw: str, secret: str, redacted: str,
+) -> None:
+    from scripts.deploy import _redacted
+
+    printed = _redacted(f"ERROR: {raw} (statusCode=400)")
+    assert secret not in printed
+    assert f"ERROR: {redacted} (statusCode=400)" == printed
+
+
+@pytest.mark.parametrize("raw,secret,redacted", [
+    ("clientSecret=abc123", "abc123", "clientSecret=[redacted]"),
+    ('"primaryKey": "PRIMARY"', "PRIMARY", '"primaryKey": "[redacted]"'),
+])
+def test_az_stderr_redaction_covers_camel_case_secret_names(
+    raw: str, secret: str, redacted: str,
+) -> None:
+    from scripts.deploy import _redacted
+
+    diagnostics = 'statusCode=400 code=InvalidTemplate "code": "InvalidTemplate" PartitionKey=p1'
+    printed = _redacted(f"ERROR: {raw} {diagnostics}")
+    assert secret not in printed
+    assert printed == f"ERROR: {redacted} {diagnostics}"
+
+
+@pytest.mark.parametrize("raw,secret,redacted", [
+    ("x-functions-key: abc123", "abc123", "x-functions-key: [redacted]"),
+    ("Ocp-Apim-Subscription-Key: PRIMARY", "PRIMARY", "Ocp-Apim-Subscription-Key: [redacted]"),
+])
+def test_az_stderr_redaction_covers_secret_headers(raw: str, secret: str, redacted: str) -> None:
+    from scripts.deploy import _redacted
+
+    printed = _redacted(f"ERROR: {raw}\nstatusCode=401 code=InvalidTemplate")
+    assert secret not in printed
+    assert printed == f"ERROR: {redacted}\nstatusCode=401 code=InvalidTemplate"
+
+
+def test_what_if_lists_each_changed_resource(capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts.deploy import _what_if_counts
+
+    role = "/subscriptions/s/providers/Microsoft.Authorization/roleAssignments/r1"
+    network = "/subscriptions/s/resourceGroups/g/providers/Microsoft.Network/virtualNetworks/v"
+    counts = _what_if_counts({"changes": [
+        {"changeType": "Create", "resourceId": role},
+        {"changeType": "Modify", "resourceId": network},
+        {"changeType": "NoChange", "resourceId": "/unchanged"},
+    ]})
+
+    printed = capsys.readouterr().out.splitlines()
+    assert counts == {"Create": 1, "Modify": 1, "NoChange": 1}
+    assert printed == [
+        "What-if: Create=1, Modify=1, NoChange=1",
+        f"  Create {role}",
+        f"  Modify {network}",
+    ]

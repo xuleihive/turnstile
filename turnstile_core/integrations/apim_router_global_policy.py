@@ -7,6 +7,37 @@ from .apim_policy_components import parse_policy
 
 ROUTER_GLOBAL_POLICY_MARKER = "turnstileRouterEngineVersion"
 
+# The native path cannot run Fallback nodes; name the node so callers know why it is rejected.
+ROUTER_REJECTION_BODY = r'''@{
+    var message = "";
+    try {
+      var entity = JObject.Parse((string)context.Variables["routerCachedEntityJson"]);
+      var documents = new List<JObject> { JObject.Parse((string)entity["Document"]) };
+      var alternates = (string)entity["AlternateDocuments"];
+      if (!string.IsNullOrEmpty(alternates)) {
+        foreach (var value in JArray.Parse(alternates)) {
+          documents.Add(value is JObject ? (JObject)value : JObject.Parse((string)value));
+        }
+      }
+      foreach (var item in documents) {
+        if ((string)item["gateway_profile_id"] != "__GATEWAY_PROFILE_ID__") { continue; }
+        var nodes = item["definition"]?["nodes"] as JArray;
+        var node = nodes == null ? null : nodes.OfType<JObject>().FirstOrDefault(candidate =>
+          candidate["fallback_on"] is JArray && ((JArray)candidate["fallback_on"]).Count > 0);
+        if (node != null) {
+          var name = (string)node["label"];
+          if (string.IsNullOrWhiteSpace(name)) { name = (string)node["id"]; }
+          message = "Router Fallback node '" + name + "' is not supported by the gateway; "
+            + "remove the Fallback node and publish the Router again";
+          break;
+        }
+      }
+    } catch { }
+    var error = new JObject(new JProperty("code", "router_configuration_unavailable"));
+    if (message != "") { error["message"] = message; }
+    return new JObject(new JProperty("error", error)).ToString(Newtonsoft.Json.Formatting.None);
+  }'''
+
 
 _ROUTER_PERSON_IDENTITY_XML = r"""string rawUserId = context.Request.Headers.GetValueOrDefault(&quot;x-user-id&quot;, &quot;&quot;).Trim();
                   string callerEmail = &quot;&quot;;
@@ -182,7 +213,9 @@ def fixed_router_operation_stages(
   )))
   response = ET.SubElement(rejected, "return-response")
   ET.SubElement(response, "set-status", {"code": "503", "reason": "Service Unavailable"})
-  ET.SubElement(response, "set-body").text = '{"error":{"code":"router_configuration_unavailable"}}'
+  ET.SubElement(response, "set-body").text = ROUTER_REJECTION_BODY.replace(
+    "__GATEWAY_PROFILE_ID__", gateway_profile_id,
+  )
   matched.insert(2, invalid)
   decision = branch.find(".//send-request[@response-variable-name='routerDecisionHttp']")
   assert decision is not None
@@ -763,6 +796,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                   string prevAssistantPrompt = &quot;&quot;;
                   string pendingAssistantText = &quot;&quot;;
                   string lastNonSystemRole = &quot;&quot;;
+                  bool lastIsToolContinuation = false;
                   int userMsgCount = 0;
                   bool hasToolMsgs = false;
                   bool hasUserRequestTag = false;
@@ -850,6 +884,11 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                     if (!string.IsNullOrEmpty(role)) {
                       lastNonSystemRole = role;
                     }
+                    string itemType = ((string)mObj[&quot;type&quot;] ?? &quot;&quot;).Trim().ToLowerInvariant();
+                    var itemBlocks = mObj[&quot;content&quot;] as JArray;
+                    lastIsToolContinuation = itemType == &quot;function_call_output&quot; || itemType == &quot;function_call&quot;
+                      || (role == &quot;user&quot; &amp;&amp; itemBlocks != null &amp;&amp; itemBlocks.Count &gt; 0
+                        &amp;&amp; itemBlocks.All(block =&gt; block is JObject &amp;&amp; (string)block[&quot;type&quot;] == &quot;tool_result&quot;));
                     if (role == &quot;tool&quot; || role == &quot;assistant&quot;) {
                       hasToolMsgs = true;
                     }
@@ -1291,6 +1330,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                     new JProperty(&quot;lookup_keys&quot;, lookupKeys),
                     new JProperty(&quot;save_keys&quot;, saveKeys),
                     new JProperty(&quot;is_new_user_turn&quot;, initiator != &quot;agent&quot; &amp;&amp; lastNonSystemRole == &quot;user&quot; &amp;&amp; userMsgCount &gt; 1 &amp;&amp; !string.Equals(lastUserPrompt, prevUserPrompt, StringComparison.Ordinal)),
+                    new JProperty(&quot;is_user_turn&quot;, initiator != &quot;agent&quot; &amp;&amp; lastNonSystemRole == &quot;user&quot; &amp;&amp; !lastIsToolContinuation),
                     new JProperty(&quot;selected_candidate&quot;, defaultSelected != null ? (JToken)defaultSelected : JValue.CreateNull()),
                     new JProperty(&quot;decision_basis&quot;, defaultBasis),
                     new JProperty(&quot;sticky_hit&quot;, false),
@@ -1369,7 +1409,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                           var boundCand = (JObject)(boundElig ?? candsById[mid]).DeepClone();
                           double bCost = ((double?)boundCand[&quot;input_cost_per_million&quot;] ?? 0.0) + ((double?)boundCand[&quot;output_cost_per_million&quot;] ?? 0.0);
                           bool isNewTurn = (bool?)st[&quot;is_new_user_turn&quot;] ?? false;
-                          if (isNewTurn &amp;&amp; boundElig == null &amp;&amp; elig.Count &gt; 0) {
+                          if (((bool?)st[&quot;is_user_turn&quot;] ?? false) &amp;&amp; boundElig == null &amp;&amp; elig.Count &gt; 0) {
                             bool higherBranch = elig.OfType&lt;JObject&gt;().Any(x =&gt; (((double?)x[&quot;input_cost_per_million&quot;] ?? 0.0) + ((double?)x[&quot;output_cost_per_million&quot;] ?? 0.0)) &gt; bCost);
                             if (higherBranch) {
                               break;
@@ -1510,7 +1550,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                           sysPrompt = "You are Turnstile's model routing classifier. Select the single best model from the candidate catalog for the user's request based on each candidate's description and unit cost.\n\nCandidate catalog:\n" + catalogJson + "\n\n" + jsonShapeNote;
                         } else {
                           sysPrompt = instructions.Contains("{catalog}") ? instructions.Replace("{catalog}", catalogJson) : (instructions + "\n\nCandidate catalog:\n" + catalogJson);
-                          if (!sysPrompt.Contains("model_id")) {
+                          if (!sysPrompt.Contains("model_id") || instructions.IndexOf("json", StringComparison.OrdinalIgnoreCase) &lt; 0) {
                             sysPrompt = sysPrompt + "\n\n" + jsonShapeNote;
                           }
                         }

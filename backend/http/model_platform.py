@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BeforeValidator
+from pydantic import BeforeValidator, ValidationError
 
 from turnstile_core.config import get_settings
 from turnstile_core.domain.budget_delegation import (
@@ -690,6 +690,15 @@ def remove_model_backend_pool(
     )
 
 
+def _invalid_publication(error: ValueError) -> HTTPException:
+    # ValidationError text embeds the submitted and stored values; keep only the reasons.
+    detail = "; ".join(
+        str(item["msg"]).removeprefix("Value error, ")
+        for item in error.errors(include_url=False, include_input=False, include_context=False)
+    ) if isinstance(error, ValidationError) else str(error)
+    return HTTPException(status_code=409, detail=detail)
+
+
 @publication_router.post(
     "/api/v1/model-management/publications",
     response_model=GatewayPublicationRequestAccepted,
@@ -706,6 +715,10 @@ def create_gateway_publication(
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise _invalid_publication(error) from error
     return GatewayPublicationRequestAccepted(
         publication=GatewayPublicationView.from_publication(publication),
         status_url=f"/api/v1/model-management/publications/{publication.id}",
@@ -728,6 +741,10 @@ def create_multi_target_rollout(
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise _invalid_publication(error) from error
     return MultiTargetPublicationRequestAccepted(
         rollout=rollout,
         publications=[
@@ -1332,6 +1349,8 @@ def preview_apim_onboarding(
         return service.preview(write)
     except ControlPlaneUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    except ControlPlaneConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except (PolicyCompilationError, httpx.HTTPError) as error:
         raise HTTPException(
             status_code=502,

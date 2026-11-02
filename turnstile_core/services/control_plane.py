@@ -132,6 +132,8 @@ from ..domain.runtime_models import (
     ModelVendorKey,
     OAuthClientCredentialsConfig,
     PriceSource,
+    StoredContextPriceTier,
+    custom_context_rule,
     databricks_connection_config,
     databricks_workspace_url,
     foundry_runtime_name,
@@ -188,6 +190,57 @@ class _PreparedModelPublication:
     spec: GatewayReleaseSpec
     credential_ciphertext: bytes | None
     expected_base_release_id: UUID | None = None
+
+
+_MANUAL_PRICE_FIELDS = (
+    "input_cost_per_million", "output_cost_per_million",
+    "cached_cost_per_million", "cache_write_cost_per_million",
+)
+
+
+def _stored_model_target(row: Mapping[str, Any]) -> ModelTarget:
+    values = {key: row[key] for key in ModelTarget.model_fields if key in row}
+    # Stored rows keep the tier schedule but not the selection and rule it was built from.
+    if values.get("context_price_tiers"):
+        tiers = [StoredContextPriceTier.model_validate(tier)
+                 for tier in values["context_price_tiers"]]
+        values["context_price_references"] = [tier.reference for tier in tiers]
+        values["context_price_rule"] = custom_context_rule(tiers)
+    return ModelTarget.model_validate(values)
+
+
+def _price_terms(model: ModelTarget, connection_discount: Any) -> dict[str, object]:
+    terms: dict[str, object] = {"price_source": model.price_source}
+    if model.price_source is PriceSource.MANUAL:
+        terms.update((name, getattr(model, name)) for name in _MANUAL_PRICE_FIELDS)
+        return terms
+    if model.context_price_references:
+        terms["context_price_references"] = sorted(model.context_price_references)
+        terms["context_price_rule"] = model.context_price_rule
+    else:
+        terms["price_reference"] = model.price_reference
+    terms["price_discount_percent"] = model.price_discount_percent
+    if model.price_discount_percent is None:
+        terms["connection price_discount_percent"] = (
+            None if connection_discount is None else float(connection_discount)
+        )
+    return terms
+
+
+def _price_differences(left: Mapping[str, object], right: Mapping[str, object]) -> list[str]:
+    if left["price_source"] != right["price_source"]:
+        return ["price_source"]
+    return [name for name in dict.fromkeys([*left, *right]) if left.get(name) != right.get(name)]
+
+
+def _states_price(model: ModelCreateTarget) -> bool:
+    return (
+        model.price_source is not PriceSource.MANUAL
+        or bool(model.context_price_references) or model.context_price_rule is not None
+        or any(getattr(model, name) is not None for name in (
+            *_MANUAL_PRICE_FIELDS, "price_reference", "price_discount_percent",
+        ))
+    )
 
 
 def prepare_route_configuration(
@@ -1623,13 +1676,23 @@ class GatewayControlPlaneService:
     def _published_models_for_target(
         self, apim_target_id: UUID, *,
         registry: Mapping[str, Sequence[dict[str, Any]]] | None = None,
+        route_bindings: Sequence[dict[str, Any]] | None = None,
     ) -> tuple[GatewayPublishedModelSummary, ...]:
         if registry is None:
             registry = self._repository.registry()
+        if route_bindings is None:
+            route_bindings = self._repository.list_apim_target_route_bindings(
+                apim_target_id=apim_target_id
+            )
         runtime_ids = {
             UUID(str(row["id"]))
             for row in registry["runtimes"]
             if row.get("gateway_profile_id") == apim_target_id
+        }
+        # The gateway rule without its deployment scope: a route binding decides, and only
+        # an unbound model counts by its connection's target.
+        bound = {
+            UUID(str(row["logical_model_id"])): bool(row["enabled"]) for row in route_bindings
         }
         return tuple(
             sorted(
@@ -1640,7 +1703,7 @@ class GatewayControlPlaneService:
                         display_name=str(row["display_name"]),
                     )
                     for row in registry["models"]
-                    if UUID(str(row["runtime_id"])) in runtime_ids
+                    if bound.get(UUID(str(row["id"])), UUID(str(row["runtime_id"])) in runtime_ids)
                 ),
                 key=lambda item: (item.display_name.casefold(), str(item.id)),
             )
@@ -1685,7 +1748,7 @@ class GatewayControlPlaneService:
             None,
         )
         published_models = self._published_models_for_target(
-            target.gateway_profile_id, registry=registry
+            target.gateway_profile_id, registry=registry, route_bindings=route_bindings
         )
         return ApimTargetTopology(
             target=target,
@@ -2361,9 +2424,7 @@ class GatewayControlPlaneService:
                 continue
             if self._model_api_format(model, runtime) is not ApiFormat.ANTHROPIC_MESSAGES:
                 raise ControlPlaneConflictError("Only native Claude models can use this connection")
-            target = ModelTarget.model_validate({
-                key: model[key] for key in ModelTarget.model_fields if key in model
-            })
+            target = _stored_model_target(model)
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}", target.upstream_model_id) is None:
                 raise ControlPlaneConflictError("The Databricks serving endpoint name is invalid")
             binding = GatewayModelBinding(
@@ -2752,7 +2813,8 @@ class GatewayControlPlaneService:
             or family != ModelFamilyKey(model.get("family_key", ModelFamilyKey.GENERIC))
         ):
             raise ControlPlaneConflictError(
-                "Backend pool deployments must share chat capabilities and model family"
+                f"Backend pool member {deployment_model['model_key']} on {runtime['name']} "
+                f"must share chat capabilities and model family with {model['model_key']}"
             )
         deployment = str(
             deployment_model.get("upstream_model_id") or deployment_model["model_key"]
@@ -3460,9 +3522,7 @@ class GatewayControlPlaneService:
             if (primary is None or primary.get("gateway_profile_id") == write.gateway_profile_id
                     or any(row["apim_target_id"] == write.gateway_profile_id for row in routes)):
                 raise ControlPlaneConflictError("The model alias is already active on this APIM")
-            canonical = ModelTarget.model_validate({
-                key: existing[key] for key in ModelTarget.model_fields if key in existing
-            })
+            canonical = _stored_model_target(existing)
             if (existing["provider_id"] != provider.get("id")
                     or canonical.upstream_model_id != model.upstream_model_id
                     or canonical.family_key is not model.family_key
@@ -3474,6 +3534,19 @@ class GatewayControlPlaneService:
                 .rstrip("/").casefold()
             ):
                 raise ControlPlaneConflictError("Existing model belongs to another Foundry project")
+            differences = _price_differences(
+                _price_terms(model, runtime.get("price_discount_percent")),
+                _price_terms(canonical, primary.get("price_discount_percent")),
+            )
+            if differences:
+                owner_id = primary.get("gateway_profile_id")
+                owner = self._find(registry["gateways"], owner_id) if owner_id else None
+                raise ControlPlaneConflictError(
+                    "The model is already published on gateway "
+                    f"{owner['name'] if owner else owner_id}. "
+                    "Gateways share one model record, so it can have only one price; "
+                    f"different: {', '.join(differences)}"
+                )
             logical_model_id, model, reused = existing["id"], canonical, True
         else:
             self._validate_model(model, registry["models"])
@@ -3649,6 +3722,29 @@ class GatewayControlPlaneService:
             0,
         )
         canonical_model = raw_prepared[canonical_index][0].spec.bindings[-1].model
+        registry = self._repository.registry()
+        runtimes = {row["id"]: row for row in registry["runtimes"]}
+        names = {row["id"]: row["name"] for row in registry["gateways"]}
+        terms = [
+            _price_terms(prepared.spec.bindings[-1].model, (
+                runtimes.get(prepared.spec.bindings[-1].runtime_id) or {}
+            ).get("price_discount_percent"))
+            for prepared, _required in raw_prepared
+        ]
+        for index, (prepared, _required) in enumerate(raw_prepared):
+            if index == canonical_index or not _states_price(
+                ordered_children[index].publication.model
+            ):
+                continue
+            differences = _price_differences(terms[index], terms[canonical_index])
+            if differences:
+                canonical_target = raw_prepared[canonical_index][0].spec.gateway_profile_id
+                raise ControlPlaneConflictError(
+                    f"Target {names.get(prepared.spec.gateway_profile_id)} sets a different "
+                    f"price from target {names.get(canonical_target)}. Gateways share one model "
+                    "record, so it can have only one price; "
+                    f"different: {', '.join(differences)}"
+                )
         prepared_children = [
             (
                 prepared

@@ -66,6 +66,8 @@ class OpsDbProxy(Protocol):
         self, gateway_profile_id: UUID
     ) -> Sequence[dict[str, Any]]: ...
 
+    def platform_request_person_recorded(self, request_id: str, user_id: str) -> bool: ...
+
 
 class QueryRepository(ABC):
     def model_availability_supported(self) -> bool:
@@ -174,7 +176,11 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def executive_overview(
-        self, from_: datetime, to: datetime, filters: UsageFilters
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+        previous_window: tuple[datetime, datetime] | None = None,
     ) -> dict[str, Any]: ...
 
     @abstractmethod
@@ -1109,6 +1115,14 @@ class QueryRepository(ABC):
     def list_gateway_application_subscriptions(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def get_gateway_application_subscription(
+        self, gateway_profile_id: UUID, apim_subscription_id: str
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def platform_request_person_recorded(self, request_id: str, user_id: str) -> bool: ...
 
     @abstractmethod
     def list_gateway_application_budgets(

@@ -247,6 +247,11 @@ export function gatewayPublicationChoices(profiles: GatewayProfile[], topology: 
 
 export type GatewaySelection = { targetId: string | null; deploymentId: string | null }
 
+/** The server's person model policy: an assigned list, otherwise only models open to everyone. */
+export function personMayInvoke(model: Pick<ManagedModel, "id" | "assignment_required">, assignedModelIds: ReadonlySet<string> | null) {
+  return assignedModelIds ? assignedModelIds.has(model.id) : !model.assignment_required
+}
+
 export function resolveInvocationModel<Model extends Pick<ManagedModel, "id" | "enabled" | "capabilities" | "is_default">>(models: readonly Model[], modelId: string | null, imageMode: boolean, decisionMode = false) {
   const candidates = models.filter(model => model.enabled && model.capabilities.includes("image_generation") === imageMode
     && model.capabilities.includes("decision") === decisionMode)

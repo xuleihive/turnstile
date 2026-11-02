@@ -3,7 +3,7 @@ import { infiniteQueryOptions, queryOptions, type QueryClient } from "@tanstack/
 import { cachePolicies } from "../../api/cache-policies"
 import { availabilityRefetchInterval } from "../../lib/model-availability"
 import { resolveTimezone } from "../../lib/timezone"
-import { dataSource, usageWindow } from "./api"
+import { dataSource, usageWindow, type UsageWindowRange } from "./api"
 import type {
   DistributionDimension,
   GatewayApplicationBudget,
@@ -19,7 +19,7 @@ import type {
 const DAY_MS = 24 * 60 * 60 * 1000
 
 type UsageScope = {
-  days: number
+  days: UsageWindowRange
   window?: Pick<UsageFilters, "from" | "to">
   organizationId: string | null
   departmentId: string | null
@@ -34,7 +34,7 @@ type UsageScope = {
 function scopeFromFilters(filters: UsageFilters, windowMode: "rolling" | "fixed" = "rolling"): UsageScope {
   const duration = Date.parse(filters.to) - Date.parse(filters.from)
   return {
-    days: Math.max(1, Math.round(duration / DAY_MS)),
+    days: filters.range ?? Math.max(1, Math.round(duration / DAY_MS)),
     ...(windowMode === "fixed" ? { window: { from: filters.from, to: filters.to } } : {}),
     organizationId: filters.organization_id ?? null,
     departmentId: filters.department_id ?? null,

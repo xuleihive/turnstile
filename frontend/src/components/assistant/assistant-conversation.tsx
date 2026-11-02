@@ -18,6 +18,15 @@ import type {
   ChartSpec,
 } from "./types"
 import { ChartCard } from "../charts/chart-card"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from "../ui/alert-dialog"
 import { FINOPS_NAVIGATE_EVENT } from "../../lib/navigation"
 import { translateForLocale, useLocale } from "../../locales/index"
 import { AssistantMarkdown } from "./markdown"
@@ -230,6 +239,24 @@ function RouterProposalCard({
  * Everything surface-specific -- the window chrome, the thread rail, the page header --
  * stays outside.
  */
+export function ConversationDeleteDialog({ controller: c }: { controller: AssistantController }) {
+  return <AlertDialog open={c.deleteTarget != null} onOpenChange={(open) => { if (!open) c.setDeleteTarget(null) }}>
+    <AlertDialogContent className="model-delete-dialog">
+      <div className="model-delete-body">
+        <AlertDialogTitle>删除对话</AlertDialogTitle>
+        <AlertDialogDescription>删除后无法恢复。</AlertDialogDescription>
+      </div>
+      <AlertDialogFooter className="model-delete-footer">
+        <AlertDialogCancel>取消</AlertDialogCancel>
+        <AlertDialogAction variant="destructive" onClick={() => {
+          if (c.deleteTarget) c.removeConversation.mutate(c.deleteTarget)
+          c.setDeleteTarget(null)
+        }}>删除</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
+}
+
 export function AssistantConversation({ controller, onPin }: {
   controller: AssistantController
   onPin?: (target: { chart: ChartSpec; question: string }) => void

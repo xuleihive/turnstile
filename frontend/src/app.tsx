@@ -53,7 +53,7 @@ import { TurnstileMark } from "./components/turnstile-logo";
 import { ApimLogo, CopilotLogo } from "./components/brand-logos";
 import { FINOPS_NAVIGATE_EVENT } from "./lib/navigation";
 import { useAuth } from "./providers/auth-provider";
-import { dataSource, usageWindow } from "./data-sources/apim/api";
+import { dataSource, usageWindow, type UsageWindowRange } from "./data-sources/apim/api";
 import {
   finopsQueries,
 } from "./data-sources/apim/queries";
@@ -895,7 +895,7 @@ export function App() {
   const [gatewayReleaseDrawerOpen, setGatewayReleaseDrawerOpen] = useState(false);
   const [nativeRouteAddOpen, setNativeRouteAddOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(sidebarWidthFromStorage);
-  const [finopsDays, setFinopsDays] = useState(30);
+  const [finopsDays, setFinopsDays] = useState<UsageWindowRange>("month");
   const [finopsScope, setFinopsScope] = useState<FinOpsScope>({});
   const isMobile = useIsMobile();
   const currentFinopsFilters = useMemo<UsageFilters>(

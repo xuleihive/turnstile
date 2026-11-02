@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
 import { availabilityPresentation, availabilityRefetchInterval } from "../../../frontend/src/lib/model-availability.ts"
-import { resolveInvocationModel } from "../../../frontend/src/lib/gateway-topology.ts"
+import { personMayInvoke, resolveInvocationModel } from "../../../frontend/src/lib/gateway-topology.ts"
 import * as runtimeHealth from "../../../frontend/src/lib/runtime-health.ts"
 
 const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
@@ -303,6 +303,15 @@ test("a disabled default blocks automatic invocation selection but not an explic
   assert.equal(resolveInvocationModel(models, null, false), undefined)
   assert.equal(resolveInvocationModel(models, "default", false), undefined)
   assert.equal(resolveInvocationModel(models, "other", false), models[1])
+})
+
+test("invocation targets follow the person's model policy", () => {
+  // Listing a model the person may not call only produced a 403 on invoke.
+  const open = { id: "open", assignment_required: false }
+  const restricted = { id: "restricted", assignment_required: true }
+  assert.deepEqual([open, restricted].filter(model => personMayInvoke(model, null)), [open])
+  assert.deepEqual([open, restricted].filter(model => personMayInvoke(model, new Set(["restricted"]))), [restricted])
+  assert.deepEqual([open, restricted].filter(model => personMayInvoke(model, new Set())), [])
 })
 
 test("assistant settings preserve an unavailable pin when changing auto-title", async () => {

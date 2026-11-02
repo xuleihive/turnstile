@@ -286,6 +286,8 @@
 	gap: 20px;
 	padding: 10px 12px 10px var(--model-workspace-gutter);
 }
+/* Match the toolbar's end padding and stay above the sticky table head, whose snapped edge covers the bottom border. */
+.model-toolbar ~ .smh-notice { position: relative; z-index: 3; margin-right: 12px; }
 .model-tabs { align-self: center; }
 .model-tabs button { display: inline-flex; align-items: center; gap: 6px; }
 .model-tabs button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -780,6 +782,7 @@ button.model-availability-status { cursor: pointer; }
 .model-delete-body [data-slot="alert-dialog-title"] { grid-column: 1; display: block; font-size: 16px; line-height: 24px; font-weight: 600; }
 .model-delete-body [data-slot="alert-dialog-description"] { grid-column: 1; display: block; margin-top: 8px; font-size: 14px; line-height: 20px; }
 .model-delete-body > .registry-error { margin-top: 12px; }
+.model-delete-body > .application-governance-unavailable { margin-top: 12px; }
 [data-slot="alert-dialog-footer"].model-delete-footer { display: flex; justify-content: flex-end; gap: 8px; margin: 0; border-radius: 0 0 12px 12px; padding: 16px; background: color-mix(in oklch, var(--muted) 70%, var(--card)); }
 .model-delete-footer > [data-slot="alert-dialog-action"], .model-delete-footer > [data-slot="alert-dialog-cancel"] { appearance: none; min-width: 80px; height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: 8px; padding: 0 12px; outline: none; font: inherit; font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; cursor: pointer; }
 .model-delete-footer > [data-slot="alert-dialog-action"] { background: var(--destructive); color: white; }
@@ -1696,6 +1699,8 @@ button.router-new-button:disabled { cursor: not-allowed; opacity: .5; }
 	.router-resilience-policy dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 0; }
 	.router-resilience-policy dl > div:nth-child(odd) { border-left: 0; }
 	.router-resilience-policy dl > div:not(:last-child) { border-bottom: 1px solid var(--border); }
+	/* Right-aligned, the state sat under the floating Assistant button on phones. */
+	.router-resilience-affinity-state { flex-basis: 100%; margin-left: 0; }
 }
 
 @container (max-width: 650px) {
@@ -1861,6 +1866,7 @@ button.router-new-button:disabled { cursor: not-allowed; opacity: .5; }
 .model-price-rule-choice.usage-metric-segment > button.active { box-shadow: none; }
 .model-price-rule-choice > button:disabled { cursor: not-allowed; opacity: .6; }
 .model-price-rule-fields { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.model-price-rule-fields [data-slot="input"] { height: 32px; }
 @media (max-width: 480px) {
 	.model-price-rule-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 8px; }
 	.model-price-rule-fields .registry-field-label-row { flex-wrap: wrap; }
@@ -1868,7 +1874,7 @@ button.router-new-button:disabled { cursor: not-allowed; opacity: .5; }
 .model-price-loading { display: flex; align-items: center; gap: 6px; }
 .model-price-loading > svg { flex: 0 0 auto; }
 .model-price-catalog-fields { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 16px; }
-.model-price-catalog-fields .registry-select-trigger { height: 32px; }
+.model-price-catalog-fields .registry-select-trigger, .model-price-catalog-fields [data-slot="input"] { height: 32px; }
 @media (min-width: 641px) {
 	.model-price-catalog-fields { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
 }

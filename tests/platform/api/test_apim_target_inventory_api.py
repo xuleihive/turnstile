@@ -259,6 +259,22 @@ def test_onboarding_http_preview_start_idempotency_and_linked_retry(
         assert retried.json()["operation"]["checkpoint"]["retry_of"] == operation["id"]
 
 
+def test_onboarding_preview_names_a_tenant_mismatch(publication_api: InMemoryRepository) -> None:
+    # A wrong tenant ID used to surface as a generic 502 "could not validate" error.
+    del publication_api
+    _, state, service, _ = onboarding_service_fixture()
+    request = state.plan.request.model_dump(mode="json")
+    request["tenant_id"] = "00000000-0000-4000-8000-0000000000ff"
+    with patch.dict(app.dependency_overrides, {apim_onboarding_service: lambda: service}):
+        response = client.post("/api/v1/model-management/apim-onboarding/preview", json=request)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "The tenant ID does not match the tenant of the Turnstile management identity"
+    }
+    assert state.requests == []
+
+
 @pytest.mark.usefixtures("management_runtime_service")
 @pytest.mark.parametrize("failure", [
     PolicyCompilationError("unit-secret"), httpx.ConnectError("unit-secret"),

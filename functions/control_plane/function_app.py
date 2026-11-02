@@ -86,6 +86,11 @@ def _close_repository(repository: object) -> None:
         close()
 
 
+def _worker_id() -> str:
+    # Flex Consumption sets no WEBSITE_INSTANCE_ID; the fallback appears in publication audit.
+    return os.environ.get("WEBSITE_INSTANCE_ID", "control-plane")[:128]
+
+
 @app.route(
     route="model-programs/{target_id}/cutover", methods=["POST"],
     trigger_arg_name="request",
@@ -229,7 +234,7 @@ def _run_model_availability(*, audit: bool, renew: bool = False) -> None:
             lambda: TableStorageLedger(endpoint, settings.ledger_table_name, timeout=2),
             coordinator.verify,
         )
-        worker.run_once(os.environ.get("WEBSITE_INSTANCE_ID", "control-plane-local")[:128])
+        worker.run_once(_worker_id())
     finally:
         try:
             if clients is not None:
@@ -504,7 +509,7 @@ def publish_gateway_changes(timer: func.TimerRequest) -> None:
                 settings.ledger_table_endpoint, settings.ledger_table_name,
                 client=client, token_provider=routes._tokens, timeout=2,
             ))
-        worker_id = os.environ.get("WEBSITE_INSTANCE_ID", "control-plane-local")[:128]
+        worker_id = _worker_id()
         policy_path = Path(
             os.environ.get(
                 "CONTROL_PLANE_PARENT_POLICY_PATH",
@@ -632,7 +637,7 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
             ),
             cipher=cipher,
         )
-        worker_id = os.environ.get("WEBSITE_INSTANCE_ID", "control-plane-local")[:128]
+        worker_id = _worker_id()
 
         def project_application(gateway_id: UUID, application_id: UUID) -> None:
             assert settings.ledger_table_endpoint is not None

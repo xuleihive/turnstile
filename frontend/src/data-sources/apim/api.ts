@@ -114,8 +114,12 @@ export async function requestGatewayBootstrap(
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-export const usageWindow = (days: number, now = Date.now()): UsageFilters => {
+export type UsageWindowRange = number | "month"
+
+export const usageWindow = (days: UsageWindowRange, now = Date.now()): UsageFilters => {
   const to = new Date(now)
+  // Budgets reset on the first of each UTC month (ledger `period_start_for`).
+  if (days === "month") return { from: new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1)).toISOString(), to: to.toISOString(), range: "month" }
   const from = new Date(now - days * DAY_MS)
   return { from: from.toISOString(), to: to.toISOString() }
 }
@@ -123,7 +127,7 @@ export const usageWindow = (days: number, now = Date.now()): UsageFilters => {
 const params = (filters: UsageFilters, extra: Record<string, string | number> = {}) => {
   const values = new URLSearchParams({ from: filters.from, to: filters.to })
   for (const [key, value] of Object.entries({ ...filters, ...extra })) {
-    if (key === "from" || key === "to" || value === undefined || value === "") continue
+    if (key === "from" || key === "to" || key === "range" || value === undefined || value === "") continue
     // A repeated key, not a joined string: the API reads these as a list, and a runtime
     // display name can legitimately contain a comma.
     if (Array.isArray(value)) {
@@ -448,9 +452,18 @@ export const dataSource = {
   mode: "api" as const,
   defaultFilters: () => usageWindow(30),
   entities: () => request<EnterpriseEntityCatalog>("/api/v1/enterprise/entities").then(normalizeEnterpriseUsers),
-  executiveOverview: (filters: UsageFilters) => request<ExecutiveOverview>(
-    `/api/v1/observability/executive-overview?${params(filters)}`,
-  ),
+  executiveOverview: (filters: UsageFilters) => {
+    const comparison: Record<string, string> = {}
+    if (filters.range === "month") {
+      // Month-to-date compares with the same elapsed span of last month, never past its end.
+      const start = Date.parse(filters.from)
+      const previous = new Date(start)
+      previous.setUTCMonth(previous.getUTCMonth() - 1)
+      comparison.compare_from = previous.toISOString()
+      comparison.compare_to = new Date(Math.min(previous.getTime() + Date.parse(filters.to) - start, start)).toISOString()
+    }
+    return request<ExecutiveOverview>(`/api/v1/observability/executive-overview?${params(filters, comparison)}`)
+  },
   distribution: (
     filters: UsageFilters,
     dimension: DistributionDimension,

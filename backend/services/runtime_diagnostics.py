@@ -15,7 +15,6 @@ import httpx
 from fastapi import HTTPException
 
 from turnstile_core.config import Settings
-from turnstile_core.domain.application_access import application_id_for
 from turnstile_core.domain.gateway_targets import (
     ApimTarget,
     GatewayDeployment,
@@ -316,7 +315,12 @@ class RuntimeDiagnostics:
             raise ValueError("Synchronize and verify the APIM target before running diagnostics")
         if not target.probe_subscription_id:
             raise ValueError("APIM system diagnostic subscription is not configured")
-        application_id = application_id_for(target.gateway_profile_id, target.probe_subscription_id)
+        bound = self._repository.get_gateway_application_subscription(
+            target.gateway_profile_id, target.probe_subscription_id,
+        )
+        if bound is None:
+            raise ValueError("Synchronize the target's system diagnostic subscription")
+        application_id = bound["application_id"]
         application = self._repository.get_gateway_application(application_id)
         if (
             not application

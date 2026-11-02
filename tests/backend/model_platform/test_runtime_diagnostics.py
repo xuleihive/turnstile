@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from unittest.mock import Mock, patch
-from uuid import UUID
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 import pytest
@@ -22,8 +24,13 @@ from tests.backend.model_platform.test_apim_target_client_factory import registe
 from tests.backend.model_platform.test_gateway_targets import TARGET, deployment, target
 from tests.platform.api.test_model_management_api import publication_api as publication_api
 from turnstile_core.config import Settings
-from turnstile_core.domain.application_access import application_id_for
-from turnstile_core.domain.gateway_targets import GatewayDeployment
+from turnstile_core.domain.application_access import (
+    GatewayApplicationDiscovery,
+    GatewayApplicationDiscoveryItem,
+    application_id_for,
+    application_subscription_id_for,
+)
+from turnstile_core.domain.gateway_targets import ApimTargetRegistration, GatewayDeployment
 from turnstile_core.domain.runtime_models import (
     HealthStatus,
     RuntimeCheckPlan,
@@ -34,6 +41,7 @@ from turnstile_core.domain.runtime_models import (
 from turnstile_core.integrations.apim_target_client_factory import AzureApimProbeAccessChecker
 from turnstile_core.integrations.gateway import GatewayInvocationError
 from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.services.application_access import ApplicationAccessService
 
 
 def test_diagnostic_contract_requires_explicit_selection_and_fixed_request_limits() -> None:
@@ -505,3 +513,90 @@ def test_diagnostic_transport_timeout_is_inconclusive_without_retry() -> None:
     assert result.outcome == "inconclusive" and result.status is HealthStatus.UNKNOWN
     assert "untrusted-timeout-text" not in result.model_dump_json()
     router.adapter.return_value.invoke.assert_called_once()
+
+
+def _installed_system_applications(
+    application_id: Callable[[str, str], UUID], subscription_id: Callable[[str, str], UUID],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "application_id": application_id(name, apim_subscription_id),
+            "subscription_id": subscription_id(name, apim_subscription_id),
+            "apim_subscription_id": apim_subscription_id,
+            "slug": name,
+            "display_name": "Unit " + name,
+            "application_type": "system" if name == "publisher" else "service",
+            "system_managed": name == "publisher",
+            "state": "active",
+            "scope_type": "api",
+            "scope_id": target().api_id,
+            "scope_exists": True,
+        }
+        for name, apim_subscription_id in (
+            ("dashboard", "unit-dashboard"), ("publisher", "unit-probe"),
+        )
+    ]
+
+
+@pytest.mark.parametrize("install", ["fresh", "v1.3"])
+def test_installed_system_application_is_diagnosable_and_synced_without_duplicates(
+    install: str,
+) -> None:
+    repository, service, _credentials, _router, runtime_id = diagnostic_fixture()
+    seeded = application_id_for(TARGET, "unit-probe")
+    repository.gateway_applications[:] = [
+        row for row in repository.gateway_applications if row["id"] != seeded
+    ]
+    repository.gateway_application_subscriptions[:] = [
+        row for row in repository.gateway_application_subscriptions
+        if row["application_id"] != seeded
+    ]
+    if install == "fresh":
+        from backend.bootstrap_storage_route import system_applications
+
+        rows = system_applications(ApimTargetRegistration.model_construct(
+            gateway_profile_id=TARGET, name="Unit", api_id=target().api_id,
+            dashboard_subscription_id="unit-dashboard", probe_subscription_id="unit-probe",
+        ))
+        assert rows == _installed_system_applications(
+            lambda _name, apim_id: application_id_for(TARGET, apim_id),
+            lambda _name, apim_id: application_subscription_id_for(TARGET, apim_id),
+        )
+    else:
+        # v1.3 bootstrap keyed the system applications by name.
+        rows = _installed_system_applications(
+            lambda name, _apim_id: uuid5(TARGET, name),
+            lambda _name, apim_id: uuid5(TARGET, apim_id),
+        )
+    repository.sync_gateway_applications(
+        TARGET, [{**row, "audit_id": uuid4()} for row in rows], "fixed-program-installation",
+        date(2026, 11, 1), 100000, 100000,
+    )
+    installed = {row["apim_subscription_id"]: row["application_id"] for row in rows}
+    assert service.plan(runtime_id).options
+
+    applications = len(repository.gateway_applications)
+    ApplicationAccessService(repository, sync_available=True).sync_discovery(
+        GatewayApplicationDiscovery(
+            gateway_profile_id=TARGET,
+            discovered_at=datetime.now(UTC),
+            items=[
+                GatewayApplicationDiscoveryItem(
+                    apim_subscription_id=row["apim_subscription_id"],
+                    display_name=row["apim_subscription_id"],
+                    state="active", scope_type="api", scope_id=target().api_id,
+                    scope_exists=True, application_type=row["application_type"],
+                    system_managed=row["system_managed"],
+                )
+                for row in rows
+            ],
+        ),
+        "unit-owner",
+    )
+    assert len(repository.gateway_applications) == applications
+    assert {
+        row["apim_subscription_id"]: row["application_id"]
+        for row in repository.gateway_application_subscriptions
+        if row["apim_subscription_id"] in installed
+    } == installed
+    assert service.plan(runtime_id).options

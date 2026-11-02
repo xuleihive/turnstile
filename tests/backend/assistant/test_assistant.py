@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from backend.services.assistant import AssistantService
+from backend.services.assistant import SYSTEM_PROMPT, AssistantService
 from backend.services.assistant_shared import clean_title
 from backend.services.assistant_tools import REGISTRY, TimeScopedArguments, resolve_range
 from backend.services.runtime_service import ModelRuntimeService
@@ -189,6 +189,65 @@ def test_a_generous_limit_still_charts_a_small_result() -> None:
     chart = reply.charts[0]
     assert len(chart.rows) == 2
     assert chart.kind == "bar"
+
+
+def test_model_rankings_tell_same_named_deployments_apart() -> None:
+    # Two deployments can share a display name; the connection tells them apart, as on
+    # the dashboard. Without it the ranking showed two identical labels.
+    service, repository, _ = _service(
+        [
+            _tool_call("query_usage_ranking", {"dimension": "model"}),
+            _answer("两个同名部署。"),
+        ]
+    )
+    first, second = repository.models[2], repository.models[3]
+    replica = {**repository.runtimes[0], "id": uuid4(), "name": "Replica Foundry"}
+    repository.runtimes.append(replica)
+    second["runtime_id"] = replica["id"]
+    for index, model in enumerate((first, second)):
+        repository.write_token_usage(
+            _usage(
+                id=f"same-{index}",
+                request_id=f"same-{index}",
+                correlation_id=f"same-{index}",
+                model="gpt-5.4-mini · Microsoft Foundry",
+                model_id=str(model["id"]),
+            )
+        )
+
+    reply = service.ask(
+        AssistantAskRequest(question="Rank models."), user_id=USER, user_name=USER
+    )
+
+    names = {row["name"] for row in reply.charts[0].rows}
+    assert "gpt-5.4-mini · Microsoft Foundry · Microsoft Foundry via APIM" in names
+    assert "gpt-5.4-mini · Microsoft Foundry · Replica Foundry" in names
+    assert "gpt-5.6-luna" in names
+
+
+def test_a_cost_ranking_is_ordered_by_cost_not_by_tokens() -> None:
+    service, repository, _ = _service(
+        [
+            _tool_call(
+                "query_usage_ranking",
+                {"dimension": "department", "metric": "estimated_cost", "limit": 2},
+            ),
+            _answer("Finance 成本最高。"),
+        ]
+    )
+    repository.write_token_usage(
+        _usage(
+            id="costly", request_id="costly", correlation_id="costly",
+            department="Finance", department_id="finance",
+            input_tokens=1, output_tokens=1, estimated_cost=5.0,
+        )
+    )
+
+    reply = service.ask(
+        AssistantAskRequest(question="Rank departments by cost."), user_id=USER, user_name=USER
+    )
+
+    assert [row["name"] for row in reply.charts[0].rows] == ["Finance", "AI Platform"]
 
 
 def test_a_result_too_wide_to_chart_becomes_a_table() -> None:
@@ -814,11 +873,11 @@ def test_the_tool_loop_is_bounded() -> None:
 
 
 def test_relative_ranges_resolve_in_the_viewer_timezone() -> None:
-    # "本月" is a calendar fact, and the calendar depends on where the viewer is. The
-    # model is never asked to compute it, so a preset cannot be a day out.
+    # Day-based presets are calendar facts that depend on where the viewer is. The
+    # model is never asked to compute them, so a preset cannot be a day out.
     tool = next(item for item in REGISTRY if item.name == "query_usage_ranking")
     arguments = tool.arguments_model.model_validate(
-        {"dimension": "department", "time_range": "this_month"}
+        {"dimension": "department", "time_range": "last_7_days"}
     )
     assert isinstance(arguments, TimeScopedArguments)
     shanghai = resolve_range(arguments, "Asia/Shanghai")
@@ -827,6 +886,28 @@ def test_relative_ranges_resolve_in_the_viewer_timezone() -> None:
     assert shanghai.start != utc.start
     assert "Asia/Shanghai" in shanghai.label
     assert shanghai.start.tzinfo is not None
+
+
+@pytest.mark.parametrize("preset", ["this_month", "last_month"])
+def test_month_ranges_follow_the_utc_budget_calendar(preset: str) -> None:
+    # "本月" must be the window the budget page shows, and budgets are UTC months.
+    tool = next(item for item in REGISTRY if item.name == "query_usage_ranking")
+    arguments = tool.arguments_model.model_validate(
+        {"dimension": "department", "time_range": preset}
+    )
+    assert isinstance(arguments, TimeScopedArguments)
+    shanghai = resolve_range(arguments, "Asia/Shanghai")
+    utc = resolve_range(arguments, "UTC")
+
+    assert (shanghai.start, shanghai.end) == (utc.start, utc.end)
+    assert shanghai.start.day == 1 and (shanghai.start.hour, shanghai.start.minute) == (0, 0)
+    assert shanghai.label.endswith("· UTC")
+
+
+def test_router_proposals_are_described_as_drafts_not_publications() -> None:
+    # The confirmation button creates an unpublished draft; telling people it publishes
+    # sends them looking for a live Router that does not exist.
+    assert "only creates an unpublished draft" in SYSTEM_PROMPT
 
 
 def test_a_model_without_tool_support_is_never_selected() -> None:
@@ -910,19 +991,22 @@ def test_a_conversation_is_persisted_turn_by_turn_under_one_id() -> None:
     assert len(repository.conversations) == 1
 
 
-def test_a_conversation_id_from_another_owner_starts_a_new_thread() -> None:
-    # A thread handle is not an authorization decision, but it must not be a way to
-    # append to, or read, somebody else's conversation either.
-    service, _, _ = _service([_answer("其一。"), _answer("其二。")])
+def test_a_conversation_id_from_another_owner_is_refused() -> None:
+    # A thread handle must not be a way to append to, read, or silently fork somebody
+    # else's conversation; it is refused like any other read of that thread.
+    service, _, sent = _service([_answer("其一。"), _answer("其二。")])
 
     mine = service.ask(AssistantAskRequest(question="我的问题"), user_id=USER, user_name=USER)
-    theirs = service.ask(
-        AssistantAskRequest(question="别人的问题", conversation_id=mine.conversation_id),
-        user_id="someone-else",
-        user_name="someone-else",
-    )
+    with pytest.raises(HTTPException) as refused:
+        service.ask(
+            AssistantAskRequest(question="别人的问题", conversation_id=mine.conversation_id),
+            user_id="someone-else",
+            user_name="someone-else",
+        )
 
-    assert theirs.conversation_id != mine.conversation_id
+    assert refused.value.status_code == 404
+    assert len(sent) == 1
+    assert service.list_conversations("someone-else") == []
     assert len(service.get_conversation(UUID(mine.conversation_id), USER).exchanges) == 1
     with pytest.raises(HTTPException) as error:
         service.get_conversation(UUID(mine.conversation_id), "someone-else")

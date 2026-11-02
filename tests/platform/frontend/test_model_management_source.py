@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -465,7 +466,7 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
     assert "删除网关记录" in page_source
     assert "ConnectionDeleteDialog" in page_source
     assert "请先删除此连接中的全部模型" in page_source
-    assert "历史用量、publication 和旧 APIM 资源会保留" in page_source
+    assert "历史用量、发布记录和旧 APIM 资源会保留" in page_source
     recovery_source = page_source.split("const recoverable =", 1)[1].split(
         "if (recoverable)", 1
     )[0]
@@ -595,6 +596,36 @@ def test_foundry_model_fields_share_a_localized_responsive_row() -> None:
             FRONTEND_SOURCE / f"locales/{locale}/phrases-image-generation.ts"
         ).read_text(encoding="utf-8")
         assert '"部署名称":' in phrases
+
+
+def test_text_inputs_match_the_32px_controls_in_their_row() -> None:
+    # Select triggers and the rule switch are 32px here; inputs default to 28px.
+    styles = read_frontend_styles()
+    for row in (".publication-model-identity-grid", ".model-price-catalog-fields"):
+        assert (
+            f'{row} .registry-select-trigger, {row} [data-slot="input"] {{ height: 32px; }}'
+        ) in styles
+    assert "max-width: 100%; height: 32px;" in styles.split(
+        ".model-price-rule-choice.usage-metric-segment {", 1,
+    )[1].split("}", 1)[0]
+    assert '.model-price-rule-fields [data-slot="input"] { height: 32px; }' in styles
+
+
+def test_toolbar_notice_lines_up_with_the_toolbar_and_stays_above_the_table_head() -> None:
+    styles = read_frontend_styles()
+
+    def rule(selector: str) -> str:
+        return styles.split(selector + " {", 1)[1].split("}", 1)[0]
+
+    def z_index(block: str) -> int:
+        match = re.search(r"z-index: (\d+)", block)
+        assert match is not None
+        return int(match[1])
+
+    assert "padding: 10px 12px 10px var(--model-workspace-gutter);" in rule(".model-toolbar")
+    notice = rule(".model-toolbar ~ .smh-notice")
+    assert "margin-right: 12px" in notice
+    assert z_index(notice) > z_index(rule(".model-table-head"))
 
 
 def test_manage_connections_is_a_transparent_secondary_action() -> None:
@@ -1089,3 +1120,120 @@ def test_model_form_unit_cases(suite_name: str) -> None:
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_decision_charged_rate_table_has_no_cache_rows() -> None:
+    components = FRONTEND_SOURCE / "components/model-management"
+    price = (components / "model-price-source.tsx").read_text(encoding="utf-8")
+    arithmetic = price.split("function PriceArithmetic<", 1)[1].split(
+        "function CatalogNotices", 1,
+    )[0]
+    edit = (components / "model-edit-dialog.tsx").read_text(encoding="utf-8")
+    publish = (components / "model-publication-dialog.tsx").read_text(encoding="utf-8")
+
+    # Decision bills inputs and outputs only; cache rows and the cache-write hint do not apply.
+    assert 'if (!decision) rows.push([imageGeneration ? "缓存文字输入" : "缓存读取"' in arithmetic
+    assert 'if (!imageGeneration && !decision) rows.push(["缓存写入"' in arithmetic
+    assert "!imageGeneration && !decision && !option?.contextPricing" in arithmetic
+    assert "decision={decision}" in price.split("<PriceArithmetic", 1)[1].split("/>", 1)[0]
+    assert "decision={decision}" in edit.split("<ModelPriceSourceFields", 1)[1].split("/>", 1)[0]
+    assert "decision={decision}" in publish.split("<ModelPriceSourceFields", 1)[1].split("/>", 1)[0]
+
+
+def test_model_delete_dialog_names_published_routers_that_use_the_model() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+    dialog = page.split("function ModelDeleteDialog(", 1)[1].split("function ", 1)[0]
+
+    assert "enabled: deletingModel != null" in page
+    assert (
+        "routerNames={publishedRoutersUsingModel(deletingRouters.data?.items ?? [], "
+        "deletingModel.id)}" in page
+    )
+    assert "{routerNames.length > 0 && " in dialog
+    assert "<b data-no-localize>{routerNames.join(\", \")}</b>" in dialog
+
+
+def test_pool_capability_changes_warn_and_pool_conflicts_show_once() -> None:
+    components = FRONTEND_SOURCE / "components/model-management"
+    edit = (components / "model-edit-dialog.tsx").read_text(encoding="utf-8")
+    pool = (components / "deployment-resilience-editor.tsx").read_text(encoding="utf-8")
+
+    assert "item.pool.members.some((member) => member.model_id === model.id)" in edit
+    assert "{inPool && draft.toolCalling !== initial.toolCalling && " in edit
+    # The failed notice already carries save/remove errors; the error row repeated them.
+    assert "const error = pool.error ?? publication.error ?? candidates.error" in pool
+    assert pool.count("error_message: submissionFailure(err),") == 2
+    assert "err instanceof ApiError && err.detail ? err.detail" in pool
+
+
+def test_disabling_session_affinity_reads_pending_until_published() -> None:
+    pool = (
+        FRONTEND_SOURCE / "components/model-management/deployment-resilience-editor.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'pool.data?.session_affinity ? draft.session_affinity ? "黏着已生效" : "黏着待关闭"'
+        in pool
+    )
+
+
+def test_switching_to_manual_price_says_the_kept_rates_become_manual() -> None:
+    price = (
+        FRONTEND_SOURCE / "components/model-management/model-price-source.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'setManualFromCatalog(source === "manual")' in price
+    assert "{!following && manualFromCatalog && " in price
+
+
+def test_model_counts_include_failed_publication_rows() -> None:
+    # A failed model publication is listed as a row, but the header and tab said 0.
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+
+    assert "const modelTotal = registry.models.length + pendingModelPublications.length" in page
+    assert "<h1>模型管理</h1><span>{modelTotal}</span>" in page
+    assert ": gatewayCount : modelTotal}</span>" in page
+
+
+def test_relationship_graph_names_connections_and_explains_an_empty_graph() -> None:
+    graph = (
+        FRONTEND_SOURCE / "components/model-management/model-inventory-graph.tsx"
+    ).read_text(encoding="utf-8")
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+
+    assert 'className="model-graph-connection-name"' in graph
+    assert "data-no-localize>{connection.name}</small>" in graph
+    assert (
+        'modelView === "graph" && models.length === 0 && visiblePublications.length > 0 && '
+        '<div className="smh-empty">' in page
+    )
+
+
+def test_affinity_state_wraps_below_the_control_on_narrow_editors() -> None:
+    styles = read_frontend_styles()
+    narrow = styles.split("@container (max-width: 720px) {", 1)[1].split("\n}", 1)[0]
+
+    assert ".router-resilience-affinity-state { flex-basis: 100%; margin-left: 0; }" in narrow
+
+
+def test_same_named_connections_show_their_apim_instance() -> None:
+    # Two targets reaching one Foundry project produce the same generated name.
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+
+    assert (
+        "sharedName={registry.runtimes.some((other) => other.id !== runtime.id "
+        "&& other.name === runtime.name)}" in page
+    )
+    assert "{sharedNameTarget && <> · <span data-no-localize>{sharedNameTarget}</span></>}" in page
+
+
+def test_add_apim_dialog_names_a_tenant_mismatch() -> None:
+    dialog = (
+        FRONTEND_SOURCE / "components/model-management/apim-onboarding-dialog.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'const TENANT_MISMATCH = "The tenant ID does not match the tenant of the Turnstile '
+        'management identity"' in dialog
+    )
+    assert "error.status === 409 && error.detail === TENANT_MISMATCH" in dialog

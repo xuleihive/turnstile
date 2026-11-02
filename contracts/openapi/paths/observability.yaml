@@ -223,6 +223,27 @@ paths:
           type: string
           format: date-time
           title: To
+      - name: compare_from
+        in: query
+        required: false
+        description: Start of the comparison window. Must be sent with compare_to; when
+          both are omitted the comparison is the equal-length window right before from.
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Compare From
+      - name: compare_to
+        in: query
+        required: false
+        description: End (exclusive) of the comparison window. Must be after compare_from.
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Compare To
       - name: organization_id
         in: query
         required: false

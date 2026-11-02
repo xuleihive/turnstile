@@ -77,3 +77,10 @@ test("current publication validation reports provider fields without retaining r
   assert.equal(publicationErrorMessage('API 409: {"detail":"Connection already exists"}'), "Connection already exists")
   assert.equal(publicationErrorMessage("Network unavailable"), "Network unavailable")
 })
+
+test("a publication conflict shows only the server's reason", () => {
+  // The API client puts a string detail after the status, not the JSON body.
+  const reason = "The model is already published on gateway Unit. Gateways share one model record, so it can have only one price; different: context_price_rule"
+  assert.equal(publicationErrorMessage(`API 409: ${reason}`), reason)
+  assert.equal(publicationErrorMessage("API 503: Gateway unavailable"), "API 503: Gateway unavailable")
+})

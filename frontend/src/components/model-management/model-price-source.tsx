@@ -77,7 +77,7 @@ async function loadModelPrices(candidate: ModelPriceCandidate): Promise<ModelPri
  * 24 to 28 regions it is sold in -- is a single choice with no region to pick, and a region is
  * asked for only where two regions genuinely disagree.
  */
-export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, initialSearch }: {
+export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, decision = false, initialSearch }: {
   model?: ManagedModel
   modelName?: string
   draft: Draft
@@ -86,6 +86,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   connectionDiscount: number | null
   showAnthropic?: boolean
   imageGeneration?: boolean
+  decision?: boolean
   initialSearch?: string
 }) {
   const restored = model ? restoreContextPrices(model) : null
@@ -98,6 +99,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   const [details, setDetails] = useState<ModelPriceOptions | null>(() => restored)
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [previewReference, setPreviewReference] = useState(() => restored?.options[0]?.reference ?? "")
+  const [manualFromCatalog, setManualFromCatalog] = useState(false)
   const requestVersion = useRef(0)
   const lastDiscount = useRef({ own: draft.discountPercent, connection: connectionDiscount })
 
@@ -282,6 +284,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
           onClick={() => {
             if (source === draft.priceSource) return
             clearSelection()
+            setManualFromCatalog(source === "manual")
             setDraft(current => ({ ...current, priceSource: source }))
             if (source !== "manual") {
               const text = !model && modelName.trim() ? modelName.trim() : searchQuery
@@ -294,6 +297,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       ))}
     </ButtonGroup>
     </div>
+    {!following && manualFromCatalog && <p className="publication-form-note">已保留切换前的单价，保存后按手动价格计费，不再跟随官方价更新。</p>}
 
     {following && <div className="model-price-follow">
       <div className="model-price-catalog-fields">
@@ -322,7 +326,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
         connectionDiscount={connectionDiscount} />
 
       <PriceArithmetic model={model} draft={draft} setDraft={setDraft} percent={discount.percent}
-        imageGeneration={imageGeneration}
+        imageGeneration={imageGeneration} decision={decision}
         busy={busy || loadingOptions || details?.complete === false}
         option={details?.complete ? selectedOption : null} otherMeters={details?.other_meters ?? []} />
 
@@ -669,7 +673,7 @@ function ContextPriceTable({ pricing, percent }: {
   </div>
 }
 
-function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft, busy, percent, option, otherMeters, imageGeneration }: {
+function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft, busy, percent, option, otherMeters, imageGeneration, decision }: {
   model?: ManagedModel
   draft: Draft
   setDraft: (updater: (current: Draft) => Draft) => void
@@ -678,6 +682,7 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
   option: ModelPriceOption | null
   otherMeters: string[]
   imageGeneration: boolean
+  decision: boolean
 }) {
   // A freshly picked option wins over the last sync, so the list price and the charged rate in
   // each row always come from the same place and the multiplication reads true.
@@ -701,9 +706,10 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
   const rows: Array<[string, number | null, number | null]> = [
     [imageGeneration ? "文字输入" : "输入", list.input, charged.input],
     [imageGeneration ? "图像输出" : "输出", list.output, charged.output],
-    [imageGeneration ? "缓存文字输入" : "缓存读取", list.cached, charged.cached],
   ]
-  if (!imageGeneration) rows.push(["缓存写入", list.cacheWrite, charged.cacheWrite])
+  // Decision bills inputs and outputs only.
+  if (!decision) rows.push([imageGeneration ? "缓存文字输入" : "缓存读取", list.cached, charged.cached])
+  if (!imageGeneration && !decision) rows.push(["缓存写入", list.cacheWrite, charged.cacheWrite])
   return <div className="model-price-arithmetic">
     <div className="registry-field-label-row">
       <span className="registry-field-label">实际单价</span>
@@ -736,7 +742,7 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
         && ` · ${SYNC_STATUS_LABEL[model.price_sync_status] ?? model.price_sync_status}`}
       {model.price_sync_message && ` · ${model.price_sync_message}`}
     </p>}
-    {!imageGeneration && !option?.contextPricing && list.cacheWrite === null && (option !== null || model?.price_synced_at) && <p className="publication-form-note">
+    {!imageGeneration && !decision && !option?.contextPricing && list.cacheWrite === null && (option !== null || model?.price_synced_at) && <p className="publication-form-note">
       该来源未单独发布缓存写入价，按缓存读取单价计费。
     </p>}
     {otherMeters.length > 0 && <details className="model-editor-advanced">

@@ -3562,6 +3562,135 @@ def test_foundry_deployment_validation_reads_metadata_without_inference(
         tokens.token.assert_not_called()
 
 
+@pytest.mark.parametrize("source", ["inherited", "named_value", "missing"])
+def test_model_addition_validation_reads_the_credential_its_connection_already_has(
+    source: str,
+) -> None:
+    from pydantic import SecretStr
+
+    from turnstile_core.domain.control_plane import AuthStrategy, PublicationKind
+    from turnstile_core.integrations.apim_control_plane_contract import (
+        CredentialSourceMissingError,
+    )
+    from turnstile_core.services.storage_route_publisher import FixedRoutePublisherFactory
+
+    repository = Mock()
+    repository.gateway_publication_credential.return_value = None
+    factory = FixedRoutePublisherFactory(
+        repository, Mock(), active_fence=Mock(), availability_projector=Mock(),
+    )
+    tokens = Mock()
+    tokens.token.return_value = "unit-only-vault-token"
+    factory._tokens = tokens
+    factory._cipher = Mock()
+    secret_id = "https://unit-vault.vault.azure.net/secrets/unit-key/" + "a" * 32
+    installation = Mock(
+        credential_vault_origin="https://unit-vault.vault.azure.net",
+        trusted_vault_origins=("https://unit-vault.vault.azure.net",),
+    )
+
+    def keyed_binding() -> Mock:
+        return Mock(
+            runtime_config={
+                "project_endpoint": "https://unit.services.ai.azure.com/api/projects/unit",
+            },
+            backend_url="https://unit.openai.azure.com",
+            model=Mock(upstream_model_id="unit-deployment"),
+            auth_strategy=AuthStrategy.NAMED_VALUE_API_KEY,
+            named_value_name="unit-key", key_vault_secret_id=None, backend_pool=None,
+        )
+
+    # A connection whose credential is already provisioned: no key is submitted and the
+    # model addition has no route credential of its own until credentials are prepared.
+    publication = Mock(
+        desired_spec=Mock(bindings=[keyed_binding()]),
+        publication_kind=PublicationKind.MODEL_ADD, resource_manifest={},
+    )
+    previous = Mock(
+        desired_spec=Mock(bindings=[] if source == "missing" else [keyed_binding()]),
+        resource_manifest={
+            "route_credentials": {"version": 1, "bindings": {"b" * 64: secret_id}},
+        } if source == "inherited" else {},
+    )
+    management = Mock()
+    management.route_credential_value.return_value = SecretStr("unit-only-key")
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "unit-vault.vault.azure.net":
+            return httpx.Response(200, json={
+                "id": secret_id, "value": "unit-only-key", "attributes": {"enabled": True},
+            })
+        assert request.url.path == "/api/projects/unit/deployments"
+        assert request.headers["api-key"] == "unit-only-key"
+        return httpx.Response(200, json={"value": [{"name": "unit-deployment"}]})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "turnstile_core.services.route_publication.route_credential_source",
+            lambda _binding: "b" * 64,
+        )
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            if source == "missing":
+                with pytest.raises(CredentialSourceMissingError):
+                    factory._validate_deployment(
+                        publication, management, client, installation, previous=previous,
+                    )
+            else:
+                assert factory._validate_deployment(
+                    publication, management, client, installation, previous=previous,
+                ) == {"name": "unit-deployment"}
+
+    assert [request.url.host for request in requests] == {
+        "inherited": ["unit-vault.vault.azure.net", "unit.services.ai.azure.com"],
+        "named_value": ["unit.services.ai.azure.com"],
+        "missing": [],
+    }[source]
+    if source == "named_value":
+        management.route_credential_value.assert_called_once_with("unit-key")
+    else:
+        management.route_credential_value.assert_not_called()
+
+
+@pytest.mark.parametrize(("body", "upstream"), [
+    ({"error": {"code": "PermissionDenied", "message": "private upstream detail"}},
+     "PermissionDenied"),
+    ({"error": {"code": "private code with spaces"}}, None),
+    ({"error": "private-upstream-error"}, None),
+    ([{"error": {"code": "PermissionDenied"}}], None),
+])
+@pytest.mark.parametrize("managed_identity", [False, True])
+def test_deployment_directory_failure_keeps_only_a_safe_upstream_code(
+    body: object, upstream: str | None, managed_identity: bool,
+) -> None:
+    from turnstile_core.integrations.apim_control_plane_contract import PolicyCompilationError
+    from turnstile_core.integrations.gateway_connection_probe import foundry_deployment_catalog
+
+    headers = (
+        {"Authorization": "Bearer unit-only"} if managed_identity else {"api-key": "unit-only"}
+    )
+    with (
+        httpx.Client(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(400, json=body),
+        )) as client,
+        pytest.raises(PolicyCompilationError) as failed,
+    ):
+        foundry_deployment_catalog(
+            client, "https://unit.services.ai.azure.com/api/projects/unit",
+            "https://unit.openai.azure.com", "unit-deployment", lambda: headers,
+        )
+
+    message = str(failed.value)
+    assert "private" not in message
+    assert json.loads(message.removeprefix("Deployment validation failed: ")) == {
+        "code": "deployment_metadata_unavailable", "deployment": "unit-deployment",
+        "http_status": 400,
+        **({"upstream_code": upstream} if upstream else {}),
+        **({"auth": "managed_identity"} if managed_identity else {}),
+    }
+
+
 @pytest.mark.parametrize("complete", [False, True])
 @pytest.mark.parametrize("pool", [False, True])
 def test_fixed_route_probe_recovery_only_reads_original_protocol_evidence(

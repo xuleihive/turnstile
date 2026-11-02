@@ -261,6 +261,100 @@ def test_publication_failure_is_structured_and_never_echoes_raw_errors(
         assert result.missing_actions == ["Microsoft.ApiManagement/service/apis/write"]
 
 
+@pytest.mark.parametrize("error_code", ["PolicyCompilationError", "opaque upstream secret"])
+def test_generic_publication_failure_names_the_publication(
+    error_code: str,
+) -> None:
+    # "Publication failed" alone left no reference to look up in the logs.
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "unit-owner",
+    )
+    failed = publication.model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": error_code,
+        "error_message": "Fixed route dependency preflight is unsupported",
+    })
+
+    result = publication_failure(failed)
+
+    assert result is not None and result.code == "publication_failed"
+    assert str(publication.id) in result.message
+    assert error_code not in result.message
+    assert "preflight" not in result.message
+
+
+@pytest.mark.parametrize(("error_code", "message", "expected"), [
+    ("PolicyCompilationError", "Route credential has no approved original source",
+     "credential_source_missing"),
+    ("PolicyCompilationError", "Deployment metadata credential is unavailable",
+     "credential_unreadable"),
+    ("PolicyCompilationError", "Route publication credential is unavailable",
+     "credential_unreadable"),
+    ("PolicyCompilationError", "Deployment credential vault is unavailable",
+     "credential_vault_unavailable"),
+    ("PolicyCompilationError", "Route credential materialization is unavailable",
+     "credential_vault_unavailable"),
+    ("PolicyCompilationError", "Route credential Vault is not approved for this program",
+     "credential_vault_unavailable"),
+    ("ValueError", "Route publication credential is unavailable", "publication_failed"),
+    ("PolicyCompilationError", "opaque upstream secret", "publication_failed"),
+])
+def test_known_credential_failures_have_safe_reasons(
+    error_code: str, message: str, expected: str,
+) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "unit-owner",
+    )
+    failed = publication.model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": error_code, "error_message": message,
+    })
+    result = publication_failure(failed)
+    assert result is not None and result.code == expected
+    assert message not in result.model_dump_json()
+    if expected == "publication_failed":
+        assert str(publication.id) in result.message
+    view = GatewayPublicationView.from_publication(failed)
+    assert view.failure is not None and view.failure.code == expected
+
+
+@pytest.mark.parametrize(("details", "expected"), [
+    ({"http_status": 400, "upstream_code": "PermissionDenied", "auth": "managed_identity"},
+     "returned HTTP 400 (PermissionDenied). "
+     "Check that the Publisher managed identity can read this Foundry project."),
+    ({"http_status": 401, "upstream_code": "PermissionDenied"},
+     "returned HTTP 401 (PermissionDenied)."),
+    ({"http_status": 500, "auth": "managed_identity"}, "returned HTTP 500."),
+    ({"http_status": 403, "upstream_code": "private code with spaces"}, None),
+    ({"http_status": 403, "auth": "private"}, None),
+])
+def test_deployment_directory_failure_keeps_the_upstream_code_and_identity_hint(
+    details: dict[str, object], expected: str | None,
+) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "unit-owner",
+    )
+    failed = publication.model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": "PolicyCompilationError",
+        "error_message": "Deployment validation failed: " + json.dumps({
+            "code": "deployment_metadata_unavailable", "deployment": "unit-deployment",
+            **details,
+        }),
+    })
+    result = publication_failure(failed)
+    assert result is not None and "private" not in result.model_dump_json()
+    if expected is None:
+        assert result.code == "publication_failed"
+        return
+    assert result.code == "deployment_metadata_unavailable"
+    assert result.http_status == details["http_status"]
+    assert result.message == (
+        "Deployment 'unit-deployment' could not be verified; the deployment directory "
+        + expected
+    )
+
+
 def test_legacy_publication_hash_omits_only_empty_deployment_fields() -> None:
     repository = InMemoryRepository()
     repository.models = []
@@ -3291,6 +3385,23 @@ def test_publication_uses_catalog_prices_not_submitted_amounts(
     assert saved["price_synced_at"] == publication.created_at
 
 
+def test_manually_priced_models_report_no_effective_discount() -> None:
+    # A connection discount is never applied to a hand-entered price, so reporting one
+    # for that model contradicts what is actually charged.
+    repository = InMemoryRepository()
+    manual, retail = repository.models[:2]
+    runtime = next(row for row in repository.runtimes if row["id"] == manual["runtime_id"])
+    runtime["price_discount_percent"] = 30
+    retail["runtime_id"] = manual["runtime_id"]
+    manual.update(price_source="manual", price_discount_percent=None)
+    retail.update(price_source="azure_retail", price_discount_percent=None)
+
+    saved = {row["id"]: row for row in repository.registry()["models"]}
+
+    assert saved[manual["id"]]["effective_discount_percent"] is None
+    assert saved[retail["id"]]["effective_discount_percent"] == 30
+
+
 @pytest.mark.parametrize("failure", ["missing", "partial", "no-output", "unavailable"])
 def test_publication_rejects_unusable_catalog_without_queueing(failure: str) -> None:
     repository = InMemoryRepository()
@@ -3848,6 +3959,71 @@ def test_compiler_emits_native_apim_pool_breakers_retry_and_probe_routes() -> No
     assert "BackendConnectionFailure" not in retry_block
     assert "Timeout" not in retry_block
     ElementTree.fromstring(policy)
+    _assert_pool_retries_every_request_and_hides_rate_limit_details(
+        ElementTree.fromstring(policy), "./backend/choose/when",
+    )
+
+
+def _assert_pool_retries_every_request_and_hides_rate_limit_details(
+    root: ElementTree.Element, pooled_branch: str,
+) -> None:
+    pooled = root.find(pooled_branch)
+    backend = root.find("./backend")
+    assert pooled is not None and backend is not None
+    # Requests with and without an execution receipt take the same retrying forward.
+    assert "executionReceiptHeader" not in ElementTree.tostring(backend, encoding="unicode")
+    forwards = pooled.findall(".//forward-request")
+    assert len(forwards) == 1
+    assert pooled.find("./retry/forward-request") is forwards[0]
+    retry = pooled.find("./retry")
+    assert retry is not None
+    assert retry.get("condition") == (
+        "@(context.Response != null && context.Response.StatusCode == 429)"
+    )
+    assert (retry.get("count"), retry.get("first-fast-retry")) == ("1", "true")
+    limited = [
+        when for when in root.findall("./outbound/choose/when")
+        if "context.Response.StatusCode == 429" in when.get("condition", "")
+    ]
+    assert len(limited) == 1
+    assert [header.get("name") for header in limited[0].findall("set-header")] == [
+        "Content-Type",
+    ]
+    body = json.loads(limited[0].findtext("set-body") or "")
+    assert body["error"]["type"] == "rate_limit_error"
+    assert body["error"]["code"] == "rate_limit_exceeded"
+
+
+def test_fixed_pool_retries_budgeted_requests_and_hides_member_rate_limits() -> None:
+    from turnstile_core.integrations.apim_storage_routes import (
+        FixedRouteBinding,
+        fixed_operation,
+    )
+
+    binding = FixedRouteBinding(
+        scope=RouteScope(
+            target_id=str(APIM_ID), api_id="finops-foundry-llm", gateway_id="managed",
+        ),
+        api_revision="fixed-abi2-60e4f760",
+        table_endpoint="https://unitstore.table.core.windows.net",
+        table_name="Routes",
+        ledger_table_endpoint="https://unitstore.table.core.windows.net",
+        ledger_table_name="TurnstileLedger",
+        trust_binding_sha256="a" * 64,
+        pool_enabled=True,
+    )
+    for operation in (
+        "chat-completions", "responses", "responses-compact", "anthropic-messages",
+    ):
+        _assert_pool_retries_every_request_and_hides_rate_limit_details(
+            ElementTree.fromstring(fixed_operation(operation, binding)),
+            "./backend/choose/when",
+        )
+    unpooled = fixed_operation(
+        "chat-completions", binding.model_copy(update={"pool_enabled": False}),
+    )
+    assert "<retry" not in unpooled
+    assert "StatusCode == 429" not in unpooled
 
 def test_backend_pool_accepts_distinct_deployments_in_one_runtime() -> None:
     runtime_id = UUID("30000000-0000-4000-8000-000000000001")
@@ -3983,10 +4159,13 @@ def test_backend_pool_resolves_registered_deployments_in_one_runtime(
             queue.assert_not_called()
         return
     if invalid is not None:
-        with pytest.raises(ControlPlaneConflictError):
+        with pytest.raises(ControlPlaneConflictError) as rejected:
             service._backend_pool_member(
                 binding, write, model, [runtime], [model, replica], APIM_ID,
             )
+        if invalid in {"image", "decision", "embeddings", "family"}:
+            # The 409 must name the member that differs, not just the rule.
+            assert f"{replica['model_key']} on {runtime['name']}" in str(rejected.value)
         source_row = repository.models[0]
         repository.models = [{**source_row, **model}, {**source_row, **replica}]
         monkeypatch.setattr(repository, "effective_gateway_publication", lambda _gateway:

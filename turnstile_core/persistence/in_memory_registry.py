@@ -72,7 +72,9 @@ class InMemoryRegistryRepositoryMixin:
                 {
                     **model,
                     "image_profile": self._published_image_profile(model),
-                    "effective_discount_percent": self._effective_discount(model),
+                    "effective_discount_percent": None
+                    if str(model.get("price_source") or "manual") == "manual"
+                    else self._effective_discount(model),
                 }
                 for model in self.models
             ],

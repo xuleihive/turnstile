@@ -19,6 +19,16 @@
 - Confirm the probe subscription and `APIM_REGRESSION_MODEL_KEY` refer to an onboarded model.
 - Inspect release state before retrying; do not create parallel publications for one gateway.
 
+## A publication failed and shows only its ID
+
+- For failures without a specific explanation the console shows the publication ID. The error
+  type and text are not shown because the text can contain upstream responses.
+- In the Control-plane Function's Application Insights, run
+  `traces | where message has "<publication-id>" | order by timestamp desc`. The worker logs the
+  failing stage and error type; retry lines also include the error text.
+- The full text is stored in PostgreSQL:
+  `SELECT status, error_code, error_message FROM gateway_publication WHERE id = '<publication-id>';`.
+
 ## Model switch is disabled or unverified
 
 The v1.2 switch controls a versioned Gateway operation. A model can remain enabled in the registry
@@ -66,6 +76,9 @@ Short/long-context labels do not establish a billing threshold. Use supplied met
 administrator-defined rule; an estimated rule must not be described as a verified provider threshold.
 If synchronization reports review required, inspect all changed rates, buckets and boundaries before
 explicitly accepting them. Preserve manual pricing and previously accepted schedules during failures.
+Some Azure retail entries have short- and long-context prices but no threshold, for example
+`gpt-5.6-luna` ("5.6 luna Std"). Publishing stays disabled until you switch the threshold rule to
+the administrator-defined option and enter the threshold.
 Historical request costs use saved price evidence, not today's model price.
 See [context-tier pricing](configuration.md#context-tier-pricing).
 
@@ -104,6 +117,16 @@ identifier: image generation and Decision responses carry the provider's request
 ## App Service deployment succeeds but old assets remain
 
 A successful OneDeploy record does not prove the Run-From-Package mount changed. Read the served `index.html`, compare its asset name, and inspect container startup logs. Avoid repeated restarts without mount or startup evidence.
+
+## Deployment fails behind an HTTP proxy
+
+The Bicep CLI that `az deployment` runs can crash behind a system HTTP proxy with
+`System.AccessViolationException` in `HttpConnectionPool.EstablishProxyTunnelAsync`; the deployment
+command then reports the failed `az` command and its error. It can happen before any Azure
+deployment is created, and a rerun may succeed. Run the deployment from a host with direct access to
+Azure, or bypass the proxy by domain suffix. A setting verified on an affected host was
+`NO_PROXY=.com,.net,.ms,.io,.org`; it bypasses the proxy for all of those domains, so use it only
+where they are reachable directly. `NO_PROXY='*'` is not honored by the .NET HTTP client.
 
 ## Frontend cannot call the API locally
 

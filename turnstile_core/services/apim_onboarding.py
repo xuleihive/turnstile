@@ -218,6 +218,10 @@ class ApimOnboardingService:
     def preview(self, request: ApimOnboardingRequest) -> ApimOnboardingPlan:
         digest = self._configuration_digest()
         assert self._configuration is not None
+        if request.tenant_id != self._configuration.management_tenant_id:
+            raise ControlPlaneConflictError(
+                "The tenant ID does not match the tenant of the Turnstile management identity"
+            )
         blockers = () if self._budget_ready() else ("budget_execution_not_ready",)
         with self._client_factory(request) as client:
             plan = client.inspect(

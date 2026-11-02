@@ -24,6 +24,12 @@ export const currency = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 4,
 })
+// Single requests cost fractions of a cent; match the invocation page's six decimals.
+export const requestCost = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 6,
+})
 export const decimal = {
   format: (value: number) => new Intl.NumberFormat(getIntlLocale(), {
     maximumFractionDigits: 1,

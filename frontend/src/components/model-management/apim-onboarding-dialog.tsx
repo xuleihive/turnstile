@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query"
 import { ArrowLeft, CheckCircle2, ChevronRight, Circle, CircleAlert, Link2, Play, RefreshCw, X } from "lucide-react"
 
 import { dataSource } from "../../data-sources/apim/api"
+import { ApiError } from "../../api/client"
 import type { ApimOnboardingPlan, ApimOnboardingRequest, GatewayReleaseOperation } from "../../data-sources/apim/types"
 import { apimOnboardingFormPayload, apimOnboardingFormValid } from "../../lib/gateway-forms"
 import { apimOnboardingDetails, apimOnboardingOperationName } from "../../lib/gateway-topology"
@@ -33,6 +34,8 @@ const blockers: Record<string, string> = {
 export function pendingApimOnboarding(operation: GatewayReleaseOperation) {
   return !["succeeded", "failed", "restored"].includes(operation.status)
 }
+
+const TENANT_MISMATCH = "The tenant ID does not match the tenant of the Turnstile management identity"
 
 export function ApimOnboardingDialog({ available, onClose, onAdopt, onAccepted, onSettled }: {
   available: boolean
@@ -112,7 +115,7 @@ export function ApimOnboardingDialog({ available, onClose, onAdopt, onAccepted, 
             {plan.blockers.length > 0 && <ul className="registry-error apim-onboarding-blockers" role="alert">{plan.blockers.map(blocker => <li key={blocker}>{blockers[blocker] ?? blocker}</li>)}</ul>}
           </section>}
           {!available && <div className="infrastructure-warning" role="status"><CircleAlert size={15} /><span>平台初始化依赖尚未就绪</span></div>}
-          {error && <div className="registry-error" role="alert">{error.message}</div>}
+          {error && <div className="registry-error" role="alert">{error instanceof ApiError && error.status === 409 && error.detail === TENANT_MISMATCH ? "租户 ID 与 Turnstile 管理身份所在的租户不一致，不能添加其他租户中的 APIM。" : error.message}</div>}
         </div>
         <DialogFooter className="registry-editor-footer apim-onboarding-footer">
           {plan ? <Button type="button" variant="ghost" disabled={busy} onClick={() => { setPlan(null); preview.reset(); start.reset() }}><ArrowLeft size={14} />返回修改</Button>

@@ -79,6 +79,7 @@ function ConnectionNode({ data }: NodeProps<InventoryGraphNode>) {
       title={`${connection.name} · ${providerBrandLabel(brand)}`} aria-label={`查看连接 ${connection.name}`} aria-pressed={context.selection?.kind === "connection" && context.selection.id === connection.id}>
       <ProviderBrandLogo brand={brand} size={30} />
     </button>
+    <small className="model-graph-connection-name" style={{ left: data.radius - 60, top: data.radius + 34 }} title={connection.name} data-no-localize>{connection.name}</small>
     <GraphHandles />
   </div>
 }

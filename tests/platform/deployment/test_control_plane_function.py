@@ -837,3 +837,14 @@ def test_publication_timer_projects_prices_once_a_model_is_active(
         f"Model price projection pending after publication {UUID(int=8)} "
         "error_type=RuntimeError"
     ] if fails else [])
+
+
+def test_worker_id_does_not_claim_a_local_process_on_flex_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Flex Consumption has no WEBSITE_INSTANCE_ID; the fallback lands in publication audit,
+    # where "control-plane-local" read as a developer machine.
+    monkeypatch.delenv("WEBSITE_INSTANCE_ID", raising=False)
+    assert function_app._worker_id() == "control-plane"
+    monkeypatch.setenv("WEBSITE_INSTANCE_ID", "a" * 200)
+    assert function_app._worker_id() == "a" * 128

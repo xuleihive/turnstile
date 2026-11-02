@@ -1109,7 +1109,24 @@
                   <set-header name="x-application-budget-remaining-tokens" exists-action="override">
                     <value>@(((long)context.Variables[&quot;applicationLedgerRemaining&quot;]).ToString())</value>
                   </set-header>
-                  <set-body>@(new JObject(new JProperty(&quot;error&quot;, (string)context.Variables[&quot;applicationDenialReason&quot;])).ToString(Newtonsoft.Json.Formatting.None))</set-body>
+                  <set-header name="x-request-id" exists-action="override">
+                    <value>@((string)context.Variables[&quot;callerRequestId&quot;])</value>
+                  </set-header>
+                  <set-body>@{
+                    var reason = (string)context.Variables[&quot;applicationDenialReason&quot;];
+                    var model = reason == &quot;application_model_not_assigned&quot;;
+                    return new JObject(
+                      new JProperty(&quot;type&quot;, &quot;error&quot;),
+                      new JProperty(&quot;error&quot;, new JObject(
+                        new JProperty(&quot;type&quot;, model ? &quot;permission_error&quot; : &quot;insufficient_quota&quot;),
+                        new JProperty(&quot;code&quot;, reason),
+                        new JProperty(&quot;param&quot;, model ? (JToken)new JValue(&quot;model&quot;) : JValue.CreateNull()),
+                        new JProperty(&quot;message&quot;, model
+                          ? &quot;The requested model is not assigned to this application&quot;
+                          : &quot;The application's token budget cannot admit this request&quot;)
+                      ))
+                    ).ToString(Newtonsoft.Json.Formatting.None);
+                  }</set-body>
                 </return-response>
               </when>
             </choose>

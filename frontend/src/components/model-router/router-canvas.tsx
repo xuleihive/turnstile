@@ -51,6 +51,7 @@ import {
   X,
 } from "lucide-react"
 import { useIsMobile } from "../../hooks/use-mobile"
+import { useLocale } from "../../locales/index"
 import { ModelBrandLogo } from "../brand-logos"
 import { Button } from "../ui/button"
 import { Checkbox } from "../ui/checkbox"
@@ -86,6 +87,7 @@ import {
   ROUTER_NODE_LABELS,
   autoLayoutDefinition,
   cloneDefinition,
+  copyName,
   createRouterEdge,
   createRouterNode,
   enabledCandidateModelIds,
@@ -696,6 +698,7 @@ function RouterProperties({
   onChange: (definition: ModelRouterDefinition) => void
   onMetadataChange: (name: string, description: string) => void
 }) {
+  const { locale } = useLocale()
   const selected = definition.nodes.find((node) => node.id === selectedNodeId) ?? null
   const updateNode = (node: ModelRouterNode) => {
     const next = cloneDefinition(definition)
@@ -710,7 +713,7 @@ function RouterProperties({
     if (!selected) return
     const copy = structuredClone(selected)
     copy.id = `node-${crypto.randomUUID()}`
-    copy.label = `${selected.label} 副本`
+    copy.label = copyName(selected.label, locale)
     copy.position = { x: selected.position.x + 40, y: selected.position.y + 40 }
     onChange({ ...cloneDefinition(definition), nodes: [...definition.nodes, copy] })
     onSelectedNodeChange(copy.id)

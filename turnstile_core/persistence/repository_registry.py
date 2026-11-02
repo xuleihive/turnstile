@@ -97,10 +97,14 @@ class PostgreSqlRegistryRepositoryMixin:
                                     price.pending_context_price_tiers,
                                     -- Resolved here rather than in the caller so every reader
                                     -- sees the same answer to "which discount actually applied".
-                                    COALESCE(
-                                        price.price_discount_percent,
-                                        runtime_price.price_discount_percent
-                                    ) AS effective_discount_percent
+                                    -- A hand-entered price is charged as entered.
+                                    CASE WHEN COALESCE(price.price_source, 'manual') = 'manual'
+                                        THEN NULL
+                                        ELSE COALESCE(
+                                            price.price_discount_percent,
+                                            runtime_price.price_discount_percent
+                                        )
+                                    END AS effective_discount_percent
                      FROM managed_model model
                      JOIN model_provider provider ON provider.id = model.provider_id
                      JOIN model_runtime runtime ON runtime.id = model.runtime_id

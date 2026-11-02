@@ -117,6 +117,13 @@ class InMemoryRepository(
                 raise ValueError("Platform invocation completion is missing or immutable")
             self.invocation_completions[completion.request_id] = completion.model_copy(deep=True)
 
+    def platform_request_person_recorded(self, request_id: str, user_id: str) -> bool:
+        attempt = self.invocation_attempts.get(request_id)
+        return (attempt is not None and attempt.metadata.user_id == user_id) or any(
+            str(row.id) == request_id and row.scope_type == "person" and row.scope_id == user_id
+            for row in self.billable_requests.values()
+        )
+
     def budget_scope_confirmed_tokens(
         self, scope_type: str, scope_id: str, period_start: date, period_end: date,
     ) -> int:
@@ -939,11 +946,15 @@ class InMemoryRepository(
         return None if previous == 0 else round((current - previous) / previous * 100, 2)
 
     def executive_overview(
-        self, from_: datetime, to: datetime, filters: UsageFilters
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+        previous_window: tuple[datetime, datetime] | None = None,
     ) -> dict[str, Any]:
-        previous_from = from_ - (to - from_)
+        previous_from, previous_to = previous_window or (from_ - (to - from_), from_)
         current_records = self._usage_between(from_, to, filters)
-        previous_records = self._usage_between(previous_from, from_, filters)
+        previous_records = self._usage_between(previous_from, previous_to, filters)
         current = self._executive_totals(current_records)
         previous = self._executive_totals(previous_records)
         scope = cache_scope_for_filters(filters)
@@ -951,7 +962,7 @@ class InMemoryRepository(
             dimension_type, dimension_values = scope
             for totals, records, start, end in (
                 (current, current_records, from_, to),
-                (previous, previous_records, previous_from, from_),
+                (previous, previous_records, previous_from, previous_to),
             ):
                 self._apply_metric_cache(
                     totals,

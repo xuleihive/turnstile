@@ -74,6 +74,7 @@ from ..domain.storage_routes import (
 from ..integrations.apim_control_plane_contract import (
     BackendCircuitBreakerResource,
     BackendResource,
+    CredentialSourceMissingError,
     GatewayCapabilityUnavailableError,
     OAuthCredentialResource,
     PolicyCompilationError,
@@ -3348,6 +3349,7 @@ class FixedRoutePublisherFactory:
         client: httpx.Client,
         installation: FixedProgramInstallation,
         *, binding: GatewayModelBinding | None = None,
+        previous: GatewayPublication | None = None,
     ) -> dict[str, Any] | None:
         from ..integrations.gateway_connection_probe import foundry_deployment_metadata
         from .route_publication import route_credential_source
@@ -3397,10 +3399,24 @@ class FixedRoutePublisherFactory:
                         )
                 else:
                     secret_id = materialized_secret_id
+                    if secret_id is None and previous is not None:
+                        source = route_credential_source(binding)
+                        secret_id = self._inherited_credential_bindings(
+                            publication, previous,
+                        ).get(source)
+                        if secret_id is None and any(
+                            prior.auth_strategy in {
+                                AuthStrategy.NAMED_VALUE_API_KEY,
+                                AuthStrategy.NAMED_VALUE_BEARER,
+                            } and route_credential_source(prior) == source
+                            for prior in self._previous_credential_sources(publication, previous)
+                        ):
+                            assert binding.named_value_name is not None
+                            return {"api-key": management.route_credential_value(
+                                binding.named_value_name,
+                            ).get_secret_value()}
                     if secret_id is None:
-                        raise PolicyCompilationError(
-                            "Deployment metadata requires a materialized credential"
-                        )
+                        raise CredentialSourceMissingError(str(binding.named_value_name))
                     self._require_credential_vault(secret_id, installation)
                     if self._cipher is None or installation.credential_vault_origin is None:
                         raise PolicyCompilationError("Deployment credential vault is unavailable")
@@ -3765,7 +3781,10 @@ class FixedRoutePublisherFactory:
                 publication, installed, previous, projection=port.projection,
             )
             if credentials is None:
-                self._validate_deployment(publication, management, port._client, installed)
+                self._validate_deployment(
+                    publication, management, port._client, installed,
+                    previous=connection_source,
+                )
                 publication, credentials = self._prepare_credentials(
                     publication, connection_source, installed, management, worker_id, heartbeat,
                     registry=registry,

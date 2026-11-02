@@ -697,6 +697,13 @@ def _what_if_counts(result: Mapping[str, Any]) -> Counter[str]:
         if isinstance(change, dict)
     )
     print("What-if: " + ", ".join(f"{name}={count}" for name, count in sorted(counts.items())))
+    # Reviewers need the actual creates, role assignments and network changes, not counts.
+    for change_type, resource_id in sorted(
+        (str(change.get("changeType", "Unknown")), str(change.get("resourceId", "")))
+        for change in changes
+        if isinstance(change, dict) and change.get("changeType") not in {"NoChange", "Ignore"}
+    ):
+        print(f"  {change_type} {resource_id}")
     if counts["Delete"]:
         raise DeploymentError("What-if contains Delete changes; deployment stopped")
     return counts
@@ -2715,6 +2722,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_SECRET_NAME = (
+    r"(?:(?:[a-z0-9]+_)*(?:sig|accountkey|sharedaccesskey|password|secret|token|key)"
+    # camelCase such as clientSecret or primaryKey; PascalCase PartitionKey is a diagnostic.
+    r"|(?-i:[a-z][a-z0-9]*(?:Secret|Token|Key|Password)))"
+)
+_SECRET_ASSIGNMENT = re.compile(rf"(?i)\b({_SECRET_NAME})=[^&\s;\"']+")
+_SECRET_JSON_VALUE = re.compile(rf"(?i)(\"{_SECRET_NAME}\"\s*:\s*\")[^\"]*\"")
+# Function URLs carry their key in the query string.
+_FUNCTION_KEY = re.compile(r"(?i)([?&]code=)[^&\s\"']+")
+_SECRET_HEADER = re.compile(r"(?i)\b((?:x-functions-key|ocp-apim-subscription-key)\s*:\s*)\S+")
+_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
+
+
+def _redacted(text: str) -> str:
+    text = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
+    text = _SECRET_JSON_VALUE.sub(r'\1[redacted]"', text)
+    text = _FUNCTION_KEY.sub(r"\1[redacted]", text)
+    text = _SECRET_HEADER.sub(r"\1[redacted]", text)
+    return _BEARER_TOKEN.sub("Bearer [redacted]", text)[-4000:]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         execute(build_parser().parse_args(argv), CommandRunner())
@@ -2722,6 +2750,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         DeploymentError, ApimUpgradeError, httpx.HTTPError, subprocess.CalledProcessError
     ) as error:
         print(f"Deployment failed: {error}", file=sys.stderr)
+        # Captured az output is otherwise lost, and it holds the actual cause.
+        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+            print(_redacted(str(error.stderr)), file=sys.stderr)
         return 1
     return 0
 

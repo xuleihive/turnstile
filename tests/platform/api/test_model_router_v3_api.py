@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -14,6 +15,7 @@ from tests.backend.model_platform.test_model_router_v3_service import (
     install_model_facts,
     v3_write,
 )
+from turnstile_core.config import Settings
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
 client = TestClient(app)
@@ -39,9 +41,29 @@ def v3_repository() -> Iterator[tuple[InMemoryRepository, dict[str, SessionIdent
     app.dependency_overrides[require_authenticated_session] = lambda: current[
         "identity"
     ]
-    yield repository, current
+    with patch(
+        "backend.http.service_dependencies.get_settings",
+        return_value=Settings(model_router_v3_enabled=True),
+    ):
+        yield repository, current
     app.dependency_overrides.pop(get_repository, None)
     app.dependency_overrides.pop(require_authenticated_session, None)
+
+
+def test_v3_specs_are_hidden_while_no_model_facts_or_runtime_exist() -> None:
+    app.dependency_overrides[get_repository] = InMemoryRepository
+    app.dependency_overrides[require_authenticated_session] = lambda: identity(
+        OWNER_ID, "owner@contoso.com",
+    )
+    try:
+        with patch("backend.http.service_dependencies.get_settings", return_value=Settings()):
+            assert client.get("/api/v1/model-router-specs").status_code == 404
+            assert client.post(
+                f"/api/v1/model-router-specs/{OWNER_ID}/publish",
+            ).status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+        app.dependency_overrides.pop(require_authenticated_session, None)
 
 
 def test_v3_api_compiles_and_publishes_without_entering_v2_surface(

@@ -399,10 +399,21 @@ requires diagnosis; local tests are not proof of Azure propagation or live concu
 ## Prerequisites
 
 - Azure CLI with an authenticated subscription context
-- `uv` and Python 3.11 or newer
+- `uv` 0.9.18 or newer (the version CI uses) and Python 3.11 or newer. When `uv` cannot resolve the
+  Linux x86-64 wheels (with `uv` 0.5.5 this happened for every package), packaging falls back to
+  pip. The fallback uses your configured package index and checks installed versions against
+  `uv.lock`, but not hashes.
 - Node.js and npm versions accepted by `frontend/package.json`
 - Permission to create the resource group and included resources
-- Permission to create role assignments; use Owner, or Contributor plus User Access Administrator, at the target scope
+- Permission to create role assignments; use Owner, or Contributor plus User Access Administrator, at the target scope. The template assigns roles at subscription scope (see below), so that scope is the subscription.
+
+The template gives the API and Control-plane managed identities `API Management Service Contributor`
+at subscription scope, in addition to the platform resource group. They need it to manage an
+existing APIM in another resource group and APIM instances added later in the console. It lets
+these identities manage every APIM service in the subscription. To narrow it, deploy into a
+dedicated subscription, or after installation remove the two subscription-scope assignments and
+assign the same role on each APIM service the installation manages before adding it. Any later
+deployment of `infra/main.bicep` recreates the subscription-scope assignments.
 
 Docker is not required. The observer image is built remotely by Azure Container Registry.
 
@@ -436,6 +447,8 @@ uv run python -m scripts.deploy plan \
 ```
 
 The first preview asks for the initial Owner password twice and stores only its scrypt hash. It also creates independent random platform secrets in `.turnstile/deployments/<resource-group>.json` with mode `0600`. Repeated previews and deployments reuse that state.
+
+The preview prints the count per change type and then one line per resource that would change, for example `  Create /subscriptions/.../roleAssignments/...`. Review the creates, role assignments and network resources there. `Unsupported` entries are role assignments for managed identities that the same deployment creates.
 
 Before creating deployment state, the command verifies that the selected region supports Flex Consumption, that `Microsoft.App` is registered, and that the selected PostgreSQL region supports PostgreSQL 16 with the configured SKU and availability zone. If either service is unavailable, choose another location and run the preview again.
 
@@ -663,7 +676,7 @@ gateways onboarded in the web console by an earlier release.
 1. Confirm the infrastructure deployment succeeded.
 2. Confirm `/health` returns HTTP 200.
 3. Confirm the served frontend asset belongs to the deployed package.
-4. Confirm the migration ledger contains each migration listed in [Testing](testing.md) once, with unchanged checksums for previously applied files.
+4. Confirm the migration ledger. The API container runs `python -m backend.migrate` before it starts and does not start if an applied migration's checksum changed, so `/health` returning HTTP 200 for the deployed package (steps 2 and 3) shows every packaged migration is recorded once with an unchanged checksum. Each migration applied by this deployment prints `applied <version>` in the API's log stream (`az webapp log tail --resource-group <resource-group> --name <api-app>`).
 5. Confirm the bootstrapped Owner can sign in with a password.
 6. Verify managed-identity role assignments at their intended resource scopes.
 7. Complete the real workflow in [E2E Validation](e2e-validation.md).

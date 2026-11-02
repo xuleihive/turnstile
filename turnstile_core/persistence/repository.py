@@ -122,6 +122,26 @@ class PostgreSqlOpsDbProxy(
         if row is None:
             raise ValueError("Platform invocation completion is missing or immutable")
 
+    def platform_request_person_recorded(self, request_id: str, user_id: str) -> bool:
+        try:
+            attempt_id: UUID | None = UUID(request_id)
+        except ValueError:
+            attempt_id = None
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT EXISTS (
+                       SELECT 1 FROM platform_invocation_attempt
+                       WHERE request_id = %(request_id)s
+                         AND snapshot->'metadata'->>'user_id' = %(user_id)s
+                   ) OR EXISTS (
+                       SELECT 1 FROM billable_request_attempt
+                       WHERE id = %(attempt_id)s AND scope_type = 'person'
+                         AND scope_id = %(user_id)s
+                   ) AS recorded""",
+                {"request_id": request_id, "user_id": user_id, "attempt_id": attempt_id},
+            ).fetchone()
+        return bool(row and row["recorded"])
+
     def settled_reservation_correlations(
         self, correlation_ids: Sequence[str], *, scope_type: str, scope_id: str | None = None,
     ) -> set[str]:
@@ -1115,12 +1135,16 @@ class PostgreSqlOpsDbProxy(
         return None if previous == 0 else round((current - previous) / previous * 100, 2)
 
     def executive_overview(
-        self, from_: datetime, to: datetime, filters: UsageFilters
+        self,
+        from_: datetime,
+        to: datetime,
+        filters: UsageFilters,
+        previous_window: tuple[datetime, datetime] | None = None,
     ) -> dict[str, Any]:
-        previous_from = from_ - (to - from_)
+        previous_from, previous_to = previous_window or (from_ - (to - from_), from_)
         with self._connection() as connection:
             current = self._executive_totals(connection, from_, to, filters)
-            previous = self._executive_totals(connection, previous_from, from_, filters)
+            previous = self._executive_totals(connection, previous_from, previous_to, filters)
         return {
             "from": from_,
             "to": to,

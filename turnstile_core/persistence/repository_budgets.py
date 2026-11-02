@@ -628,7 +628,8 @@ class PostgreSqlBudgetRepositoryMixin:
                    FOR UPDATE""",
                 (department_id,),
             ).fetchone()
-            previous = None if current is None else str(current["mode"])
+            # A missing row means audit (see the table comment), not "unknown".
+            previous = "audit" if current is None else str(current["mode"])
             if previous == mode:
                 return False
             connection.execute(

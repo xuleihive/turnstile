@@ -48,7 +48,12 @@ from .apim_policy_components import (
     NATIVE_STREAM_REQUEST,
     validate_native_stream_policy,
 )
-from .apim_storage_routes import FixedRouteBinding, FixedRouteProgram, compile_fixed_route_program
+from .apim_storage_routes import (
+    POOL_RATE_LIMITED_BODY,
+    FixedRouteBinding,
+    FixedRouteProgram,
+    compile_fixed_route_program,
+)
 
 
 def _chat_completions_policy(publication: GatewayPublication) -> str:
@@ -601,7 +606,7 @@ class ApimPolicyCompiler:
     </choose>
   </inbound>
 {self._backend_policy(publication.desired_spec.bindings, "dynamicChatModel", ApiFormat.OPENAI_CHAT, native_stream=self._native_stream_contract(publication))}
-  <outbound><base /></outbound>
+  <outbound><base />{self._pool_rate_limit_outbound(publication.desired_spec.bindings, "dynamicChatModel", ApiFormat.OPENAI_CHAT)}</outbound>
   <on-error><base /></on-error>
 </policies>"""
 
@@ -740,7 +745,7 @@ class ApimPolicyCompiler:
   </inbound>
 {self._backend_policy(publication.desired_spec.bindings, "dynamicRequestedModel", ApiFormat.ANTHROPIC_MESSAGES, native_stream=self._native_stream_contract(publication))}
   <outbound>
-    <base />
+    <base />{self._pool_rate_limit_outbound(publication.desired_spec.bindings, "dynamicRequestedModel", ApiFormat.ANTHROPIC_MESSAGES)}
     <choose>
       <when condition="@(({buffered_condition}) &amp;&amp; (bool)context.Variables[&quot;dynamicRequestedStream&quot;] &amp;&amp; context.Response.StatusCode &lt; 400)">
 {self._buffered_sse_body()}
@@ -827,7 +832,7 @@ class ApimPolicyCompiler:
     </choose>
   </inbound>
 {self._backend_policy([binding for binding, _ in bindings], "dynamicResponsesModel", native_stream=not compact and self._native_stream_contract(publication))}
-  <outbound><base /></outbound>
+  <outbound><base />{self._pool_rate_limit_outbound([binding for binding, _ in bindings], "dynamicResponsesModel")}</outbound>
   <on-error><base /></on-error>
 </policies>"""
 
@@ -1055,19 +1060,12 @@ class ApimPolicyCompiler:
     </backend>"""
         branches = "\n".join(
             f"""      <when condition="@({cls._model_condition(binding, model_variable)})">
-                <choose>
-                    <when condition="@(context.Variables.ContainsKey(&quot;executionReceiptHeader&quot;))">
-                        <forward-request timeout="{pool.rate_limit.backend_timeout_seconds}" buffer-request-body="true" buffer-response="false" />
-                    </when>
-                    <otherwise>
         <retry condition="@(context.Response != null &amp;&amp; context.Response.StatusCode == 429)"
           count="{pool.rate_limit.max_attempts_per_request - 1}"
           interval="{pool.rate_limit.retry_interval_seconds}"
           first-fast-retry="{str(pool.rate_limit.first_fast_retry).lower()}">
                     <forward-request timeout="{pool.rate_limit.backend_timeout_seconds}" buffer-request-body="true" buffer-response="false" />
         </retry>
-                    </otherwise>
-                </choose>
       </when>"""
             for binding, pool in pooled
         )
@@ -1079,6 +1077,26 @@ class ApimPolicyCompiler:
       </otherwise>
     </choose>
   </backend>"""
+
+    @classmethod
+    def _pool_rate_limit_outbound(
+        cls, bindings: Any, model_variable: str, api_format: ApiFormat | None = None,
+    ) -> str:
+        conditions = [
+            cls._model_condition(binding, model_variable) for binding in bindings
+            if binding.backend_pool is not None
+            and (api_format is None or binding.api_format is api_format)
+        ]
+        if not conditions:
+            return ""
+        return f"""
+    <choose>
+      <when condition="@(context.Response.StatusCode == 429 &amp;&amp; ({' || '.join(conditions)}))">
+        <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+        <set-body>{escape(POOL_RATE_LIMITED_BODY)}</set-body>
+      </when>
+    </choose>
+  """
 
     def _observer_headers(
         self,

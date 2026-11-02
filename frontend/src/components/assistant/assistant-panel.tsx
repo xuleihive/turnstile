@@ -14,7 +14,7 @@ import {
 } from "lucide-react"
 import { useLocale } from "../../locales/index"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { AssistantConversation } from "./assistant-conversation"
+import { AssistantConversation, ConversationDeleteDialog } from "./assistant-conversation"
 import { formatTimeAgo } from "../../lib/time"
 import { PinDialog } from "./pin-dialog"
 import { useAssistantController } from "./use-assistant-controller"
@@ -137,7 +137,7 @@ export function AssistantPanel({
                   title="删除对话"
                   aria-label="删除对话"
                   disabled={c.removeConversation.isPending}
-                  onClick={() => c.removeConversation.mutate(item.id)}
+                  onClick={() => { setHistoryOpen(false); c.setDeleteTarget(item.id) }}
                 ><Trash2 size={12} /></button>
               </div>)}
             </PopoverContent>
@@ -202,6 +202,7 @@ export function AssistantPanel({
       />
     </section>
 
+    <ConversationDeleteDialog controller={c} />
     {source === "apim" && c.pinTarget && <PinDialog
       chart={c.pinTarget.chart}
       question={c.pinTarget.question}

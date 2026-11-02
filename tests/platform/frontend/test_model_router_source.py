@@ -947,3 +947,21 @@ def test_model_router_canvas_and_regular_mode_share_one_definition() -> None:
         "button.router-new-button",
     ):
         assert selector in styles
+
+
+def test_publish_stays_disabled_while_the_current_draft_fails_validation() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-router-page.tsx").read_text(encoding="utf-8")
+    actions = page.split('<div className="router-editor-actions">', 1)[1].split("</div>", 1)[0]
+    publish = next(line for line in actions.splitlines() if "onClick={onPublish}" in line)
+
+    assert "disabled={busy || validation?.valid === false}" in publish
+    # Any edit clears the result, so Publish re-enables once the draft changes.
+    assert "onChange={(value) => { setDraft(value); setValidation(null) }}" in page
+
+
+def test_published_router_with_saved_changes_reads_unpublished() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-router-page.tsx").read_text(encoding="utf-8")
+    unpublished = 'router.status === "published" && router.has_unpublished_changes'
+
+    assert f"{{{unpublished} && <> · <span>未发布</span></>}}" in page
+    assert f"{{!dirty && {unpublished} && <strong>未发布</strong>}}" in page

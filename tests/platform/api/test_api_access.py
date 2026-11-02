@@ -347,7 +347,7 @@ def test_browser_write_requires_an_allowed_origin() -> None:
     )
 
     assert blocked.status_code == 403
-    assert blocked.json() == {"detail": "不允许从该来源执行写操作。"}
+    assert blocked.json() == {"detail": "Writes from this origin are not allowed."}
     assert allowed.status_code == 200
     assert login.status_code == 403
     assert entra.status_code == 403

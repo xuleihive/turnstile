@@ -110,6 +110,7 @@ import { runtimeDiagnostic, runtimeHealthDescription, runtimeHealthLabels, runti
 import { ModelAvailabilityDialog, ModelAvailabilityStatus, ModelAvailabilitySwitch, useModelAvailabilityCommand } from "../components/model-management/model-availability"
 import { ModelInventoryFilterChips, ModelInventoryFilterMenu } from "../components/model-management/model-inventory-filter-menu"
 import { ModelInventoryGraph } from "../components/model-management/model-inventory-graph"
+import { publishedRoutersUsingModel } from "../components/model-router/router-definition"
 import { ModelUsageDetail, modelDetailHref, openModelDetailLink } from "../components/model-management/model-usage-detail"
 import {
   ModelVendorLogo,
@@ -227,6 +228,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   }, [])
   const [credentialModel, setCredentialModel] = useState<ManagedModel | null>(null)
   const [deletingModel, setDeletingModel] = useState<ManagedModel | null>(null)
+  const deletingRouters = useQuery({ ...finopsQueries.modelRouters(), enabled: deletingModel != null })
   const [archivingPublication, setArchivingPublication] = useState<GatewayPublication | null>(null)
   const [deletingConnection, setDeletingConnection] = useState<ModelRuntime | null>(null)
   const [deletingGateway, setDeletingGateway] = useState<GatewayProfile | null>(null)
@@ -583,7 +585,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
     }} />}
     {connectionOpen && <ConnectionDialog registry={data} topology={targetTopologies.data ?? null} topologyLoading={targetTopologies.isLoading} topologyError={targetTopologies.error ? String(targetTopologies.error) : null} runtime={editingConnection ?? undefined} busy={saveConnection.isPending || updateConnection.isPending || adoptConnection.isPending} error={adoptConnection.error ? errorMessage(adoptConnection.error) : (editingConnection ? updateConnection.error : saveConnection.error) ? errorMessage(editingConnection ? updateConnection.error : saveConnection.error) : null} onClose={() => { if (!saveConnection.isPending && !updateConnection.isPending && !adoptConnection.isPending) { setConnectionOpen(false); setEditingConnection(null); adoptConnection.reset() } }} onCreate={(value) => saveConnection.mutate(value)} onUpdate={(value) => { if (editingConnection) updateConnection.mutate({ runtime: editingConnection, value }) }} onAdopt={(workspaceUrl) => { if (editingConnection) adoptConnection.mutate({ runtime: editingConnection, workspaceUrl }) }} />}
     {credentialModel && <CredentialRotationDialog model={credentialModel} oauth={data.runtimes.find((runtime) => runtime.id === credentialModel.runtime_id)?.config.auth_strategy === "oauth_client_credentials"} busy={rotateCredential.isPending} error={rotateCredential.error ? String(rotateCredential.error) : null} onClose={() => { rotationCredential.current = ""; setCredentialModel(null); rotateCredential.reset() }} onSave={(credential) => { rotationCredential.current = credential; rotateCredential.mutate(credentialModel) }} />}
-    {deletingModel && <ModelDeleteDialog model={deletingModel} busy={deleteModel.isPending} error={deleteModel.error ? String(deleteModel.error) : null} onClose={() => { if (!deleteModel.isPending) setDeletingModel(null) }} onConfirm={() => deleteModel.mutate(deletingModel)} />}
+    {deletingModel && <ModelDeleteDialog model={deletingModel} routerNames={publishedRoutersUsingModel(deletingRouters.data?.items ?? [], deletingModel.id)} busy={deleteModel.isPending} error={deleteModel.error ? String(deleteModel.error) : null} onClose={() => { if (!deleteModel.isPending) setDeletingModel(null) }} onConfirm={() => deleteModel.mutate(deletingModel)} />}
     {archivingPublication && <PublicationArchiveDialog publication={archivingPublication} busy={archivePublication.isPending} error={archivePublication.error ? errorMessage(archivePublication.error) : null} onClose={() => { if (!archivePublication.isPending) { setArchivingPublication(null); archivePublication.reset() } }} onConfirm={() => archivePublication.mutate(archivingPublication)} />}
     {deletingConnection && <ConnectionDeleteDialog runtime={deletingConnection} busy={deleteConnection.isPending} error={deleteConnection.error ? String(deleteConnection.error) : null} onClose={() => { if (!deleteConnection.isPending) setDeletingConnection(null) }} onConfirm={() => deleteConnection.mutate(deletingConnection)} />}
     {deletingGateway && <GatewayDeleteDialog gateway={deletingGateway} busy={deleteGateway.isPending} error={deleteGateway.error ? String(deleteGateway.error) : null} onClose={() => { if (!deleteGateway.isPending) setDeletingGateway(null) }} onConfirm={() => deleteGateway.mutate(deletingGateway)} />}
@@ -926,8 +928,9 @@ function RuntimeHealth({ state, checkedAt }: { state: RuntimeHealthState; checke
   </span>
 }
 
-function ModelDeleteDialog({ model, busy, error, onClose, onConfirm }: {
+function ModelDeleteDialog({ model, routerNames, busy, error, onClose, onConfirm }: {
   model: ManagedModel
+  routerNames: string[]
   busy: boolean
   error: string | null
   onClose: () => void
@@ -938,6 +941,7 @@ function ModelDeleteDialog({ model, busy, error, onClose, onConfirm }: {
       <div className="model-delete-body">
         <AlertDialogTitle>删除模型</AlertDialogTitle>
         <AlertDialogDescription>{`将从 Turnstile 删除“${model.display_name}”。历史用量和上游模型会保留。`}</AlertDialogDescription>
+        {routerNames.length > 0 && <div className="application-governance-unavailable" role="status"><TriangleAlert size={14} aria-hidden="true" /><span>已发布的模型路由器引用了此模型，请先更新这些路由器：</span><b data-no-localize>{routerNames.join(", ")}</b></div>}
         {error && <div className="registry-error">{error}</div>}
       </div>
       <AlertDialogFooter className="model-delete-footer">
@@ -982,7 +986,7 @@ function ConnectionDeleteDialog({ runtime, busy, error, onClose, onConfirm }: {
     <AlertDialogContent className="model-delete-dialog" onClick={(event) => event.stopPropagation()}>
       <div className="model-delete-body">
         <AlertDialogTitle>删除连接</AlertDialogTitle>
-        <AlertDialogDescription>{`将从 Turnstile 删除“${runtime.name}”。历史用量、publication 和旧 APIM 资源会保留。`}</AlertDialogDescription>
+        <AlertDialogDescription>{`将从 Turnstile 删除“${runtime.name}”。历史用量、发布记录和旧 APIM 资源会保留。`}</AlertDialogDescription>
         {error && <div className="registry-error">{error}</div>}
       </div>
       <AlertDialogFooter className="model-delete-footer">
@@ -1202,6 +1206,8 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
     return { model, record }
   })
   const pendingRecords = pendingModelPublications.map(publication => ({ publication, record: publicationFilterRecord(publication) }))
+  // Failed or in-flight model publications are listed as rows, so they count too.
+  const modelTotal = registry.models.length + pendingModelPublications.length
   const filterRecords = [...modelRecords, ...pendingRecords].map(item => item.record)
   const models = modelRecords.filter(item => matchesModelFilters(item.record, modelFilters, search)).map(item => item.model)
   const visiblePublications = pendingRecords.filter(item => matchesModelFilters(item.record, modelFilters, search)).map(item => item.publication)
@@ -1214,11 +1220,11 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
 
   return <div className="smh-workspace model-workspace">
     <header className="smh-page-header">
-      <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{registry.models.length}</span></div>
+      <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{modelTotal}</span></div>
       {activeTab !== "gateways" && onAdd && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
     </header>
     <div className="model-toolbar">
-      <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} data-tab={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : value === "apim" ? "APIM 实例" : "网关"}<span>{value === "connections" ? scopedConnections.length : value === "apim" ? topology?.total ?? "—" : value === "gateways" ? topologyAvailable && !topology ? "—" : gatewayCount : registry.models.length}</span></button>)}</ButtonGroup>
+      <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} data-tab={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : value === "apim" ? "APIM 实例" : "网关"}<span>{value === "connections" ? scopedConnections.length : value === "apim" ? topology?.total ?? "—" : value === "gateways" ? topologyAvailable && !topology ? "—" : gatewayCount : modelTotal}</span></button>)}</ButtonGroup>
       <div className={`model-toolbar-filters ${activeTab === "models" ? "model-inventory-toolbar-filters" : ""}`}>
         {activeTab === "connections" && <Select value={connectionHealthFilter} onValueChange={(value) => setConnectionHealthFilter((value ?? "active") as "active" | RuntimeHealthState)}>
           <SelectTrigger className="connection-health-filter" aria-label="按诊断结果筛选"><SelectValue>{connectionHealthLabels[connectionHealthFilter]} · {connectionHealthCounts[connectionHealthFilter]}</SelectValue></SelectTrigger>
@@ -1252,6 +1258,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
     {notice && <RegistryNoticeBanner notice={notice} onDismiss={onDismissNotice} onAction={onNoticeAction} />}
     {error && <div className="registry-error smh-notice infrastructure-error-notice" role="alert"><TriangleAlert size={14} aria-hidden="true" /><div className="smh-notice-copy">保存失败：{String(error)}</div></div>}
     {activeTab === "models" && modelView === "graph" && (models.length > 0 || visiblePublications.length === 0) && <ModelInventoryGraph registry={registry} models={models} topology={topology} />}
+    {activeTab === "models" && modelView === "graph" && models.length === 0 && visiblePublications.length > 0 && <div className="smh-empty"><Search size={28} /><b>关系图中没有匹配的模型</b><span>只有发布记录符合当前条件，见下方列表。</span></div>}
     {(activeTab !== "models" || modelView === "list" || visiblePublications.length > 0) && <ResizableGridTable className={`model-table ${activeTab}${activeTab === "models" && modelView === "graph" ? " model-graph-publications" : ""}`} role="table" aria-label={`${addLabel}列表`} headerSelector=".model-table-head" minWidths={columnMinWidths} columnGap={12} horizontalPadding={32} resizeAtAllWidths>
       <div className="model-table-head" role="row">
         {columnHeaders.map((label, index) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}>
@@ -1288,7 +1295,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
               <span className="model-status-cell"><span className="machine-health"><CircleDashed size={13} />{provider.enabled ? "已启用" : "已停用"}</span></span>
               <span className="connection-provider-chevron"><ChevronRight size={15} /></span>
             </button>
-            {!collapsed && providerConnections.map((runtime) => <ConnectionRow key={runtime.id} runtime={runtime} models={registry.models.filter((model) => model.runtime_id === runtime.id)} profiles={registry.gateways} topology={topology} busy={busy} checking={checkingRuntimeIds.has(runtime.id)} checkingGatewayDeploymentId={diagnosticRuntimeId === runtime.id ? diagnosticGatewayDeploymentId : null} onEdit={() => onEdit("runtime", runtime)} onToggle={() => onToggleRuntime(runtime)} onCheck={(gatewayDeploymentId) => onCheckRuntime(runtime, gatewayDeploymentId)} onDelete={() => onDeleteConnection(runtime)} />)}
+            {!collapsed && providerConnections.map((runtime) => <ConnectionRow key={runtime.id} runtime={runtime} sharedName={registry.runtimes.some((other) => other.id !== runtime.id && other.name === runtime.name)} models={registry.models.filter((model) => model.runtime_id === runtime.id)} profiles={registry.gateways} topology={topology} busy={busy} checking={checkingRuntimeIds.has(runtime.id)} checkingGatewayDeploymentId={diagnosticRuntimeId === runtime.id ? diagnosticGatewayDeploymentId : null} onEdit={() => onEdit("runtime", runtime)} onToggle={() => onToggleRuntime(runtime)} onCheck={(gatewayDeploymentId) => onCheckRuntime(runtime, gatewayDeploymentId)} onDelete={() => onDeleteConnection(runtime)} />)}
           </section>
         })}
         {activeTab === "gateways" && gateways.map((gateway) => {
@@ -1466,7 +1473,7 @@ function ProviderInventoryLogo({ provider, runtimes, size = 16 }: {
     : <ProviderBrandLogo brand={providerBrand(provider)} size={size} />
 }
 
-function ConnectionRow({ runtime, models, profiles, topology, busy, checking, checkingGatewayDeploymentId, onEdit, onToggle, onCheck, onDelete }: { runtime: ModelRuntime; models: ManagedModel[]; profiles: GatewayProfile[]; topology: ApimTargetTopologyList | null; busy: boolean; checking: boolean; checkingGatewayDeploymentId: string | null; onEdit: () => void; onToggle: () => void; onCheck: (gatewayDeploymentId?: string) => void; onDelete: () => void }) {
+function ConnectionRow({ runtime, sharedName, models, profiles, topology, busy, checking, checkingGatewayDeploymentId, onEdit, onToggle, onCheck, onDelete }: { runtime: ModelRuntime; sharedName: boolean; models: ManagedModel[]; profiles: GatewayProfile[]; topology: ApimTargetTopologyList | null; busy: boolean; checking: boolean; checkingGatewayDeploymentId: string | null; onEdit: () => void; onToggle: () => void; onCheck: (gatewayDeploymentId?: string) => void; onDelete: () => void }) {
   const awaitingFirstModel = runtime.config.control_plane_managed === true && models.length === 0
   const hasEnabledModel = models.some((model) => model.enabled)
   const deleteDisabledReason = models.length
@@ -1483,9 +1490,11 @@ function ConnectionRow({ runtime, models, profiles, topology, busy, checking, ch
   const diagnosticMatches = !hasGatewayChildren || diagnostic?.selection?.gateway_deployment_id === primaryGateway.id
   const primaryChecking = checking && (!hasGatewayChildren || checkingGatewayDeploymentId === primaryGateway.id)
   const primaryState = primaryChecking ? "checking" : diagnosticMatches ? runtimeHealthState(runtime) : "unchecked"
+  // Two targets can reach the same Foundry project, which yields the same connection name.
+  const sharedNameTarget = sharedName ? profiles.find((profile) => profile.id === runtime.gateway_profile_id)?.name : undefined
   return <>
     <article className="model-list-row connection-list-row" role="row" data-runtime-id={runtime.id}>
-      <div className="model-primary-cell connection-primary-cell"><span className="connection-branch" aria-hidden="true" /><div><a className="connection-name-link" href={runtimeRouteHref(runtime.id)} onClick={openRuntimeRoute(runtime.id)} title={runtime.name}><b>{runtime.name}</b></a><span>{models.length} 个模型</span></div>{runtime.is_default && <em>默认</em>}</div>
+      <div className="model-primary-cell connection-primary-cell"><span className="connection-branch" aria-hidden="true" /><div><a className="connection-name-link" href={runtimeRouteHref(runtime.id)} onClick={openRuntimeRoute(runtime.id)} title={runtime.name}><b>{runtime.name}</b></a><span>{models.length} 个模型{sharedNameTarget && <> · <span data-no-localize>{sharedNameTarget}</span></>}</span></div>{runtime.is_default && <em>默认</em>}</div>
       <ConnectionTargetGatewayCell runtime={runtime} models={models} profiles={profiles} topology={topology} busy={busy} checking={checking} checkingGatewayDeploymentId={checkingGatewayDeploymentId} onCheck={onCheck} />
       <div className="model-status-cell" title={primaryChecking ? runtimeHealthLabels.checking : diagnosticMatches ? runtimeHealthDescription(runtime) : "尚无此 Gateway 的诊断结果"} aria-busy={primaryChecking || undefined}>{awaitingFirstModel && !checking ? <span className="connection-pending-status" role="status" aria-label="等待首次模型验证" title="等待首次模型验证"><span className="connection-pending-primary"><CircleDashed size={12} /><b>待验证</b></span><small>添加首个模型</small></span> : <RuntimeHealth state={primaryState} checkedAt={primaryChecking || !diagnosticMatches ? undefined : diagnostic?.checked_at} />}</div>
       <div className="model-row-actions"><button className="connection-health-action" title={primaryChecking ? "正在检查" : hasEnabledModel ? "连接诊断" : "添加启用模型后可检查"} disabled={busy || !runtime.enabled || !hasEnabledModel} onClick={() => onCheck(hasGatewayChildren ? primaryGateway.id : undefined)}><RefreshCw className={primaryChecking ? "spin" : ""} size={14} /></button><button className="model-edit-action" title="编辑" disabled={busy || checking} onClick={onEdit}><Edit3 size={14} /></button><button className="model-delete-action" title={deleteDisabledReason ?? "删除连接"} disabled={busy || checking || Boolean(deleteDisabledReason)} onClick={onDelete}><Trash2 size={14} /></button><Toggle checked={runtime.enabled} disabled={busy || checking} onChange={onToggle} /></div>

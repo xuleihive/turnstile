@@ -256,6 +256,53 @@ def test_databricks_adoption_is_release_bound_and_preserves_legacy_records() -> 
     assert observed["config"] == original[0]["config"]
 
 
+def test_databricks_adoption_rebuilds_a_custom_context_threshold() -> None:
+    from tests.backend.model_platform.test_multi_target_rollout import context_price_catalog
+    from turnstile_core.domain.runtime_models import ContextPriceRule, PriceSource
+    from turnstile_core.pricing.context import context_price_reference, resolve_context_prices
+
+    repository = InMemoryRepository()
+    service = GatewayControlPlaneService(repository, apim_principal_id=str(UUID(int=99)))
+    service.publish(bedrock_publication(), "owner@example.com")
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy)
+    for _ in range(6):
+        worker.run_once("unit-worker")
+    provider = repository.create_registry_item("provider", {
+        "name": "Unit Databricks", "provider_kind": "anthropic",
+        "brand_key": "azure_databricks", "enabled": True, "config": {},
+    })
+    runtime = repository.create_registry_item("runtime", {
+        "name": "Existing Databricks Claude", "provider_id": provider["id"],
+        "gateway_profile_id": APIM_ID, "runtime_kind": "openai_compatible",
+        "brand_key": "azure_databricks", "enabled": True, "is_default": False,
+        "config": {"api_format": "anthropic_messages", "path": "/v1/messages"},
+    })
+    catalog, references = context_price_catalog()
+    rule = ContextPriceRule(short_context_max_tokens=270001)
+    tiers = resolve_context_prices(catalog, PriceSource.AZURE_RETAIL, references, None, rule=rule)
+    repository.create_registry_item("model", {
+        **repository.models[0], "id": UUID(int=199),
+        "model_key": "existing-team-claude", "upstream_model_id": "unit-claude-endpoint",
+        "display_name": "Existing Claude", "provider_id": provider["id"],
+        "runtime_id": runtime["id"], "family_key": "claude",
+        "enabled": True, "is_default": False, "assignment_required": False,
+        "price_source": "azure_retail",
+        "price_reference": context_price_reference(PriceSource.AZURE_RETAIL, references),
+        "context_price_tiers": [tier.model_dump(mode="json") for tier in tiers],
+        "input_cost_per_million": None, "output_cost_per_million": None,
+    })
+    adopted = service.adopt_databricks_connection(
+        runtime["id"], "https://adb-unit.1.azuredatabricks.net", "owner@example.com",
+    )
+    model = next(
+        binding.model for binding in adopted.desired_spec.bindings
+        if binding.runtime_id == runtime["id"]
+    )
+    assert model.context_price_rule == rule
+    assert model.context_price_tiers == tiers
+
+
 def test_publication_is_a_draft_until_apim_promotion() -> None:
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(repository)

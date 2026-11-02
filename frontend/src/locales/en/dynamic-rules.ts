@@ -73,6 +73,8 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/^原价 (.+)$/g, (_match, gross) => `List price ${gross}`],
   [/^([\d,]+) tokens，其中缓存读取 ([\d,]+) tokens$/g, (_match, total, cache) => `${total} tokens, including ${cache} cache-read tokens`],
   [/^将从 Turnstile 删除“(.+)”。历史用量和上游模型会保留。$/g, (_match, name) => `Delete “${name}” from Turnstile. Usage history and the upstream model remain.`],
+  [/^将从 Turnstile 删除“(.+)”。历史用量、发布记录和旧 APIM 资源会保留。$/g, (_match, name) => `Delete “${name}” from Turnstile. Usage history, publication records, and old APIM resources remain.`],
+  [/^将从 Turnstile Registry 删除“(.+)”。关联的 APIM 云资源必须单独清理。$/g, (_match, name) => `Delete “${name}” from the Turnstile Registry. Clean up its associated APIM cloud resources separately.`],
   [/^将从 Turnstile 移除 (.+)。APIM 路由和当前人员分配会在候选 Revision 验证通过后移除。$/g, (_match, name) => `Remove ${name} from Turnstile. Its APIM route and current people assignments will be removed only after the candidate Revision passes validation.`],
   [/^不会删除 (.+) 中的上游模型、连接或历史用量，其他模型继续发布。$/g, (_match, scope) => `The upstream model, connection, and usage history in ${scope} will not be deleted. Other models remain published.`],
   [/^复用已有连接 · (.+)$/g, (_match, name) => `Reuse existing connection · ${name}`],
@@ -174,6 +176,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d+)\s*天窗口/g, (_match, value) => `${value}-day window`],
   [/(\d+)\s*天/g, (_match, value) => `${value} ${plural(value, "day")}`],
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
-  [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `${value}% vs previous period`],
+  [/(>\s)?([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, over = "", value) => `${over}${value}% vs previous period`],
+  [/(>\s)?([+-]?\d+(?:\.\d+)?)%\s*较上月同期/g, (_match, over = "", value) => `${over}${value}% vs same period last month`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `${value}% usage share`],
 ]

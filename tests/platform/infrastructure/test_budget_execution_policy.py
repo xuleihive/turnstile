@@ -235,6 +235,17 @@ def native_router_expressions() -> dict[str, str]:
     rewrite = next(node for node in inbound.iter("set-body")
                    if 'context.Variables["routerOriginalRequestBody"]' in (node.text or ""))
     result["routerCandidateBody"] = rewrite.text or ""
+    rejection = next(
+        (node.text or "" for node in inbound.iter("set-body")
+         if "router_configuration_unavailable" in (node.text or "")), "",
+    )
+    if rejection.startswith("@"):
+        result["routerRejectionBody"] = rejection
+    result["routerStickyState"] = next(
+        node.attrib["value"] for node in inbound.iter("set-variable")
+        if node.get("name") == "routerPlanState"
+        and "routerStickyTableResp" in node.attrib["value"]
+    )
     for node in outbound.iter("set-variable"):
         name = node.attrib["name"]
         if name in {"routerPlanState", "routerOutboundCompleted"}:
@@ -286,6 +297,13 @@ def business_denial_expressions() -> dict[str, str]:
     inference = source.find("./inbound/set-variable[@name='isInferenceOperation']")
     assert inference is not None
     result["isInferenceOperation"] = inference.attrib["value"]
+    denial = next(
+        node for node in source.iter("return-response")
+        if node.find("set-header[@name='x-application-budget-remaining-tokens']") is not None
+    )
+    body = denial.findtext("set-body", "")
+    if body.startswith("@"):
+        result["applicationDenialBody"] = body
     return result
 
 
@@ -473,6 +491,255 @@ def test_native_router_definition_proof_executes_before_paid_routing(
         },
     }])[0]
     assert result is (fault in {None, "system-one"})
+
+
+_CODE_MODEL, _GENERAL_MODEL = str(UUID(int=911)), str(UUID(int=912))
+
+
+def _native_router_choice(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, body: dict[str, Any],
+    *, sticky_cost: float,
+) -> dict[str, Any]:
+    """Plan a request on a Router whose code branch excludes the session's sticky model."""
+    def branch(name: str, model: str, y: int) -> list[dict[str, Any]]:
+        return [
+            {"id": f"pool-{name}", "type": "candidate_models", "label": name,
+             "position": {"x": 420, "y": y}, "candidates": [{"model_id": model}]},
+            {"id": f"strat-{name}", "type": "strategy", "label": name,
+             "position": {"x": 620, "y": y}, "strategy_type": "priority",
+             "model_configs": [{"model_id": model, "priority": 1, "weight": 100}]},
+        ]
+
+    document = {
+        "router_id": str(UUID(int=904)), "router_name": "unit-router", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "status": "published", "owner_email": "offline@example.test",
+        "assigned_user_ids": [], "allowed_subscription_ids": ["unit-subscription"],
+        "definition": {"schema_version": 2, "nodes": [
+            {"id": "start", "type": "start", "label": "Start", "position": {"x": 0, "y": 0}},
+            {"id": "task", "type": "condition", "label": "Task", "position": {"x": 200, "y": 0},
+             "condition": {"field": "task_type", "operator": "equals", "value": "code"}},
+            *branch("code", _CODE_MODEL, 80), *branch("general", _GENERAL_MODEL, 240),
+            {"id": "output", "type": "output", "label": "Output", "position": {"x": 840, "y": 0}},
+        ], "edges": [
+            {"id": "e1", "source": "start", "target": "task"},
+            {"id": "e2", "source": "task", "target": "pool-code", "label": "Match"},
+            {"id": "e3", "source": "task", "target": "pool-general", "label": "Else"},
+            {"id": "e4", "source": "pool-code", "target": "strat-code"},
+            {"id": "e5", "source": "pool-general", "target": "strat-general"},
+            {"id": "e6", "source": "strat-code", "target": "output"},
+            {"id": "e7", "source": "strat-general", "target": "output"},
+        ]},
+        "candidates_by_id": {model_id: {
+            "model_id": model_id, "apim_alias": alias, "display_name": alias,
+            "provider_name": "Unit", "runtime_name": "Unit", "profile": "openai-v1",
+            "capabilities": [], "context_window": 16384,
+            "input_cost_per_million": cost, "output_cost_per_million": cost,
+            "effective_cost_per_million": cost,
+        } for model_id, alias, cost in (
+            (_CODE_MODEL, "code-model", 1.0), (_GENERAL_MODEL, "general-model", sticky_cost),
+        )},
+        "routing_models_by_id": {},
+    }
+    text = json.dumps({**body, "model": "unit-router",
+                       "router_context": {"task_type": "code", "session_id": "s1"}})
+    plan_expression = expression_id(native_router_expressions()["routerPlanState"])
+    case: dict[str, Any] = {
+        "body": text, "subscription": True, "operation": "chat-completions",
+        "expression": plan_expression, "variables": {
+            "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+            "routerOriginalRequestBody": text,
+            "routerCallerRequestId": str(UUID(int=906)),
+            "routerRequestedModel": "unit-router",
+            "routerDecisionRequestId": str(UUID(int=905)),
+        },
+    }
+    plan = json.loads(run_cases(compiled_expressions, tmp_path, [case])[0])
+    session = next(key for key in plan["lookup_keys"] if key["tier"] == "session")
+    binding = {"model_id": _GENERAL_MODEL, "updated_epoch": int(datetime.now(UTC).timestamp())}
+    sticky = {**case, "expression": expression_id(native_router_expressions()["routerStickyState"]),
+              "steps": [{"variable": "routerPlanState", "expression": plan_expression}],
+              "variables": {**case["variables"], "routerStickyTableResp": {
+                  "__response": True, "status": 200, "headers": {}, "body": json.dumps({
+                      "value": [{"RowKey": session["row_key"], "Document": json.dumps(binding)}],
+                  })}}}
+    return dict(json.loads(run_cases(compiled_expressions, tmp_path, [sticky])[0]))
+
+
+# The code branch is pricier than the sticky model. [False] one user message, which the
+# old rule never treated as a new turn; [True] a multi-turn conversation.
+@pytest.mark.parametrize("multi_turn", [False, True])
+def test_native_router_branch_takes_precedence_over_sticky_model_on_user_turns(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, multi_turn: bool,
+) -> None:
+    earlier = [{"role": "user", "content": "Summarize the news"},
+               {"role": "assistant", "content": "Here is the summary."}] if multi_turn else []
+    result = _native_router_choice(
+        compiled_expressions, tmp_path,
+        {"messages": [*earlier, {"role": "user", "content": "Refactor queue.ts"}]},
+        sticky_cost=0.5,
+    )
+    assert result["selected_candidate"]["model_id"] == _CODE_MODEL
+    assert result["decision_basis"] == "highest_priority_success"
+
+
+@pytest.mark.parametrize("multi_turn", [False, True])
+def test_native_router_user_turns_keep_the_sticky_model_when_the_branch_is_cheaper(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, multi_turn: bool,
+) -> None:
+    earlier = [{"role": "user", "content": "Summarize the news"},
+               {"role": "assistant", "content": "Here is the summary."}] if multi_turn else []
+    result = _native_router_choice(
+        compiled_expressions, tmp_path,
+        {"messages": [*earlier, {"role": "user", "content": "Refactor queue.ts"}]},
+        sticky_cost=35.0,
+    )
+    assert result["selected_candidate"]["model_id"] == _GENERAL_MODEL
+    assert result["decision_basis"] == "session_sticky"
+
+
+# [False] Anthropic Messages tool_result turn; [True] Responses function_call_output item.
+@pytest.mark.parametrize("responses", [False, True])
+def test_native_router_tool_continuations_keep_the_sticky_model(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, responses: bool,
+) -> None:
+    if responses:
+        field, text_type = "input", "input_text"
+        history: list[dict[str, Any]] = [
+            {"role": "user", "content": [{"type": "input_text", "text": "Refactor queue.ts"}]},
+            {"type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "export class Q {}"},
+        ]
+    else:
+        field, text_type = "messages", "text"
+        history = [
+            {"role": "user", "content": "Refactor queue.ts"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "c1", "name": "read", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "export class Q {}"}]},
+        ]
+    continued = _native_router_choice(
+        compiled_expressions, tmp_path, {field: history}, sticky_cost=0.5,
+    )
+    assert continued["selected_candidate"]["model_id"] == _GENERAL_MODEL
+    assert continued["decision_basis"] == "session_sticky"
+    fresh = _native_router_choice(compiled_expressions, tmp_path, {field: [
+        *history, {"role": "user", "content": [{"type": text_type, "text": "Now add tests"}]},
+    ]}, sticky_cost=0.5)
+    assert fresh["selected_candidate"]["model_id"] == _CODE_MODEL
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_native_router_rejection_names_the_unsupported_fallback_node(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, fallback: bool,
+) -> None:
+    document = {
+        "status": "published", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "definition": {"nodes": [
+            {"id": "start", "label": "Start", "fallback_on": []},
+            {"id": "backup", "label": "Backup \"tier\"",
+             "fallback_on": ["timeout"] if fallback else []},
+        ]},
+    }
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(native_router_expressions()["routerRejectionBody"]),
+        "body": "{}", "subscription": True, "variables": {
+            "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+        },
+    }])[0]
+    error = json.loads(result)["error"]
+    assert error["code"] == "router_configuration_unavailable"
+    assert error.get("message") == (
+        "Router Fallback node 'Backup \"tier\"' is not supported by the gateway; "
+        "remove the Fallback node and publish the Router again" if fallback else None
+    )
+
+
+@pytest.mark.parametrize("reason,kind,param", [
+    ("application_model_not_assigned", "permission_error", "model"),
+    ("application_monthly_token_budget_exhausted", "insufficient_quota", None),
+])
+def test_application_denial_uses_the_standard_error_envelope_and_request_id(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    reason: str, kind: str, param: str | None,
+) -> None:
+    source = parse_policy((ROOT / "infra/policies/foundry-finops-policy.xml").read_text())
+    denial = next(
+        node for node in source.iter("return-response")
+        if node.find("set-header[@name='x-application-budget-remaining-tokens']") is not None
+    )
+    assert denial.findtext("set-header[@name='x-request-id']/value") == (
+        '@((string)context.Variables["callerRequestId"])'
+    )
+    body = json.loads(run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(business_denial_expressions()["applicationDenialBody"]),
+        "body": "{}", "variables": {"applicationDenialReason": reason},
+    }])[0])
+    assert body["type"] == "error"
+    assert body["error"]["type"] == kind and body["error"]["code"] == reason
+    assert body["error"]["param"] == param and body["error"]["message"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "Pick the cheaper model.\n{catalog}", "Answer with model_id only.",
+])
+def test_native_router_custom_decision_prompt_always_asks_for_json(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, prompt: str,
+) -> None:
+    from tests.platform.api.test_model_router_api import model_based_definition
+
+    first, second, decision = (UUID(int=value) for value in (901, 902, 903))
+    definition = model_based_definition(decision, first, second)
+    definition["nodes"] = [node for node in definition["nodes"] if node["type"] != "fallback"]
+    definition["edges"] = [edge for edge in definition["edges"]
+                           if edge["source"] != "fallback" and edge["target"] != "fallback"]
+    next(node for node in definition["nodes"]
+         if node["type"] == "strategy")["decision_prompt"] = prompt
+    document = {
+        "router_id": str(UUID(int=904)), "router_name": "unit-router", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "status": "published", "owner_email": "offline@example.test",
+        "assigned_user_ids": [], "allowed_subscription_ids": ["unit-subscription"],
+        "definition": definition,
+        "candidates_by_id": {str(model_id): {
+            "model_id": str(model_id), "apim_alias": alias, "display_name": alias,
+            "provider_name": "Unit", "runtime_name": "Unit", "profile": "openai-v1",
+            "capabilities": [], "context_window": 16384,
+            "input_cost_per_million": 1.0, "output_cost_per_million": 2.0,
+            "effective_cost_per_million": 2.0,
+        } for model_id, alias in ((first, "candidate-a"), (second, "candidate-b"))},
+        "routing_models_by_id": {str(decision): {
+            "model_id": str(decision), "apim_alias": "decision-alias",
+            "upstream_model": "decision-deployment", "display_name": "Decision",
+            "provider_name": "Unit", "runtime_name": "Unit",
+            "decision_protocol": "chat_json", "auth_mode": "gateway_route",
+            "capabilities": [], "max_tokens_field": "max_completion_tokens",
+            "input_cost_per_million": 1.0, "output_cost_per_million": 2.0,
+        }},
+    }
+    body = json.dumps({"model": "unit-router",
+                       "messages": [{"role": "user", "content": "Select a candidate"}]})
+    expressions = native_router_expressions()
+    request = run_cases(compiled_expressions, tmp_path, [{
+        "body": body, "subscription": True, "operation": "chat-completions",
+        "expression": expression_id(expressions["routerDecisionBody"]),
+        "variables": {
+            "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+            "routerOriginalRequestBody": body,
+            "routerCallerRequestId": str(UUID(int=906)),
+            "routerRequestedModel": "unit-router",
+            "routerDecisionRequestId": str(UUID(int=905)),
+        },
+        "steps": [{"variable": "routerPlanState",
+                   "expression": expression_id(expressions["routerPlanState"])}],
+    }])[0]
+    decision_body = json.loads(request)
+    assert decision_body["response_format"] == {"type": "json_object"}
+    system = decision_body["messages"][0]["content"]
+    assert system.startswith(prompt.split("\n")[0])
+    assert "json" in system.casefold()
 
 
 @pytest.mark.parametrize("stream", [False, True])

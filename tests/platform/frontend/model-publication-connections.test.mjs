@@ -498,7 +498,7 @@ for (const status of ["failed", "queued", "verifying", "promoting", "active"]) {
 }
 
 for (const [dialog, item] of [
-  ["ModelDeleteDialog", { model: { id: "unit-model", display_name: "Unit model" } }],
+  ["ModelDeleteDialog", { model: { id: "unit-model", display_name: "Unit model" }, routerNames: [] }],
   ["PublicationArchiveDialog", { publication: { id: "unit-publication", display_name: "Unit model" } }],
 ]) {
   for (const busy of [false, true]) {
@@ -1258,6 +1258,8 @@ for (const [code, expected] of [
   ["publisher_authorization_failed", "Azure 拒绝了 Publisher 的 APIM 管理请求"],
   ["parent_policy_changed", "APIM 父策略与排队时的快照不一致"],
   ["credential_source_missing", "APIM 凭据资源尚未创建，请重新提供 API Key 后重试"],
+  ["credential_unreadable", "无法读取连接的 API Key，请重新提供 API Key 后重试"],
+  ["credential_vault_unavailable", "凭据 Key Vault 未配置或未获此网关程序批准"],
   ["publication_failed", "发布未完成，请使用任务 ID 查询诊断记录"],
   ["future_unknown_code", "发布未完成，请使用任务 ID 查询诊断记录"],
 ]) {
@@ -1543,6 +1545,7 @@ for (const role of ["owner", "member", null]) {
           apimTargetTopologies: () => ({ queryKey: ["topology"] }),
           gatewayPublications: () => ({ queryKey: ["publications"] }),
           gatewayPublication: id => ({ queryKey: ["publication", id], enabled: Boolean(id) }),
+          modelRouters: () => ({ queryKey: ["routers"] }),
         } } : name === "../components/brand-logos" ? { providerBrandFromIdentity: () => "generic",
           gatewayBrandFromIdentity: () => "generic" }
           : name === "react/jsx-runtime" || name === "lucide-react" ? frontendRequire(name)
@@ -1553,6 +1556,8 @@ for (const role of ["owner", "member", null]) {
     assert.equal(seen.find(options => options.queryKey[0] === "publications").enabled, role === "owner")
     assert.equal(seen.find(options => options.queryKey[0] === "publication").enabled,
       role === "owner" && Boolean(publicationId))
+    // Router references are read only once a model deletion is being confirmed.
+    assert.equal(seen.find(options => options.queryKey[0] === "routers").enabled, false)
   })
   }
 }
@@ -2723,6 +2728,42 @@ test("rolling usage query defaults retain their existing day-based cache and fre
   assert.notEqual(calls[0].searchParams.get("from"), filters.from)
   assert.equal(calls[0].searchParams.get("model_id"), filters.model_id)
   assert.equal(Date.parse(calls[0].searchParams.get("to")) - Date.parse(calls[0].searchParams.get("from")), 7 * 86400000)
+})
+
+test("current budget period window starts at the UTC month and re-anchors on every fetch", async () => {
+  const calls = []
+  const { finopsQueries, usageWindow } = inventoryHarness(async path => { calls.push(new URL(path, "https://unit.example")); return {} })
+  const now = Date.parse("2026-11-02T13:45:00.000Z")
+  const month = { ...usageWindow("month", now), model_id: "unit-model" }
+  assert.equal(month.from, "2026-11-01T00:00:00.000Z")
+  assert.equal(month.to, "2026-11-02T13:45:00.000Z")
+  const later = { ...usageWindow("month", Date.parse("2026-11-20T08:00:00.000Z")), model_id: "unit-model" }
+  const option = finopsQueries.executiveOverview(month)
+  assert.equal(JSON.stringify(option.queryKey), JSON.stringify(finopsQueries.executiveOverview(later).queryKey))
+  assert.notEqual(JSON.stringify(option.queryKey), JSON.stringify(finopsQueries.executiveOverview({ ...usageWindow(2, now), model_id: "unit-model" }).queryKey))
+  await option.queryFn()
+  const from = new Date(calls[0].searchParams.get("from"))
+  assert.equal(from.toISOString(), new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1)).toISOString())
+  assert.ok(Date.parse(calls[0].searchParams.get("to")) > from.getTime())
+  assert.equal(calls[0].searchParams.has("range"), false)
+  assert.equal(calls[0].searchParams.get("model_id"), "unit-model")
+})
+
+test("month-to-date overview compares with the same span of last month, capped at its end", async () => {
+  const calls = []
+  const { dataSource } = inventoryHarness(async path => { calls.push(new URL(path, "https://unit.example")); return {} })
+  const comparison = async filters => {
+    await dataSource.executiveOverview(filters)
+    return [calls.at(-1).searchParams.get("compare_from"), calls.at(-1).searchParams.get("compare_to")]
+  }
+  assert.deepEqual(await comparison({ from: "2026-11-01T00:00:00.000Z", to: "2026-11-02T13:45:00.000Z", range: "month" }),
+    ["2026-10-01T00:00:00.000Z", "2026-10-02T13:45:00.000Z"])
+  assert.deepEqual(await comparison({ from: "2027-03-01T00:00:00.000Z", to: "2027-03-31T10:00:00.000Z", range: "month" }),
+    ["2027-02-01T00:00:00.000Z", "2027-03-01T00:00:00.000Z"])
+  assert.deepEqual(await comparison({ from: "2027-01-01T00:00:00.000Z", to: "2027-01-15T00:00:00.000Z", range: "month" }),
+    ["2026-12-01T00:00:00.000Z", "2026-12-15T00:00:00.000Z"])
+  assert.deepEqual(await comparison({ from: "2026-10-03T13:45:00.000Z", to: "2026-11-02T13:45:00.000Z" }), [null, null])
+  assert.ok(calls.every(address => !address.searchParams.has("range")))
 })
 
 test("unified registry consumes stored topology in one request", async () => {

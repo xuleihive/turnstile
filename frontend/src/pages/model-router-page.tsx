@@ -36,6 +36,7 @@ import { RouterConfigForm } from "../components/model-router/router-config-form"
 import {
   ROUTER_NATIVE_FALLBACK_NOTICE,
   cloneDefinition,
+  copyName,
   createStarterDefinition,
   normalizeRouterDefinition,
   resolveRouterDisplayModels,
@@ -92,7 +93,7 @@ import type {
   ModelRouterValidation,
   ModelRouterWrite,
 } from "../data-sources/apim/types"
-import { getIntlLocale } from "../locales/index"
+import { getIntlLocale, useLocale } from "../locales/index"
 import { useIsMobile } from "../hooks/use-mobile"
 import { useAuth } from "../providers/auth-provider"
 
@@ -237,7 +238,8 @@ function RouterNameDialog({
   onClose: () => void
   onSubmit: (name: string, description: string) => void
 }) {
-  const [name, setName] = useState(mode === "duplicate" ? `${router.name} 副本` : initialValue.name)
+  const { locale } = useLocale()
+  const [name, setName] = useState(mode === "duplicate" ? copyName(router.name, locale) : initialValue.name)
   const [description, setDescription] = useState(initialValue.description)
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
     <DialogContent className="registry-editor-dialog simple-model-dialog" finalFocus={false}>
@@ -635,7 +637,7 @@ function RouterListPane({
       {matches.map((router) => <div className={`router-list-row ${router.id === selectedId ? "active" : ""}`} key={router.id}>
         <button type="button" className="router-list-main" onClick={() => onSelect(router.id)}>
           <span className="router-list-icon"><GitBranch size={15} /><i data-status={router.status} /></span>
-          <span className="router-list-copy"><b>{router.name}</b><small><span>{STATUS_LABELS[router.status]}</span>{router.version > 0 && <> · v{router.version}</>} · <span data-no-localize>{relativeUpdatedAt(router.updated_at)}</span></small></span>
+          <span className="router-list-copy"><b>{router.name}</b><small><span>{STATUS_LABELS[router.status]}</span>{router.version > 0 && <> · v{router.version}</>}{router.status === "published" && router.has_unpublished_changes && <> · <span>未发布</span></>} · <span data-no-localize>{relativeUpdatedAt(router.updated_at)}</span></small></span>
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="router-list-menu" aria-label={`${router.name} 操作`} title="更多操作" disabled={busy} />}><MoreHorizontal size={15} /></DropdownMenuTrigger>
@@ -693,11 +695,11 @@ function RouterEditor({
   const nativeFallback = value.definition.nodes.some((node) => node.fallback_on.length > 0)
   return <section className="router-editor-pane">
     <header className="router-editor-head">
-      <div className="router-editor-identity"><span><GitBranch size={18} /></span><div><div><h2>{value.name || "未命名路由器"}</h2><i data-status={router.status}>{STATUS_LABELS[router.status]}</i>{router.version > 0 && <em>v{router.version}</em>}{dirty && <strong>未保存</strong>}</div></div></div>
+      <div className="router-editor-identity"><span><GitBranch size={18} /></span><div><div><h2>{value.name || "未命名路由器"}</h2><i data-status={router.status}>{STATUS_LABELS[router.status]}</i>{router.version > 0 && <em>v{router.version}</em>}{dirty && <strong>未保存</strong>}{!dirty && router.status === "published" && router.has_unpublished_changes && <strong>未发布</strong>}</div></div></div>
       <div className="router-editor-actions">
         <Button className="router-action-secondary" type="button" variant="outline" disabled={busy || !dirty} onClick={onSave}>{busy ? <RefreshCw className="spin" size={14} /> : <Save size={14} />}<span>保存草稿</span></Button>
         <Button className="router-action-secondary" type="button" variant="outline" disabled={busy} onClick={onValidate}><CheckCircle2 size={14} />校验</Button>
-        <Button className="router-action-primary" type="button" disabled={busy} onClick={onPublish}><Send size={14} />发布</Button>
+        <Button className="router-action-primary" type="button" disabled={busy || validation?.valid === false} onClick={onPublish}><Send size={14} />发布</Button>
       </div>
     </header>
     {ROUTER_CONFIG_MODE_ENABLED && <div className="router-editor-view-row">

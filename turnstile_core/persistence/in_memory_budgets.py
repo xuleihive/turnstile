@@ -404,7 +404,7 @@ class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
         self, department_id: str, mode: str, changed_by: str
     ) -> bool:
         current = self.department_enforcement.get(department_id)
-        previous = None if current is None else str(current["mode"])
+        previous = "audit" if current is None else str(current["mode"])
         if previous == mode:
             return False
         now = datetime.now(UTC)

@@ -819,3 +819,18 @@ def test_native_apim_pool_contract_is_bounded_and_model_scoped() -> None:
     assert "existing compatible managed Runtimes" in str(
         cast(dict[str, object], pool_path["put"])["description"]
     )
+
+
+def test_v3_router_spec_operations_document_that_they_are_off_by_default() -> None:
+    document = _yaml_document((CONTRACT.parent / "openapi/paths/model-router.yaml").resolve())
+    paths = cast(dict[str, dict[str, dict[str, object]]], document["paths"])
+    operations = [
+        operation for path, item in paths.items()
+        if path.startswith("/api/v1/model-router-specs")
+        for method, operation in item.items() if method in METHODS
+    ]
+
+    assert len(operations) == 8
+    for operation in operations:
+        assert "404" in cast(dict[str, object], operation["responses"])
+        assert "MODEL_ROUTER_V3_ENABLED=true" in str(operation.get("description", ""))

@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     # and grants its managed identity narrowly scoped APIM rights. None of these settings
     # is read on the inference path.
     control_plane_enabled: bool = False
+    # v3 Router specs have no model facts writer and no runtime that executes them yet.
+    model_router_v3_enabled: bool = False
     apim_target_registry_enabled: bool = False
     apim_legacy_target_compatibility_enabled: bool = False
     apim_gateway_profile_id: UUID | None = None

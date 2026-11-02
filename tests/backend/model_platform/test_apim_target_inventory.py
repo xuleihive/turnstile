@@ -607,6 +607,37 @@ def test_topology_honors_selected_or_disabled_route(enabled: bool) -> None:
     children = {item.deployment.native_gateway_id: item for item in result.items[0].deployments}
     assert children["managed"].published_models == ()
     assert len(children["edge"].published_models) == int(enabled)
+    assert result.items[0].published_model_count == int(enabled)
+
+
+def test_instance_count_includes_models_routed_from_another_target() -> None:
+    # A multi-target rollout binds a model owned by another target's connection. The
+    # gateway rows listed it while the instance row said "0 published models".
+    repository = InMemoryRepository()
+    registry = topology_registry(repository)
+    registry["runtimes"].append({"id": UUID(int=84), "gateway_profile_id": UUID(int=85)})
+    registry["models"].append({
+        "id": UUID(int=86), "runtime_id": UUID(int=84),
+        "model_key": "routed-model", "display_name": "Routed model",
+    })
+    repository.models = registry["models"]
+    repository.runtimes = registry["runtimes"]
+    repository.upsert_apim_target_route_binding(
+        ApimTargetRouteBinding(
+            id=UUID(int=87), logical_model_id=UUID(int=86), apim_target_id=TARGET,
+            runtime_id=UUID(int=81), enabled=True,
+            deployment_scope=GatewayDeploymentScope(mode=GatewayDeploymentScopeMode.ALL),
+        )
+    )
+
+    item = GatewayControlPlaneService(repository).apim_target_topologies(registry).items[0]
+
+    managed = next(child for child in item.deployments if child.deployment.kind == "managed")
+    assert {model.model_key for model in managed.published_models} == {
+        "unit-model", "routed-model",
+    }
+    assert item.published_model_count == 2
+    assert {model.model_key for model in item.published_models} == {"unit-model", "routed-model"}
 
 
 def test_topology_filters_disabled_targets_and_batches_repository_reads() -> None:

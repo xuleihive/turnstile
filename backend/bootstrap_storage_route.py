@@ -15,6 +15,10 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from turnstile_core.config import Settings, get_settings
+from turnstile_core.domain.application_access import (
+    application_id_for,
+    application_subscription_id_for,
+)
 from turnstile_core.domain.control_plane import GatewayPublication, GatewayReleaseSpec
 from turnstile_core.domain.gateway_targets import (
     ApimTarget,
@@ -201,6 +205,30 @@ def require_runtime(descriptor: FixedInstallationDescriptor, settings: Settings)
     ):
         raise RuntimeError("FIXED_INSTALLATION_RUNTIME_TARGET_MISMATCH")
     return settings.database_url
+
+
+def system_applications(registration: ApimTargetRegistration) -> list[dict[str, Any]]:
+    # Same identity as inventory sync and diagnostics, so a later sync updates these rows.
+    target_id = registration.gateway_profile_id
+    return [
+        {
+            "application_id": application_id_for(target_id, subscription_id),
+            "subscription_id": application_subscription_id_for(target_id, subscription_id),
+            "apim_subscription_id": subscription_id,
+            "slug": name,
+            "display_name": registration.name + " " + name,
+            "application_type": "system" if name == "publisher" else "service",
+            "system_managed": name == "publisher",
+            "state": "active",
+            "scope_type": "api",
+            "scope_id": registration.api_id,
+            "scope_exists": True,
+        }
+        for name, subscription_id in (
+            ("dashboard", registration.dashboard_subscription_id),
+            ("publisher", registration.probe_subscription_id),
+        )
+    ]
 
 
 def bootstrap(descriptor: FixedInstallationDescriptor, settings: Settings) -> dict[str, Any]:
@@ -419,29 +447,9 @@ def bootstrap(descriptor: FixedInstallationDescriptor, settings: Settings) -> di
                 if config.route_target_identity_sha256 is None:
                     raise RuntimeError("FIXED_INSTALLATION_TARGET_DIGEST_MISSING")
                 installed = installation_record(descriptor, config.route_target_identity_sha256)
-                applications = []
-                for name, subscription_id in (
-                    ("dashboard", registration.dashboard_subscription_id),
-                    ("publisher", registration.probe_subscription_id),
-                ):
-                    applications.append(
-                        {
-                            "application_id": uuid5(target_id, name),
-                            "subscription_id": uuid5(target_id, subscription_id),
-                            "apim_subscription_id": subscription_id,
-                            "slug": name,
-                            "display_name": registration.name + " " + name,
-                            "application_type": "system" if name == "publisher" else "service",
-                            "system_managed": name == "publisher",
-                            "state": "active",
-                            "scope_type": "api",
-                            "scope_id": registration.api_id,
-                            "scope_exists": True,
-                        }
-                    )
                 repository.sync_gateway_applications(
                     target_id,
-                    applications,
+                    system_applications(registration),
                     "fixed-program-installation",
                     moment.date().replace(day=1),
                     100000,

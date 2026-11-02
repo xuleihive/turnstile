@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Loader2, PanelLeft, Plus, Sparkles, Trash2 } from "lucide-react"
 
 import { Button } from "../components/ui/button"
-import { AssistantConversation } from "../components/assistant/assistant-conversation"
+import { AssistantConversation, ConversationDeleteDialog } from "../components/assistant/assistant-conversation"
 import { PinDialog } from "../components/assistant/pin-dialog"
 import { useAssistantController } from "../components/assistant/use-assistant-controller"
 import { useIsMobile } from "../hooks/use-mobile"
@@ -107,7 +107,7 @@ export function AssistantPage({
           title="删除对话"
           aria-label="删除对话"
           disabled={c.removeConversation.isPending}
-          onClick={() => c.removeConversation.mutate(item.id)}
+          onClick={() => c.setDeleteTarget(item.id)}
         ><Trash2 size={12} /></button>
       </div>)}
     </div>
@@ -152,6 +152,7 @@ export function AssistantPage({
       {showThread && conversation}
     </div>
 
+    <ConversationDeleteDialog controller={c} />
     {source === "apim" && c.pinTarget && <PinDialog
       chart={c.pinTarget.chart}
       question={c.pinTarget.question}

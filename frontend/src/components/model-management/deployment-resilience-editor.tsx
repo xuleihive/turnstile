@@ -12,6 +12,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { dataSource } from "../../data-sources/apim/api"
+import { ApiError } from "../../api/client"
 import { finopsKeys, finopsQueries } from "../../data-sources/apim/queries"
 import type {
   GatewayBackendPoolConfig,
@@ -53,6 +54,10 @@ export { deploymentMode } from "./pool-session-affinity"
 export type { DeploymentMode } from "./pool-session-affinity"
 
 export type PublicationAction = "configure" | "remove"
+
+function submissionFailure(err: unknown) {
+  return err instanceof ApiError && err.detail ? err.detail : err instanceof Error ? err.message : String(err)
+}
 
 export type PendingBackendPoolSubmission = {
   modelId: string
@@ -423,7 +428,7 @@ export function DeploymentResilienceEditor({
       const failed: GatewayPublication = {
         ...base,
         status: "failed",
-        error_message: err instanceof Error ? err.message : String(err),
+        error_message: submissionFailure(err),
       }
       setPublicationId(null)
       setPublicationAction(null)
@@ -497,7 +502,7 @@ export function DeploymentResilienceEditor({
       const failed: GatewayPublication = {
         ...base,
         status: "failed",
-        error_message: err instanceof Error ? err.message : String(err),
+        error_message: submissionFailure(err),
       }
       setPublicationId(null)
       setPublicationAction(null)
@@ -635,7 +640,8 @@ export function DeploymentResilienceEditor({
   }
   const totalWeight = draft.members.reduce((sum, member) => sum + member.weight, 0)
 
-  const error = save.error ?? remove.error ?? pool.error ?? publication.error ?? candidates.error
+  // Save and remove failures are already shown once in the publication notice.
+  const error = pool.error ?? publication.error ?? candidates.error
   const selectableCandidates = candidates.data ?? previewCandidates
   const selectableIds = candidates.isPending
     ? new Set(previewCandidates.map(candidate => candidate.model_id))
@@ -725,7 +731,7 @@ export function DeploymentResilienceEditor({
         <div className="router-resilience-affinity-control">
           <label><Checkbox checked={draft.session_affinity === true} disabled={!canManage || busy || !affinitySupported || !validMemberCount} onCheckedChange={(checked) => setDraft((current) => ({ ...current, session_affinity: checked === true }))} /><span>会话黏着</span></label>
           <FieldHelp>客户端须按对话保留 APIM Cookie。故障时可切换部署；调整池成员或配置可能重新分配会话。不会锁定 Azure 实际处理 Region。</FieldHelp>
-          <span className="router-resilience-affinity-state">{pool.data?.session_affinity ? "黏着已生效" : draft.session_affinity ? "黏着待发布" : "黏着已关闭"}</span>
+          <span className="router-resilience-affinity-state">{pool.data?.session_affinity ? draft.session_affinity ? "黏着已生效" : "黏着待关闭" : draft.session_affinity ? "黏着待发布" : "黏着已关闭"}</span>
         </div>
         {!affinitySupported && <div className="router-resilience-state warning"><CircleAlert size={14} />当前后端未发布会话黏着能力。</div>}
         {draft.session_affinity && <dl><div><dt>绑定范围</dt><dd>Pool 后端端点</dd></div><div><dt>会话传递</dt><dd>Cookie</dd></div><div><dt>故障行为</dt><dd>允许故障切换</dd></div></dl>}

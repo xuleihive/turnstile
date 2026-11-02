@@ -10,7 +10,7 @@ import {
 } from "lucide-react"
 import type { ReactNode } from "react"
 
-import { usageWindow } from "./api"
+import { usageWindow, type UsageWindowRange } from "./api"
 import { prefetchPage, type PrefetchablePage } from "./queries"
 import type { UsageFilters } from "./types"
 import { BudgetManagementPage } from "./pages/budget-page"
@@ -68,7 +68,7 @@ export function prefetchApimPage(
   }
 }
 
-export function defaultApimFilters(days = 30, scope: FinOpsScope = {}): UsageFilters {
+export function defaultApimFilters(days: UsageWindowRange = "month", scope: FinOpsScope = {}): UsageFilters {
   return { ...usageWindow(days), ...scope }
 }
 
@@ -83,9 +83,9 @@ export function renderApimPage({
 }: {
   page: string
   onToggleSidebar: () => void
-  days: number
+  days: UsageWindowRange
   scope: FinOpsScope
-  onDaysChange: (days: number) => void
+  onDaysChange: (days: UsageWindowRange) => void
   onScopeChange: (scope: FinOpsScope) => void
   onOpenRequest: (requestId: string) => void
 }): ReactNode {

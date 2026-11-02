@@ -2451,6 +2451,8 @@ schemas:
         - deployment_not_found
         - deployment_metadata_unavailable
         - upstream_request_failed
+        - credential_unreadable
+        - credential_vault_unavailable
       message:
         type: string
       stage:

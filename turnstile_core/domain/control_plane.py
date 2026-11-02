@@ -1173,7 +1173,7 @@ class GatewayPublicationFailure(StrictModel):
         "publisher_authorization_failed", "parent_policy_changed", "credential_source_missing",
         "apim_infrastructure_upgrade_required", "gateway_capability_unavailable",
         "publication_failed", "deployment_not_found", "deployment_metadata_unavailable",
-        "upstream_request_failed",
+        "upstream_request_failed", "credential_unreadable", "credential_vault_unavailable",
     ]
     message: str
     stage: PublicationStatus | None = None
@@ -1189,6 +1189,22 @@ _CAPABILITY_NAMES = {
     "openai-v1": "OpenAI chat", "anthropic-messages": "Anthropic Messages",
     "openai-images": "image generation", "microsoft-decision": "the Decision API",
 }
+_UNREADABLE_CREDENTIAL = (
+    "credential_unreadable",
+    "The connection's API key could not be read; provide the API key again and retry.",
+)
+_UNAVAILABLE_CREDENTIAL_VAULT = (
+    "credential_vault_unavailable",
+    "The credential Key Vault is not configured or not approved for this gateway program. "
+    "Ask the deployment administrator to check the installation.",
+)
+_CREDENTIAL_FAILURES = {
+    "Deployment metadata credential is unavailable": _UNREADABLE_CREDENTIAL,
+    "Route publication credential is unavailable": _UNREADABLE_CREDENTIAL,
+    "Deployment credential vault is unavailable": _UNAVAILABLE_CREDENTIAL_VAULT,
+    "Route credential materialization is unavailable": _UNAVAILABLE_CREDENTIAL_VAULT,
+    "Route credential Vault is not approved for this program": _UNAVAILABLE_CREDENTIAL_VAULT,
+}
 
 
 def publication_failure(
@@ -1198,7 +1214,9 @@ def publication_failure(
         return None
     failure = GatewayPublicationFailure(
         code="publication_failed",
-        message="Publication failed; use the publication ID to review server logs.",
+        message=(
+            f"Publication {publication.id} failed; search the server logs for this publication ID."
+        ),
         stage=stage,
     )
     if publication.error_code == "InfrastructureUpgradeRequiredError":
@@ -1231,13 +1249,22 @@ def publication_failure(
                 "scripts.deploy enable-capabilities, then publish again."
             ),
         })
-    if publication_missing_credential_source(publication):
+    if publication_missing_credential_source(publication) or (
+        publication.error_code == "PolicyCompilationError"
+        and message == "Route credential has no approved original source"
+    ):
         return failure.model_copy(update={
             "code": "credential_source_missing",
             "message": "The APIM credential resource is missing; provide the API key to retry.",
         })
     if not isinstance(message, str) or len(message) > 8192:
         return failure
+    credential = (
+        _CREDENTIAL_FAILURES.get(message)
+        if publication.error_code == "PolicyCompilationError" else None
+    )
+    if credential is not None:
+        return failure.model_copy(update={"code": credential[0], "message": credential[1]})
     if message.startswith("Deployment validation failed: "):
         try:
             details = json.loads(message.split(": ", 1)[1])
@@ -1250,16 +1277,25 @@ def publication_failure(
                 or not isinstance(details.get("deployment"), str)
                 or not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", details["deployment"])
                 or type(details.get("http_status")) is not int
-                or not 100 <= details["http_status"] <= 599):
+                or not 100 <= details["http_status"] <= 599
+                or details.get("upstream_code") is not None and (
+                    not isinstance(details["upstream_code"], str)
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", details["upstream_code"])
+                )
+                or details.get("auth") not in {None, "managed_identity"}):
             return failure
-        deployment = details["deployment"]
+        deployment, status = details["deployment"], details["http_status"]
+        upstream = f" ({details['upstream_code']})" if details.get("upstream_code") else ""
+        hint = (" Check that the Publisher managed identity can read this Foundry project."
+                if details.get("auth") == "managed_identity" and status in {400, 401, 403}
+                else "")
         reason = (f"Deployment '{deployment}' does not exist in the selected connection. "
                   "Use the deployment name, not the model name."
                   if details["code"] == "deployment_not_found" else
                   f"Deployment '{deployment}' could not be verified; "
-                  f"the deployment directory returned HTTP {details['http_status']}.")
+                  f"the deployment directory returned HTTP {status}{upstream}.{hint}")
         return failure.model_copy(update={
-            "code": details["code"], "message": reason, "http_status": details["http_status"],
+            "code": details["code"], "message": reason, "http_status": status,
         })
     probe = re.fullmatch(
         r"Route probe returned HTTP ([1-5][0-9]{2}); no request replayed", message,

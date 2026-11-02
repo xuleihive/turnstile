@@ -429,6 +429,7 @@ function ApplicationOrganizationDialog({ application, onClose, onSaved }: {
               <SelectContent><SelectItem value="">未分配</SelectItem>{people.map(item => <SelectItem key={item.id} value={item.id}><span data-no-localize>{item.name}</span></SelectItem>)}</SelectContent>
             </Select>
           </div>}
+          {personSupported && application.person_id && !personId && <div className="application-governance-unavailable" role="status"><AlertTriangle size={14} /><span>保存后将移除归属人员</span><b data-no-localize>{application.person_name ?? application.person_id}</b></div>}
           {entities.isError && <div className="registry-error">{String(entities.error)}</div>}
           {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
         </div>
@@ -668,7 +669,7 @@ function ApplicationDetailView({
           <div className="application-metric-grid">
             <Metric label="总 Tokens" value={formatFullCount(application.usage.total_tokens)} />
             <Metric label="输入" value={formatCount(application.usage.input_tokens)} />
-            <Metric label="缓存读取" value={formatCount(application.usage.cached_tokens)} />
+            <Metric label="缓存读取 / 写入" value={`${formatCount(Math.max(application.usage.cached_tokens - application.usage.cache_write_tokens, 0))} / ${formatCount(application.usage.cache_write_tokens)}`} />
             <Metric label="输出" value={formatCount(application.usage.output_tokens)} />
             <Metric label="拒绝请求" value={formatFullCount(application.usage.denied_request_count)} />
             <Metric label="估算成本" value={formatCost(application.usage.estimated_cost)} />
@@ -906,7 +907,7 @@ export function ApplicationsPage() {
           {apimCards.map((card) => {
             return <a key={card.id ?? "all"} data-apim-id={card.id ?? "all"} className={`subscriptions-category-card ${selectedApimId === card.id ? "active" : ""}`} aria-current={selectedApimId === card.id ? "page" : undefined} href={applicationRouteHref(null, card.id)} onClick={openApplicationRoute(null, card.id)}>
               <span className="subscriptions-category-icon">{card.id ? <ApimLogo size={15} /> : <Layers3 size={15} />}</span>
-              <span className="subscriptions-category-copy"><b data-no-localize={card.id ? true : undefined} title={card.name}>{card.name}</b><small>{applications.isLoading ? "—" : `${card.items.reduce((total, item) => total + item.subscription_count, 0)} 个订阅`}</small></span>
+              <span className="subscriptions-category-copy"><b data-no-localize={card.id ? true : undefined} title={card.name}>{card.name}</b><small>{applications.isLoading ? "—" : `${card.items.length} 个订阅`}</small></span>
               <strong data-no-localize>{applications.isLoading ? "—" : card.items.length}</strong>
             </a>
           })}

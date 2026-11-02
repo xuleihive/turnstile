@@ -345,3 +345,50 @@ def test_application_detail_breadcrumb_reuses_inventory_header_geometry() -> Non
     )
     assert ".application-breadcrumb-trail > svg { flex-shrink: 0; }" in styles
     assert ".application-breadcrumb-trail > a:first-child { min-width: 0; flex-shrink: 1;" in styles
+
+
+def test_subscription_creation_states_the_expected_wait() -> None:
+    dialog = (
+        FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    note = "新订阅通常需要 2–3 分钟生效，期间会自动重试，无需重复提交。"
+
+    assert (
+        '{!terminal && !failed && <p className="application-create-note" role="status">'
+        + note + "</p>}"
+    ) in dialog
+    for locale in ("en", "ja", "ko"):
+        phrases = (FRONTEND_SOURCE / f"locales/{locale}/phrases-application-create.ts").read_text(
+            encoding="utf-8"
+        )
+        assert f'"{note}":' in phrases
+
+
+def test_ownership_dialog_warns_before_the_assigned_person_is_removed() -> None:
+    # Changing department clears the person, because a person must belong to it.
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+
+    assert (
+        "{personSupported && application.person_id && !personId && "
+        '<div className="application-governance-unavailable" role="status">' in page
+    )
+    assert "<span>保存后将移除归属人员</span>" in page
+
+
+def test_application_usage_does_not_count_cache_writes_as_reads() -> None:
+    # cached_tokens includes cache writes; showing it as "cache read" doubled the reads.
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+
+    old_metric = '<Metric label="缓存读取" value={formatCount(application.usage.cached_tokens)} />'
+    assert old_metric not in page
+    assert (
+        "formatCount(Math.max(application.usage.cached_tokens - "
+        "application.usage.cache_write_tokens, 0))" in page
+    )
+
+
+def test_apim_group_label_counts_the_same_subscriptions_as_its_badge() -> None:
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+
+    assert '`${card.items.length} 个订阅`' in page
+    assert "total + item.subscription_count, 0)} 个订阅" not in page

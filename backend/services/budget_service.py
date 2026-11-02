@@ -390,6 +390,18 @@ class TokenBudgetService:
                         }
                     )
 
+        if include_users:
+            policies = {
+                row["user_id"]: row["model_ids"]
+                for row in self._repository.list_user_model_policies(
+                    [item["scope_id"] for item in items if item["scope_type"] == "user"]
+                )
+            }
+            for item in items:
+                if item["scope_type"] == "user":
+                    item["model_policy_configured"] = item["scope_id"] in policies
+                    item["allowed_model_ids"] = policies.get(item["scope_id"], [])
+
         risk_items.sort(
             key=lambda item: (
                 item["forecast_percent"] or 0,

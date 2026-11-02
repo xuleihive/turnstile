@@ -70,6 +70,8 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/^原价 (.+)$/g, (_match, gross) => `定価 ${gross}`],
   [/^([\d,]+) tokens，其中缓存读取 ([\d,]+) tokens$/g, (_match, total, cache) => `${total} Token（キャッシュ読み取り ${cache} Token を含む）`],
   [/^将从 Turnstile 删除“(.+)”。历史用量和上游模型会保留。$/g, (_match, name) => `Turnstile から「${name}」を削除します。使用履歴とアップストリームモデルは保持されます。`],
+  [/^将从 Turnstile 删除“(.+)”。历史用量、发布记录和旧 APIM 资源会保留。$/g, (_match, name) => `Turnstile から「${name}」を削除します。使用履歴、公開記録、旧 APIM リソースは保持されます。`],
+  [/^将从 Turnstile Registry 删除“(.+)”。关联的 APIM 云资源必须单独清理。$/g, (_match, name) => `Turnstile Registry から「${name}」を削除します。関連する APIM クラウド リソースは別途クリーンアップしてください。`],
   [/^将从 Turnstile 移除 (.+)。APIM 路由和当前人员分配会在候选 Revision 验证通过后移除。$/g, (_match, name) => `${name} を Turnstile から除外します。APIM ルートと現在のユーザー割り当ては、候補 Revision の検証完了後にのみ削除されます。`],
   [/^不会删除 (.+) 中的上游模型、连接或历史用量，其他模型继续发布。$/g, (_match, scope) => `${scope} のアップストリームモデル、接続、使用履歴は削除されません。他のモデルは引き続き公開されます。`],
   [/^复用已有连接 · (.+)$/g, (_match, name) => `既存接続を再利用 · ${name}`],
@@ -162,6 +164,7 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d+)\s*天窗口/g, (_match, value) => `${value} 日ウィンドウ`],
   [/(\d+)\s*天/g, (_match, value) => `${value} 日`],
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
-  [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `前期間比 ${value}%`],
+  [/(>\s)?([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, over = "", value) => `前期間比 ${over}${value}%`],
+  [/(>\s)?([+-]?\d+(?:\.\d+)?)%\s*较上月同期/g, (_match, over = "", value) => `前月同期比 ${over}${value}%`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `利用シェア ${value}%`],
 ]

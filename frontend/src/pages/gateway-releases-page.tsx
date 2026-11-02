@@ -294,6 +294,8 @@ function PublicationFailureNotice({ failure, publicationId }: {
     deployment_not_found: "选定连接中不存在该部署，请使用实际部署名称而不是模型名称。",
     deployment_metadata_unavailable: "无法读取部署目录，请核对连接认证和目录权限。",
     upstream_request_failed: "模型验证请求失败，请核对部署名称、接口路径和 HTTP 状态。",
+    credential_unreadable: "无法读取连接的 API Key，请重新提供 API Key 后重试。",
+    credential_vault_unavailable: "凭据 Key Vault 未配置或未获此网关程序批准，请联系部署管理员检查安装。",
     publication_failed: "发布未完成，请使用任务 ID 查询诊断记录。",
   }
   return <div className="gateway-publication-failure" role="alert">

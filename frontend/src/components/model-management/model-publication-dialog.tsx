@@ -211,7 +211,7 @@ function publicationErrorMessage(message: string): string {
     if (typeof parsed !== "object" || parsed === null) return message
     payload = parsed
   } catch {
-    return message
+    return response[1] === "409" ? response[2] : message
   }
   if (typeof payload.detail === "string") return payload.detail
   if (!Array.isArray(payload.detail)) return message
@@ -823,6 +823,7 @@ export function ModelPublicationDialog({
                 draft={pricing} setDraft={setPricing} busy={publishing}
                 showAnthropic={!decision && !imageGeneration}
                 imageGeneration={imageGeneration}
+                decision={decision}
                 initialSearch={decision ? "Microsoft Decision" : undefined}
                 connectionDiscount={selectedRuntime.price_discount_percent ?? null} />
               {!imageGeneration && (!decision || pricing.priceSource !== "manual") && <div className="form-grid">

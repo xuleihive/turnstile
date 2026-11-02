@@ -20,6 +20,7 @@ from turnstile_core.domain.control_plane import (
     ModelCreateTarget,
     MultiTargetPublicationChildCreate,
     MultiTargetPublicationCreate,
+    RuntimeTarget,
 )
 from turnstile_core.domain.gateway_targets import (
     MultiTargetRollout,
@@ -30,6 +31,7 @@ from turnstile_core.domain.gateway_targets import (
     derive_target_rollout_status,
 )
 from turnstile_core.domain.runtime_models import (
+    ContextPriceRule,
     PriceCatalogContextTier,
     PriceCatalogInputRange,
     PriceSource,
@@ -81,15 +83,14 @@ def test_multi_target_service_binds_stable_identity_and_canonical_manual_prices(
         "cached_cost_per_million",
         "cache_write_cost_per_million",
     )
-    for index, child in enumerate(write.children):
-        for offset, name in enumerate(price_fields):
-            setattr(child.publication.model, name, float(index + offset + 1))
-    rollout, publications = service.publish_multi_target(write, "unit-owner")
-    assert rollout.status == "queued" and len(publications) == 2
-    models = [publication.desired_spec.bindings[-1].model for publication in publications]
     canonical_input = min(
         write.children, key=lambda child: str(child.publication.gateway_profile_id)
     )
+    for offset, name in enumerate(price_fields):
+        setattr(canonical_input.publication.model, name, float(offset + 1))
+    rollout, publications = service.publish_multi_target(write, "unit-owner")
+    assert rollout.status == "queued" and len(publications) == 2
+    models = [publication.desired_spec.bindings[-1].model for publication in publications]
     for model in models:
         assert all(
             getattr(model, name) == getattr(canonical_input.publication.model, name)
@@ -161,7 +162,7 @@ def test_multi_target_canonical_prices_include_complete_catalog_tiers_and_discou
         )
     catalog.options.side_effect = entries.get
     requests = []
-    for index, child in enumerate(children):
+    for child in children:
         write = foundry_publication("unit-context-model")
         write.gateway_profile_id = child["gateway_profile_id"]
         write.provider = ProviderTarget(
@@ -174,7 +175,7 @@ def test_multi_target_canonical_prices_include_complete_catalog_tiers_and_discou
                 **write.model.model_dump(),
                 "price_source": "azure_retail",
                 "context_price_references": references,
-                "price_discount_percent": 80 - index * 20,
+                "price_discount_percent": 60,
             }
         )
         requests.append(MultiTargetPublicationChildCreate(publication=write))
@@ -433,6 +434,182 @@ def test_multi_target_rejects_distinct_explicit_identities_before_queueing() -> 
             repository, TEST_CIPHER, multi_target_rollout_enabled=True
         ).publish_multi_target(write, "owner")
     assert repository.gateway_publications == [] and repository.multi_target_rollouts == []
+
+
+def test_multi_target_refuses_children_that_state_different_prices() -> None:
+    repository, children = rollout_fixture()
+    write = multi_request([child["gateway_profile_id"] for child in children])
+    for index, child in enumerate(write.children):
+        child.publication.model.input_cost_per_million = float(index + 1)
+    service = GatewayControlPlaneService(repository, TEST_CIPHER, multi_target_rollout_enabled=True)
+    with pytest.raises(ControlPlaneConflictError, match="different: input_cost_per_million$"):
+        service.publish_multi_target(write, "owner")
+    assert repository.gateway_publications == [] and repository.multi_target_rollouts == []
+
+
+OTHER_GATEWAY = UUID(int=92)
+
+
+def context_price_catalog() -> tuple[MagicMock, list[str]]:
+    catalog = MagicMock(spec=CompositeCatalog)
+    entries = {}
+    references = []
+    for index, key in enumerate(("short", "long")):
+        label = f"Unit {key}"
+        candidate = CatalogModel(
+            key=f"azure_retail:Unit:{label}", label=label, product="Unit",
+            source=PriceSource.AZURE_RETAIL,
+            context_tier=PriceCatalogContextTier(
+                group_key="unit-model", model_label="Unit model", key=key, label=label,
+                order=index,
+            ),
+        )
+        reference = f"{candidate.key}:Global:*"
+        references.append(reference)
+        entries[candidate.key] = CatalogOptions(model=candidate, options=(CatalogOption(
+            reference=reference, deployment="Global", region_required=False,
+            regions=("eastus",), entry=CatalogEntry(
+                reference=reference, label=label, source=candidate.source,
+                input_per_million=2 + index, output_per_million=8 + index,
+            ),
+        ),))
+    catalog.options.side_effect = entries.get
+    return catalog, references
+
+
+def shared_deployment_request(
+    repository: InMemoryRepository, references: list[str], gateway: UUID,
+    runtime_id: UUID | None = None, **pricing: Any,
+) -> GatewayPublicationCreate:
+    write = foundry_publication("gpt-6.1-sol")
+    write.gateway_profile_id = gateway
+    write.provider = ProviderTarget(existing_id=next(
+        row["id"] for row in repository.providers if row["brand_key"] == "microsoft_foundry"
+    ))
+    if runtime_id is not None:
+        write.runtime = RuntimeTarget(existing_id=runtime_id)
+    write.model = ModelCreateTarget.model_validate(write.model.model_dump() | {
+        "price_source": "azure_retail", "context_price_references": references,
+        "context_price_rule": {"short_context_max_tokens": 270001},
+    } | pricing)
+    return write
+
+
+def shared_deployment_fixture(**pricing: Any) -> tuple[
+    InMemoryRepository, GatewayControlPlaneService, list[str], UUID,
+]:
+    # D35: the deployment is live on the first gateway with a custom context threshold; the
+    # second gateway has its own installed program and a connection to the same project.
+    repository = InMemoryRepository()
+    repository.models = []
+    catalog, references = context_price_catalog()
+    principal = str(UUID(int=99))
+    first = GatewayControlPlaneService(
+        repository, TEST_CIPHER, apim_principal_id=principal, price_catalog=catalog,
+    ).publish(shared_deployment_request(repository, references, TARGET, **pricing), "owner")
+    promote_and_activate(repository, first.id)
+    runtime = next(
+        row for row in repository.runtimes if row["id"] == repository.models[0]["runtime_id"]
+    )
+    repository.gateways.append({
+        **repository.gateways[0], "id": OTHER_GATEWAY, "name": "Other APIM", "is_default": False,
+    })
+    other_runtime = {
+        **deepcopy(runtime), "id": UUID(int=93), "gateway_profile_id": OTHER_GATEWAY,
+        "name": "Other connection",
+    }
+    repository.runtimes.append(other_runtime)
+    seed = bedrock_publication()
+    seed.gateway_profile_id = OTHER_GATEWAY
+    baseline = repository.get_gateway_publication(
+        GatewayControlPlaneService(repository, TEST_CIPHER).publish(seed, "owner").id,
+    )
+    assert baseline is not None
+    baseline.update(
+        status="active",
+        resource_manifest={"fixed_route_program": {"model_additions_enabled": True}},
+    )
+    repository.effective_gateway_releases[OTHER_GATEWAY] = baseline["id"]
+    for item in repository.gateway_publication_outbox:
+        item["status"] = "completed"
+    service = GatewayControlPlaneService(
+        repository, TEST_CIPHER, apim_principal_id=principal, price_catalog=catalog,
+        target_registry_enabled=True,
+    )
+    return repository, service, references, other_runtime["id"]
+
+
+def test_a_deployment_live_on_another_gateway_reuses_its_model() -> None:
+    repository, service, references, runtime_id = shared_deployment_fixture()
+    original = deepcopy(repository.models)
+    publication = service.publish(
+        shared_deployment_request(repository, references, OTHER_GATEWAY, runtime_id), "owner",
+    )
+    binding = publication.desired_spec.bindings[-1]
+    assert publication.gateway_profile_id == OTHER_GATEWAY
+    assert binding.logical_model_id == original[0]["id"]
+    assert binding.model.context_price_rule == ContextPriceRule(short_context_max_tokens=270001)
+    assert [tier.model_dump(mode="json") for tier in binding.model.context_price_tiers] == (
+        original[0]["context_price_tiers"]
+    )
+    assert repository.models == original
+
+
+@pytest.mark.parametrize(("pricing", "connection_discount", "different"), [
+    ({"context_price_rule": {"short_context_max_tokens": 272000}}, None, "context_price_rule"),
+    ({"price_discount_percent": 80}, None, "price_discount_percent"),
+    ({}, 90, "connection price_discount_percent"),
+    ({"price_source": "manual", "context_price_references": [], "context_price_rule": None,
+      "input_cost_per_million": 1.0, "output_cost_per_million": 4.0}, None, "price_source"),
+])
+def test_a_shared_model_refuses_a_second_price_on_another_gateway(
+    pricing: dict[str, Any], connection_discount: float | None, different: str,
+) -> None:
+    repository, service, references, runtime_id = shared_deployment_fixture()
+    next(row for row in repository.runtimes if row["id"] == runtime_id)[
+        "price_discount_percent"
+    ] = connection_discount
+    models = deepcopy(repository.models)
+    publications = deepcopy(repository.gateway_publications)
+    owner = repository.gateways[0]["name"]
+    with pytest.raises(
+        ControlPlaneConflictError,
+        match=rf"already published on gateway {owner}\..*only one price; different: {different}$",
+    ):
+        service.publish(shared_deployment_request(
+            repository, references, OTHER_GATEWAY, runtime_id, **pricing,
+        ), "owner")
+    assert repository.models == models
+    assert repository.gateway_publications == publications
+
+
+def test_a_shared_model_refuses_a_different_manual_price() -> None:
+    manual: dict[str, Any] = {
+        "price_source": "manual", "context_price_references": [], "context_price_rule": None,
+        "input_cost_per_million": 1.0, "output_cost_per_million": 4.0,
+    }
+    repository, service, references, runtime_id = shared_deployment_fixture(**manual)
+    models = deepcopy(repository.models)
+    publications = deepcopy(repository.gateway_publications)
+    owner = repository.gateways[0]["name"]
+    with pytest.raises(
+        ControlPlaneConflictError,
+        match=rf"already published on gateway {owner}\..*different: output_cost_per_million$",
+    ):
+        service.publish(shared_deployment_request(
+            repository, references, OTHER_GATEWAY, runtime_id,
+            **manual | {"output_cost_per_million": 5.0},
+        ), "owner")
+    assert repository.models == models
+    assert repository.gateway_publications == publications
+
+
+def test_the_same_alias_on_its_own_gateway_is_still_a_conflict() -> None:
+    repository, service, references, _runtime_id = shared_deployment_fixture()
+    with pytest.raises(ControlPlaneConflictError, match="already active on this APIM"):
+        service.publish(shared_deployment_request(
+            repository, references, TARGET, repository.models[0]["runtime_id"],
+        ), "owner")
 
 
 def rollout_fixture() -> tuple[InMemoryRepository, list[dict[str, Any]]]:

@@ -342,6 +342,8 @@ ModelRouterServiceDependency = Annotated[
 
 
 def model_router_v3_service(repository: Repository) -> ModelRouterV3Service:
+    if not get_settings().model_router_v3_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
     return ModelRouterV3Service(repository)
 
 

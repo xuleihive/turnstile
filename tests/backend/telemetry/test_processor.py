@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +19,7 @@ from tests.backend.model_platform.control_plane_support import (
     foundry_publication,
     publisher_settings,
 )
+from tests.backend.model_platform.test_platform_invocation_trace import invocation_attempt
 from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
@@ -109,6 +110,10 @@ class RecordingRepository:
     ) -> list[dict[str, object]]:
         del gateway_profile_id
         return []
+
+    def platform_request_person_recorded(self, request_id: str, user_id: str) -> bool:
+        del request_id, user_id
+        return False
 
 
 def event(**overrides: object) -> dict[str, object]:
@@ -774,6 +779,68 @@ def test_apim_subscription_is_resolved_to_immutable_application_attribution() ->
     assert attribution.actor_type == "service"
     assert attribution.actor_id == "service:outline-assistant"
     assert attribution.application_admission == "ok"
+
+
+def _service_application_repository() -> InMemoryRepository:
+    repository = InMemoryRepository()
+    ApplicationAccessService(repository, sync_available=True).sync_discovery(
+        GatewayApplicationDiscovery(
+            gateway_profile_id=GATEWAY_ID,
+            discovered_at=datetime(2026, 8, 26, tzinfo=UTC),
+            items=[GatewayApplicationDiscoveryItem(
+                apim_subscription_id="outline-assistant", display_name="Outline Assistant",
+                state="active", scope_type="product", scope_id="finops-applications",
+                scope_exists=True, application_type="service", system_managed=False,
+            )],
+        ),
+        "application-sync-worker",
+    )
+    return repository
+
+
+def _application_event(request_id: str, **overrides: object) -> dict[str, object]:
+    return event(**{
+        "id": request_id, "request_id": request_id, "correlation_id": request_id + "-attempt",
+        "gateway_profile_id": str(GATEWAY_ID), "apim_subscription_id": "outline-assistant",
+        "application_actor_type": "service",
+        "application_actor_id": "service:outline-assistant",
+        "user_id": "ceo@contoso.com", "user": "CEO", **overrides,
+    })
+
+
+def test_application_key_cannot_name_a_person_or_spend_their_budget() -> None:
+    repository = _service_application_repository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+
+    assert processor.process(_application_event("spoofed"))
+
+    record = next(row for row in repository.usage_records if row.request_id == "spoofed")
+    assert (record.user_id, record.user) == ("unattributed", "unattributed")
+    assert repository.usage_application_attributions["spoofed-attempt"].person_id is None
+    assert repository.budget_scope_confirmed_tokens(
+        "person", "ceo@contoso.com", date(2026, 7, 1), date(2026, 8, 1),
+    ) == 0
+
+
+def test_verified_people_keep_attribution_on_application_traffic() -> None:
+    repository = _service_application_repository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    attempt = invocation_attempt("platform-call")
+    repository.begin_platform_invocation(attempt.model_copy(update={
+        "metadata": attempt.metadata.model_copy(update={"user_id": "ceo@contoso.com"}),
+    }))
+
+    for request_id, overrides in (
+        ("delegated", {"application_actor_type": "person",
+                       "application_actor_id": "ceo@contoso.com"}),
+        ("platform-call", {}),
+    ):
+        assert processor.process(_application_event(request_id, **overrides))
+        record = next(row for row in repository.usage_records if row.request_id == request_id)
+        assert (record.user_id, record.user) == ("ceo@contoso.com", "CEO")
+    assert processor.process(_application_event("platform-call", user_id="cfo@contoso.com",
+                                                correlation_id="other-person-attempt"))
+    assert repository.usage_records[-1].user_id == "unattributed"
 
 
 def test_copilot_assistant_events_are_classified_outside_the_apim_domain() -> None:

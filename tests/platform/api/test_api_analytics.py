@@ -108,6 +108,56 @@ def test_real_usage_record_drives_enterprise_analytics() -> None:
         app.dependency_overrides.pop(get_repository, None)
 
 
+def test_executive_overview_compares_with_an_explicit_window() -> None:
+    repository = InMemoryRepository()
+    app.dependency_overrides[get_repository] = lambda: repository
+    try:
+        for usage_id, ts, tokens in (
+            ("this-month", datetime(2026, 11, 2, 6, tzinfo=UTC), 300),
+            ("right-before", datetime(2026, 10, 31, 6, tzinfo=UTC), 100),
+            ("same-span-last-month", datetime(2026, 10, 1, 6, tzinfo=UTC), 200),
+            ("after-the-span", datetime(2026, 10, 2, 18, tzinfo=UTC), 1000),
+        ):
+            repository.write_token_usage(
+                _usage_record(usage_id, "Microsoft Foundry via APIM", tokens).model_copy(
+                    update={"ts": ts}
+                )
+            )
+        params = {"from": "2026-11-01T00:00:00Z", "to": "2026-11-02T12:00:00Z"}
+
+        adjacent = client.get("/api/v1/observability/executive-overview", params=params).json()
+        assert datetime.fromisoformat(adjacent["previous_from"]) == datetime(
+            2026, 10, 30, 12, tzinfo=UTC
+        )
+        assert adjacent["changes_percent"]["total_tokens"] == 200.0
+
+        compared = client.get(
+            "/api/v1/observability/executive-overview",
+            params={
+                **params,
+                "compare_from": "2026-10-01T00:00:00Z",
+                "compare_to": "2026-10-02T12:00:00Z",
+            },
+        ).json()
+        assert compared["totals"]["total_tokens"] == 300
+        assert datetime.fromisoformat(compared["previous_from"]) == datetime(
+            2026, 10, 1, tzinfo=UTC
+        )
+        assert compared["changes_percent"]["total_tokens"] == 50.0
+
+        for invalid in (
+            {"compare_from": "2026-10-01T00:00:00Z"},
+            {"compare_to": "2026-10-02T12:00:00Z"},
+            {"compare_from": "2026-10-02T12:00:00Z", "compare_to": "2026-10-01T00:00:00Z"},
+        ):
+            response = client.get(
+                "/api/v1/observability/executive-overview", params={**params, **invalid}
+            )
+            assert response.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+
+
 @pytest.mark.parametrize("reverse_insertion", [False, True])
 def test_request_trace_preserves_attempts_and_legacy_lookup(reverse_insertion: bool) -> None:
     repository = InMemoryRepository()

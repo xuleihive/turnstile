@@ -72,9 +72,18 @@ Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_P
 
 Apply migration `011_gateway_targets` before upgrading the API and Control-plane packages.
 It is additive and does not register an Azure resource, activate a protocol or rewrite usage.
-Keep `APIM_TARGET_REGISTRY_ENABLED=false` until target-specific identity, permissions and
-connection checks are ready. With the flag off, the existing single-target publisher remains
+Installations made with `scripts.deploy` run with `APIM_TARGET_REGISTRY_ENABLED=true`:
+`infra/runtime-release.bicep` sets it by default and the deployment script does not override it.
+With the flag off (the application default), the existing single-target publisher remains
 unchanged. Registration does not create APIM instances, Gateway containers or role assignments.
+
+Publishing a Foundry deployment that is already published on another gateway (same project and
+deployment name) reuses that gateway's model record. All gateways then share one price (with the
+model's discount, or the first connection's discount when the model has none), model access and
+the enabled state. The new publication must state the same price: price source and reference,
+context tiers and threshold rule, manual rates, the model discount and, for a catalog price without
+a model discount, the connection discount. Otherwise it is rejected with HTTP 409, which names the
+differing fields.
 
 When enabled, an Owner can register an existing APIM through
 `POST /api/v1/model-management/apim-targets`; the Owner session and write-origin
@@ -120,8 +129,8 @@ confirmed names survive later inventory refreshes.
 
 Every gateway that serves Turnstile traffic, whether a registered APIM or a Self-hosted Gateway,
 reads the budget ledger Table and the route Key Vault while handling requests. Both accept that
-traffic only through private endpoints, and APIM services created on or after 1 December 2025
-cannot use trusted-service access. Before enabling a gateway, give it network line of sight:
+traffic only through private endpoints, and from 15 March 2026 no APIM gateway can use
+trusted-service access. Before enabling a gateway, give it network line of sight:
 inject the APIM into the platform virtual network, or peer the gateway's network with it and link
 that network to the Table and Key Vault private DNS zones. Role assignments alone are not
 sufficient; without line of sight, ledger reads fail with HTTP 403 and requests are denied with
@@ -170,7 +179,9 @@ Azure configuration or the user's container.
 
 ### Self-hosted Gateway metadata lifecycle
 
-`SELF_HOSTED_GATEWAY_ENABLED` defaults to false and requires `APIM_TARGET_REGISTRY_ENABLED`.
+`SELF_HOSTED_GATEWAY_ENABLED` requires `APIM_TARGET_REGISTRY_ENABLED`. Installations made with
+`scripts.deploy` run with `SELF_HOSTED_GATEWAY_ENABLED=true`: `infra/runtime-release.bicep` sets it
+by default and the deployment script does not override it. The application default is false.
 When enabled, an Owner can add customer-managed Gateway metadata beneath an existing APIM,
 rename it, synchronize inventory, validate its endpoint, retire it or change its APIM association.
 The separate **Associate existing Gateway** path records metadata only; it does not create, delete,
@@ -259,7 +270,9 @@ Azure readiness and PostgreSQL transaction acceptance require separately authori
 ### Multi-target model publication
 
 Apply `013_multi_target_rollout` and upgrade API and Control-plane code together before enabling
-`MULTI_APIM_TARGET_ROLLOUT_ENABLED` with the target registry. The flag defaults to false. The
+`MULTI_APIM_TARGET_ROLLOUT_ENABLED` with the target registry. Installations made with `scripts.deploy`
+run with `MULTI_APIM_TARGET_ROLLOUT_ENABLED=true`: `infra/runtime-release.bicep` sets it by default
+and the deployment script does not override it. The application default is false. The
 Owner API is `POST /api/v1/model-management/rollouts`; GET the same path for recent intents or
 append its returned rollout UUID for current status. This version exposes API/client support,
 not a multi-target selection dialog. Existing Add Model remains a single-target workflow.
@@ -275,7 +288,9 @@ The canonical child is the first child with an explicit model identity in target
 or the first child in that order when all aliases are derived. Multiple explicit model identities
 must agree. Its alias, display metadata, capabilities, access rules and complete price snapshot
 are used for all children. This includes source, reference, discount, all four charged/list prices
-and every context tier/range/provenance field. Upstream model IDs and target runtime bindings
+and every context tier/range/provenance field. A child that states its own price must state the
+same price as the canonical child, or the request is rejected with HTTP 409 naming the differing
+fields; a child without a price takes the canonical one. Upstream model IDs and target runtime bindings
 remain target-specific. The first successful activation establishes the logical model; later
 activations must match its full price identity and cannot silently reprice it.
 
@@ -330,6 +345,8 @@ Microsoft Foundry image models return PNG or JPEG; they reject `output_format: w
 Publish a Decision model such as Decision-1 on an existing Microsoft Foundry Connection with `model.operation: decision` and the existing deployment name. The gateway serves it at `POST /providers/microsoft/v1/systemone` and forwards to the Foundry resource endpoint `https://<resource>.services.ai.azure.com/providers/microsoft/v1/systemone`. Authentication follows the Connection: with managed identity, APIM requests a token for `https://cognitiveservices.azure.com`, so its identity needs `Cognitive Services User` on that Foundry account; an API-key Connection uses its stored key. Decision models cannot be chat defaults or backend Pool members.
 
 Model Intelligent Router can use a published Decision model for model-based routing: select it as the Router's decision model and publish a new Router version. The gateway sends the routing question to its own Decision operation with the caller's subscription, routes to the candidate the Decision model chooses and records the returned probabilities in Request Trace. The Decision call and the candidate call are each metered and charged once. Publish a Decision model with a price: the publication dialog searches the Azure list price (`Microsoft Decision 1`) by default, and a manual price needs both input and output rates.
+
+Router responses carry the Router name in `x-router-name`. A name made only of ASCII characters is sent as-is; a name with any other character is percent-encoded (UTF-8, RFC 3986), so decode the header when it contains `%`. Neither path escapes ASCII control characters, so do not use line breaks or other control characters in Router names.
 
 ### Pool conversation affinity
 
@@ -442,6 +459,8 @@ Do not enable these settings before the controlled procedure in [Deployment](dep
 API, Control Plane, Telemetry and Observer must agree on the same existing ledger. Permission and
 TPM projection still use legacy Q/M rows; the new S/A/D records live in separate `budget2` partitions.
 Changing limits or permissions never resets confirmed, pending or conservatively charged tokens.
+Budget, Block and model-access changes reach the gateway through the ledger projection; allow about
+10–30 seconds before requests are admitted or denied under the new setting.
 The in-memory demonstration repository deliberately rejects execution receipts.
 
 ### Budget verification

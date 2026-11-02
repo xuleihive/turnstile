@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -64,6 +65,14 @@ from .route_publication import RouteActivationNotApplied
 from .worker_lease import WorkerLease
 
 logger = logging.getLogger(__name__)
+
+
+def _log_failure(publication: GatewayPublication, code: str, message: str) -> None:
+    logger.warning(
+        "Gateway publication %s failed at %s: error_code=%s error_message=%r",
+        publication.id, publication.status.value, code,
+        re.sub(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*", r"\1", message),
+    )
 
 
 class GatewayPublicationWorker:
@@ -256,6 +265,7 @@ class GatewayPublicationWorker:
                 publication.id, publication.status.value, "failed",
                 {"error_code": type(error).__name__, "error_message": str(error)}, worker_id,
             )
+            _log_failure(publication, type(error).__name__, str(error))
             return GatewayPublication.model_validate(failed) if failed else publication
         except (RetryablePublicationError, httpx.TransportError) as error:
             code = type(error).__name__
@@ -349,6 +359,7 @@ class GatewayPublicationWorker:
                 failure_updates(code, message),
                 worker_id,
             )
+            _log_failure(publication, code, message)
             return GatewayPublication.model_validate(failed) if failed else publication
 
     def _uses_route_configuration(self, publication: GatewayPublication) -> bool:

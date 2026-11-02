@@ -102,14 +102,16 @@ _DEFAULT_SESSION_STICKY_TTL_SECONDS = 1_800
 _DEFAULT_INTERACTION_STICKY_TTL_SECONDS = 300
 _DECISION_MAX_OUTPUT_TOKENS = 200
 _DECISION_REASONING_MAX_OUTPUT_TOKENS = 1_024
+_DECISION_JSON_SHAPE = (
+    "Return only a JSON object with this shape: "
+    '{"model_id":"<candidate UUID>","rationale":"<one short sentence>"}. '
+    "Never return a model outside the catalog."
+)
 _DEFAULT_DECISION_PROMPT = (
     "You are Turnstile's model routing classifier. Select the single best "
     "model from the candidate catalog for the user's request based on each "
     "candidate's description and unit cost.\n\n"
-    "Candidate catalog:\n{catalog}\n\n"
-    "Return only a JSON object with this shape: "
-    '{"model_id":"<candidate UUID>","rationale":"<one short sentence>"}. '
-    "Never return a model outside the catalog."
+    "Candidate catalog:\n{catalog}\n\n" + _DECISION_JSON_SHAPE
 )
 _DEFAULT_SYSTEM_ONE_INSTRUCTIONS = (
     "Select the single best candidate model for the user's request based on "
@@ -1130,8 +1132,10 @@ class ModelRouterExecutionService:
                 candidate.model_id == bound_model_id
                 for candidate in eligible_for_escalation
             )
+            # A user turn leaves the bound model only for a pricier model in the matched
+            # branch; tool continuations always stay on the bound model.
             can_escalate_condition_branch = (
-                is_new_turn
+                self._is_user_turn(request)
                 and not bound_in_branch
                 and bool(eligible_for_escalation)
                 and any(
@@ -1815,6 +1819,9 @@ class ModelRouterExecutionService:
             if has_placeholder
             else f"{effective}\n\nCandidate catalog:\n{catalog_text}"
         )
+        if "json" not in effective.casefold():
+            # json_object responses are rejected unless the messages mention JSON.
+            system = f"{system}\n\n{_DECISION_JSON_SHAPE}"
         return system, not custom, has_placeholder
 
     @staticmethod
@@ -2451,6 +2458,24 @@ class ModelRouterExecutionService:
             and (message.content or "").strip()
         )
         return user_count > 1
+
+    @classmethod
+    def _is_user_turn(cls, request: ModelInvocationRequest) -> bool:
+        initiator = str(
+            request.router_context.get("x_initiator")
+            or request.router_context.get("initiator")
+            or ""
+        ).strip().casefold()
+        non_system = [
+            message
+            for message in request.messages
+            if (message.role or "").strip().casefold() not in {"system", "developer"}
+        ]
+        return (
+            initiator != "agent"
+            and bool(non_system)
+            and (non_system[-1].role or "").strip().casefold() == "user"
+        )
 
     @classmethod
     def _is_new_user_turn(cls, request: ModelInvocationRequest) -> bool:
@@ -3364,6 +3389,12 @@ class ModelRouterService(_ModelRouterLifecycleService):
                 issues.append(ModelRouterValidationIssue(
                     code="start_has_input",
                     message="Start 节点不能有入线。",
+                    node_id=starts[0].id,
+                ))
+            if len(outgoing[starts[0].id]) > 1:
+                issues.append(ModelRouterValidationIssue(
+                    code="start_branches_ambiguous",
+                    message="Start 节点只能连出一条线，分支请用 Condition 节点。",
                     node_id=starts[0].id,
                 ))
             reachable = ModelRouterService._reachable(starts[0].id, outgoing)

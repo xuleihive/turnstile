@@ -19,9 +19,9 @@ import {
 } from "../../../components/ui/select"
 import { dataSource } from "../api"
 import { ApiError } from "../../../api/client"
-import { finopsQueries, invalidateFinOps } from "../queries"
+import { finopsKeys, finopsQueries, invalidateFinOps } from "../queries"
 import { useAuth } from "../../../providers/auth-provider"
-import { gatewayInvocationChoices, resolveInvocationModel, type GatewaySelection } from "../../../lib/gateway-topology"
+import { gatewayInvocationChoices, personMayInvoke, resolveInvocationModel, type GatewaySelection } from "../../../lib/gateway-topology"
 import { modelInventoryFamily } from "../../../lib/model-inventory-filters"
 import { clientSampleFor, type ClientSampleOperation, type ClientSampleRequest } from "../../../lib/application-client-samples"
 import type { DecisionInvocationRequest, DecisionInvocationResponse, EnterpriseEntityCatalog, ImageGenerationOptions, ImageInvocationResponse, ManagedModel, ModelInvocationResponse, ModelRuntime } from "../types"
@@ -128,8 +128,17 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
   ) === true;
   const gatewayReady = !explicitGateway || (explicitGatewayAvailable && !topology.isLoading && !topology.error && Boolean(selectedGateway?.selectable));
   const [imageOptions, setImageOptions] = useState<ImageGenerationOptions | null>(null);
+  const policyPeriod = new Date().toISOString().slice(0, 7);
+  const modelPolicies = useQuery({
+    queryKey: [...finopsKeys.budgets(policyPeriod), "allocation-preview"],
+    queryFn: () => dataSource.budgets(policyPeriod, true),
+    enabled: Boolean(userId),
+  });
+  const invocationPerson = modelPolicies.data?.items.find((item) => item.scope_type === "user" && item.scope_id === userId);
+  const assignedModelIds = invocationPerson?.model_policy_configured ? new Set(invocationPerson.allowed_model_ids) : null;
+  const invocableModels = (registry.data?.models ?? []).filter((model) => personMayInvoke(model, assignedModelIds));
   const invocationModel = resolveInvocationModel(
-    registry.data?.models ?? [],
+    invocableModels,
     invocationTarget === DEFAULT_MODEL_OPTION ? null : selectedDirectModelId,
     imageMode,
     decisionMode,
@@ -289,8 +298,8 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
   };
   if (registry.isLoading) return <LoadingState label="正在加载调用配置" />;
   if (registry.error) return <ErrorState error={registry.error} />;
-  const models = registry.data?.models.filter((item) => item.enabled && item.capabilities.includes("image_generation") === imageMode
-    && item.capabilities.includes("decision") === decisionMode) ?? [];
+  const models = invocableModels.filter((item) => item.enabled && item.capabilities.includes("image_generation") === imageMode
+    && item.capabilities.includes("decision") === decisionMode);
   const selectedModel = invocationTarget.startsWith(MODEL_TARGET_PREFIX)
     ? invocationModel
     : null;
@@ -420,6 +429,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
                     <span className="invoke-model-option">
                       <InvocationModelLogo model={model} runtime={registry.data?.runtimes.find(runtime => runtime.id === model.runtime_id)} />
                       <span>{model.display_name}</span>
+                      {models.some((other) => other.id !== model.id && other.display_name === model.display_name) && <small data-no-localize>{model.model_key}</small>}
                     </span>
                   </SelectItem>
                 ))}</SelectGroup>

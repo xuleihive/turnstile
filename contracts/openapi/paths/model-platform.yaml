@@ -400,6 +400,8 @@ paths:
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         '403':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         '502':
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         '503':
@@ -411,7 +413,8 @@ paths:
       description: Requires an Owner session and the write-origin check. Read-only validation of the existing
         APIM, reserved API identity, shared governance configuration and budget readiness. Returns exact
         generated identifiers, steps, blockers and a confirmation hash. No Azure resource or local target
-        is created by preview.
+        is created by preview. Returns 409 when the tenant ID is not the tenant of the Turnstile
+        management identity.
       tags:
       - Model Control Plane
   /api/v1/model-management/apim-onboarding/{operation_id}/retry:

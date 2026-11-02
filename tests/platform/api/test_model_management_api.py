@@ -11,7 +11,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from backend.api import (
     app,
@@ -30,7 +30,11 @@ from tests.backend.model_platform.control_plane_support import (
 from tests.backend.model_platform.test_gateway_targets import TARGET, target
 from tests.backend.model_platform.test_image_publication import image_publication
 from turnstile_core.config import Settings
-from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationCreate
+from turnstile_core.domain.control_plane import (
+    GatewayPublication,
+    GatewayPublicationCreate,
+    ModelTarget,
+)
 from turnstile_core.domain.gateway_targets import SelfHostedGatewayBootstrap
 from turnstile_core.domain.model_availability import (
     ModelAvailabilityConflict,
@@ -41,7 +45,10 @@ from turnstile_core.domain.model_availability import (
 from turnstile_core.integrations.apim_control_plane import ApimPolicyCompiler
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.security import CredentialCipher
-from turnstile_core.services.control_plane import GatewayControlPlaneService
+from turnstile_core.services.control_plane import (
+    ControlPlaneNotFoundError,
+    GatewayControlPlaneService,
+)
 from turnstile_core.services.model_availability import ModelAvailabilityService
 
 client = TestClient(app)
@@ -592,6 +599,71 @@ def test_oauth_validation_errors_never_return_credential_input(
     assert response.status_code == 422
     assert secret not in response.text
     assert not publication_api.gateway_publications
+
+
+def test_publication_validation_errors_are_conflicts_without_stored_values(
+    publication_api: InMemoryRepository,
+) -> None:
+    # D35: a stored model that failed validation surfaced as HTTP 500.
+    with pytest.raises(ValidationError) as invalid:
+        ModelTarget.model_validate({
+            "model_key": "unit", "display_name": "Unit", "upstream_model_id": "stored-upstream",
+            "context_price_rule": {"short_context_max_tokens": 270001},
+        })
+    service = app.dependency_overrides[control_plane_service]()
+    gateway = gateway_id(publication_api)
+    with (
+        patch.object(service, "publish", side_effect=invalid.value),
+        patch.object(service, "publish_multi_target", side_effect=ValueError(
+            "Context pricing requires distinct tier references",
+        )),
+    ):
+        single = client.post(
+            "/api/v1/model-management/publications",
+            headers={"Origin": "http://localhost:5173"}, json=bedrock_publication(gateway),
+        )
+        multi = client.post(
+            "/api/v1/model-management/rollouts",
+            headers={"Origin": "http://localhost:5173"},
+            json={"children": [
+                {"publication": bedrock_publication(gateway)},
+                {"publication": bedrock_publication(str(UUID(int=92)))},
+            ]},
+        )
+    assert single.status_code == 409
+    assert single.json()["detail"] == (
+        "A custom context rule requires both short and long catalog tiers"
+    )
+    assert "stored-upstream" not in single.text
+    assert multi.status_code == 409
+    assert multi.json()["detail"] == "Context pricing requires distinct tier references"
+
+
+def test_publication_endpoints_report_missing_resources_as_not_found(
+    publication_api: InMemoryRepository,
+) -> None:
+    service = app.dependency_overrides[control_plane_service]()
+    gateway = gateway_id(publication_api)
+    missing = ControlPlaneNotFoundError("APIM target not found")
+    with (
+        patch.object(service, "publish", side_effect=missing),
+        patch.object(service, "publish_multi_target", side_effect=missing),
+    ):
+        single = client.post(
+            "/api/v1/model-management/publications",
+            headers={"Origin": "http://localhost:5173"}, json=bedrock_publication(gateway),
+        )
+        multi = client.post(
+            "/api/v1/model-management/rollouts",
+            headers={"Origin": "http://localhost:5173"},
+            json={"children": [
+                {"publication": bedrock_publication(gateway)},
+                {"publication": bedrock_publication(str(UUID(int=92)))},
+            ]},
+        )
+    assert single.status_code == 404
+    assert multi.status_code == 404
+    assert single.json()["detail"] == multi.json()["detail"] == "APIM target not found"
 
 
 def test_gateway_release_reads_are_available_to_members(

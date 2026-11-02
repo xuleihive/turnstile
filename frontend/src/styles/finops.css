@@ -345,7 +345,7 @@
 .simple-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .simple-model-grid.single { grid-template-columns: 1fr; }
 .publication-model-identity-grid { grid-template-columns: minmax(0, 180px) minmax(0, 1fr); align-items: end; }
-.publication-model-identity-grid .registry-select-trigger { height: 32px; }
+.publication-model-identity-grid .registry-select-trigger, .publication-model-identity-grid [data-slot="input"] { height: 32px; }
 .openai-compatible-identity-grid { min-width: 0; display: grid; grid-template-columns: minmax(150px, 180px) minmax(0, 1fr); gap: 10px; }
 .simple-connection-section { border-top: 1px solid var(--border); padding-top: 12px; }
 .publication-intent-note { min-height: 46px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px; border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; background: color-mix(in oklch, var(--brand) 5%, var(--background)); }

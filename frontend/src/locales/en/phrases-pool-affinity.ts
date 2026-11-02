@@ -3,6 +3,7 @@ export const POOL_AFFINITY_PHRASES: Record<string, string> = {
   "黏着已生效": "Affinity active",
   "黏着待发布": "Affinity pending",
   "黏着已关闭": "Affinity off",
+  "黏着待关闭": "Affinity off after publish",
   "当前后端未发布会话黏着能力。": "Session affinity is not deployed on this backend.",
   "客户端须按对话保留 APIM Cookie。故障时可切换部署；调整池成员或配置可能重新分配会话。不会锁定 Azure 实际处理 Region。": "Clients must retain the APIM cookie per conversation. Failures may switch deployments; pool changes may reassign sessions. This does not pin Azure's physical processing region.",
   "绑定范围": "Binding scope",

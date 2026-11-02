@@ -427,4 +427,4 @@ def require_allowed_write_origin(request: Request, settings: Config) -> None:
     allowed = {value.rstrip("/") for value in settings.cors_origins}
     same_host = urlsplit(normalized).netloc == request.headers.get("host")
     if normalized not in allowed and not same_host:
-        raise HTTPException(status_code=403, detail="不允许从该来源执行写操作。")
+        raise HTTPException(status_code=403, detail="Writes from this origin are not allowed.")

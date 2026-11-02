@@ -255,6 +255,59 @@ def test_program_refresh_adopts_the_current_model_assignment_denial(tier: str) -
     )
 
 
+@pytest.mark.parametrize("tier", ["Developer", "StandardV2"])
+def test_program_refresh_adopts_the_current_application_denial(tier: str) -> None:
+    # Programs installed before the application 403 used the standard envelope must still refresh.
+    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_policy_components import component_digest
+    from turnstile_core.integrations.apim_storage_routes import (
+        refresh_fixed_budget_execution_policy,
+        upgrade_fixed_pool_program,
+    )
+
+    plan = onboarding_plan(service_tier=tier)
+    capability = self_hosted_gateway_capability_for_tier(plan.service_tier)
+    template = (REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
+    reason = template.index(
+        "var reason = (string)context.Variables[&quot;applicationDenialReason&quot;];"
+    )
+    start = template.rindex('<set-header name="x-request-id"', 0, reason)
+    end = template.index("</set-body>", reason) + len("</set-body>")
+    legacy = template[:start] + (
+        "<set-body>@(new JObject(new JProperty(&quot;error&quot;, (string)context.Variables"
+        "[&quot;applicationDenialReason&quot;])).ToString(Newtonsoft.Json.Formatting.None))"
+        "</set-body>"
+    ) + template[end:]
+    installed = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), legacy, self_hosted_gateway=capability,
+    )
+    current = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), template, self_hosted_gateway=capability,
+    )
+    canonical = compose_availability_parent(
+        onboarding_canonical_parent(template, plan.request.api_id),
+    )
+
+    def refresh(program: FixedRouteProgram) -> FixedRouteProgram:
+        return upgrade_fixed_pool_program(
+            refresh_fixed_budget_execution_policy(
+                program.parent_policy, program.binding, canonical,
+            ),
+            program.binding,
+        )
+
+    refreshed = refresh(installed)
+    again = refresh(refreshed)
+
+    assert installed.parent_policy != current.parent_policy
+    assert component_digest(parse_policy(refreshed.parent_policy)) == component_digest(
+        parse_policy(current.parent_policy)
+    )
+    assert refreshed.operation_policies == current.operation_policies
+    assert again.parent_policy == refreshed.parent_policy
+    assert again.operation_policies == refreshed.operation_policies
+
+
 def assert_decision_and_image_program(
     binding: Any, parent_policy: str, policies: dict[str, str],
     contracts: dict[str, tuple[str, str]],

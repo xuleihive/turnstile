@@ -63,9 +63,10 @@ def foundry_deployment_catalog(
     if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", deployment):
         raise PolicyCompilationError("Foundry deployment name is invalid")
     try:
+        request_headers = headers()
         with client.stream(
             "GET", project.rstrip("/") + "/deployments", params={"api-version": "v1"},
-            headers=headers(), timeout=5, follow_redirects=False,
+            headers=request_headers, timeout=5, follow_redirects=False,
         ) as response:
             raw = bytearray()
             for chunk in response.iter_bytes():
@@ -73,10 +74,25 @@ def foundry_deployment_catalog(
                     raise PolicyCompilationError("Deployment metadata response exceeds its bound")
                 raw.extend(chunk)
             if response.status_code != 200:
-                raise PolicyCompilationError("Deployment validation failed: " + json.dumps({
+                details: dict[str, Any] = {
                     "code": "deployment_metadata_unavailable", "deployment": deployment,
                     "http_status": response.status_code,
-                }))
+                }
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    body = None
+                error = body.get("error") if isinstance(body, dict) else None
+                upstream = error.get("code") if isinstance(error, dict) else None
+                if isinstance(upstream, str) and re.fullmatch(
+                    r"[A-Za-z][A-Za-z0-9_.-]{0,63}", upstream,
+                ):
+                    details["upstream_code"] = upstream
+                if "Authorization" in request_headers:
+                    details["auth"] = "managed_identity"
+                raise PolicyCompilationError(
+                    "Deployment validation failed: " + json.dumps(details),
+                )
             document = json.loads(raw)
     except PolicyCompilationError:
         raise

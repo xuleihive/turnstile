@@ -368,10 +368,14 @@ def resolve_range(
     itself it would occasionally be a day out, and nothing downstream could tell.
     """
 
+    preset = arguments.time_range
+    # Months follow the UTC budget calendar, so "this month" is the window the budget page
+    # and Application usage report.
+    if preset in {"this_month", "last_month"}:
+        timezone = "UTC"
     zone = _zone(timezone)
     now = datetime.now(zone)
     today = now.date()
-    preset = arguments.time_range
     presets = _pack(_PRESET_LABELS, locale)
     if preset == "custom":
         if not arguments.start_date or not arguments.end_date:
@@ -826,18 +830,34 @@ class AssistantTools:
             window.end,
             arguments.dimension,
             _filters(arguments),
-            arguments.limit,
+            MAX_ROWS,
         )
         metric = arguments.metric
+        # The repository orders by tokens; a cost or latency ranking must order by that.
+        rows = sorted(rows, key=lambda row: -float(row[metric] or 0))[: arguments.limit]
         metric_label, unit = _pack(_METRIC_LABELS, locale)[metric]
         dimension_label = _pack(_DIMENSION_LABELS, locale)[arguments.dimension]
+        names = [str(row["name"]) for row in rows]
+        if arguments.dimension == "model" and len(set(names)) < len(names):
+            # Two deployments can share a display name; the dashboard adds the connection.
+            registry = self._repository.registry()
+            runtimes = {str(item["id"]): str(item["name"]) for item in registry["runtimes"]}
+            connections = {
+                str(item["id"]): runtimes.get(str(item["runtime_id"]))
+                for item in registry["models"]
+            }
+            names = [
+                f"{name} · {connections[str(row['id'])]}"
+                if names.count(name) > 1 and connections.get(str(row["id"])) else name
+                for name, row in zip(names, rows, strict=True)
+            ]
         chart_rows = [
             {
-                "name": str(row["name"]),
+                "name": name,
                 metric: float(row[metric]) if metric != "total_requests" else int(row[metric]),
                 "share_percent": float(row["share_percent"]),
             }
-            for row in rows
+            for name, row in zip(names, rows, strict=True)
         ]
         chart = ChartSpec(
             id=f"ranking-{arguments.dimension}-{metric}",

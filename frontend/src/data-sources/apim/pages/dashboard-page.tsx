@@ -73,6 +73,7 @@ import {
   formatLatency,
   LoadingState,
   PanelTitle,
+  requestCost,
 } from "./dashboard-shared"
 import {
   DropdownMenu,
@@ -83,7 +84,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
-import { usageWindow } from "../api"
+import { usageWindow, type UsageWindowRange } from "../api"
 import { getIntlLocale, useLocale, type LocalePreference } from "../../../locales/index"
 import { estimateRequestCost, hasModelPrices, priceRequests, requestCostCalculation } from "../../../lib/pricing"
 import { useAuth } from "../../../providers/auth-provider"
@@ -144,9 +145,9 @@ export function FinOpsDashboard({
 }: {
   initialTab?: AnalyticsTab
   onToggleSidebar: () => void
-  days: number
+  days: UsageWindowRange
   scope: FinOpsScope
-  onDaysChange: (days: number) => void
+  onDaysChange: (days: UsageWindowRange) => void
   onScopeChange: (scope: FinOpsScope) => void
   onOpenRequest: (requestId: string) => void
 }) {
@@ -164,7 +165,7 @@ export function FinOpsDashboard({
   const agents = entities?.agents ?? []
   const users = entities?.users.filter((item) => !scope.department_id || item.parent_id === scope.department_id) ?? []
   const updateScope = (patch: Partial<FinOpsScope>) => onScopeChange({ ...scope, ...patch })
-  const activeFilterCount = Object.values(scope).filter(Boolean).length + (days === 30 ? 0 : 1)
+  const activeFilterCount = Object.values(scope).filter(Boolean).length + (days === "month" ? 0 : 1)
   const refreshCurrentPage = async () => {
     setIsRefreshing(true)
     try {
@@ -183,7 +184,7 @@ export function FinOpsDashboard({
       <Button variant="ghost" size="icon-sm" className="finops-header-refresh" aria-label="刷新当前页面数据" title="刷新当前页面数据" disabled={isRefreshing} onClick={() => void refreshCurrentPage()}><RefreshCw className={isRefreshing ? "spin" : undefined} size={15} /></Button>
     </header>
     {tab !== "invoke" && <div className="finops-filterbar">
-      <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== 30} allowAll={false} options={[{ value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(Number(next))} />
+      <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== "month"} allowAll={false} options={[{ value: "month", label: "本月" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(next === "month" ? next : Number(next))} />
       {entities && <>
         <FilterMenuField label="组织" icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
         <FilterMenuField label="部门" icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
@@ -195,7 +196,7 @@ export function FinOpsDashboard({
         <FilterMenuField label="智能体" icon={Bot} value={scope.agent_id} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
         <FilterMenuField label="人员" icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
       </>}
-      {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange(30); onScopeChange({}) }}><X size={14} />重置</Button>}
+      {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange("month"); onScopeChange({}) }}><X size={14} />重置</Button>}
     </div>}
     <div className="finops-scroll-region">
       {tab !== "invoke" && unpricedModels.length > 0 && <PricingCoverageNotice modelKeys={unpricedModels.map((model) => model.model_key)} />}
@@ -251,13 +252,14 @@ function ExecutiveOverview({ filters, costAvailable: configuredCostAvailable }: 
   const estimatedCost = totals.estimated_cost
   const costAvailable = configuredCostAvailable || estimatedCost > 0
   const signals = (anomalies.data ?? []).slice(0, 5)
+  const comparison = filters.range === "month" ? "较上月同期" : "较上期"
   return <div className="finops-grid">
     <section className="finops-kpis span-3">
-      <Kpi label="总 Token" value={compact.format(totals.total_tokens)} change={overview.data.changes_percent.total_tokens} icon={Zap} />
-      <Kpi label="总调用次数" value={compact.format(totals.total_requests)} change={overview.data.changes_percent.total_requests} icon={Activity} />
+      <Kpi label="总 Token" value={compact.format(totals.total_tokens)} change={overview.data.changes_percent.total_tokens} comparison={comparison} icon={Zap} />
+      <Kpi label="总调用次数" value={compact.format(totals.total_requests)} change={overview.data.changes_percent.total_requests} comparison={comparison} icon={Activity} />
       <Kpi label="估算成本" value={!costAvailable ? "未计价" : currency.format(estimatedCost)} change={null} note={costAvailable ? "按入库时单价结算" : undefined} icon={CircleDollarSign} />
-      <Kpi label="平均延迟" value={formatLatency(totals.average_latency_ms)} change={overview.data.changes_percent.average_latency_ms} icon={Clock3} />
-      <Kpi label="错误率" value={`${totals.error_rate.toFixed(1)}%`} change={overview.data.changes_percent.error_rate} icon={ShieldAlert} />
+      <Kpi label="平均延迟" value={formatLatency(totals.average_latency_ms)} change={overview.data.changes_percent.average_latency_ms} comparison={comparison} icon={Clock3} />
+      <Kpi label="错误率" value={`${totals.error_rate.toFixed(1)}%`} change={overview.data.changes_percent.error_rate} comparison={comparison} icon={ShieldAlert} />
     </section>
     <UsageActivityCard filters={filters} costAvailable={costAvailable} />
     <DistributionRankingPanel className="span-2" title="运行时用量结构" meta={`${runtimes.data?.items.length ?? 0} 个运行时`} items={runtimes.data?.items ?? []} costAvailable={costAvailable} metricMode="auto" emptyTitle="暂无运行时数据" emptyDetail="当前范围暂无用量数据。" />
@@ -273,8 +275,8 @@ function ExecutiveOverview({ filters, costAvailable: configuredCostAvailable }: 
   </div>
 }
 
-function Kpi({ label, value, change, note, icon: Icon }: { label: string; value: string; change: number | null; note?: string; icon: typeof Activity }) {
-  return <div><span className="finops-kpi-icon"><Icon size={16} /></span><label>{label}</label><strong>{value}</strong><small className={change != null && change > 0 ? "up" : ""}>{note ?? (change == null ? "无上期数据" : `${change > 0 ? "+" : ""}${change.toFixed(1)}% 较上期`)}</small></div>
+function Kpi({ label, value, change, comparison = "较上期", note, icon: Icon }: { label: string; value: string; change: number | null; comparison?: string; note?: string; icon: typeof Activity }) {
+  return <div><span className="finops-kpi-icon"><Icon size={16} /></span><label>{label}</label><strong>{value}</strong><small className={change != null && change > 0 ? "up" : ""}>{note ?? (change == null ? "无上期数据" : `${change > 999 ? "> 999" : `${change > 0 ? "+" : ""}${change.toFixed(1)}`}% ${comparison}`)}</small></div>
 }
 
 function RankingLimitSelect({ value, onChange, label }: { value: RankingLimit; onChange: (value: RankingLimit) => void; label: string }) {
@@ -1630,7 +1632,7 @@ function RequestTraceDetail({
         <div><dt>判路由开销</dt><dd>{decisionOverheadLabel}</dd></div>
         <div><dt>模型推理耗时</dt><dd>{formatLatency(routerCandidateLatency || request.latency_ms)}{routerCandidateAttempts.length > 1 ? ` (${routerCandidateAttempts.length} 次尝试)` : ""}</dd></div>
         <div><dt>端到端耗时 / Token</dt><dd>{formatLatency(routerTotalLatency)} · {routerTotalTokens.toLocaleString(getIntlLocale())}</dd></div>
-        <div><dt>总估算费用</dt><dd>{costAvailable ? currency.format(routerTotalCost) : "未计价"}</dd></div>
+        <div><dt>总估算费用</dt><dd>{costAvailable ? requestCost.format(routerTotalCost) : "未计价"}</dd></div>
       </dl>
       <div className="trace-router-gantt" aria-label="路由执行时序甘特图">
         <div className="trace-router-gantt-title">
@@ -1722,14 +1724,14 @@ function RequestTraceDetail({
                 <div><dt>步骤类型</dt><dd>路由分类器</dd></div>
                 <div><dt>判路由置信度</dt><dd>{attempt.decision_confidence != null ? `${(attempt.decision_confidence * 100).toFixed(1)}%` : "—"}</dd></div>
                 <div><dt>Token (入/出)</dt><dd>{attempt.total_tokens == null ? "—" : `${attempt.total_tokens.toLocaleString(getIntlLocale())} (${attempt.input_tokens ?? 0}/${attempt.output_tokens ?? 0})`}</dd></div>
-                <div><dt>判路由费用</dt><dd>{attempt.estimated_cost == null ? "—" : currency.format(attempt.estimated_cost)}</dd></div>
+                <div><dt>判路由费用</dt><dd>{attempt.estimated_cost == null ? "—" : requestCost.format(attempt.estimated_cost)}</dd></div>
                 <div><dt>状态</dt><dd>{attempt.status_code ? `HTTP ${attempt.status_code}` : "未调用"}</dd></div>
                 <div><dt>决策耗时</dt><dd>{attempt.latency_ms == null ? "—" : formatLatency(attempt.latency_ms)}</dd></div>
               </> : <>
                 <div><dt>候选优先级</dt><dd>{attempt.priority != null ? `P${attempt.priority}` : "—"}</dd></div>
                 <div><dt>{attempt.strategy_type === "weighted" ? "分流权重" : "路由限制"}</dt><dd>{attempt.strategy_type === "weighted" && attempt.weight != null ? `${attempt.weight}%` : attempt.max_cost_per_million != null ? `≤ $${attempt.max_cost_per_million}/M` : attempt.max_latency_ms != null ? `≤ ${attempt.max_latency_ms}ms` : "无额外上限"}</dd></div>
                 <div><dt>Token (入/出)</dt><dd>{attempt.total_tokens == null ? "—" : `${attempt.total_tokens.toLocaleString(getIntlLocale())} (${attempt.input_tokens ?? 0}/${attempt.output_tokens ?? 0})`}</dd></div>
-                <div><dt>推理费用</dt><dd>{attempt.estimated_cost == null ? "—" : currency.format(attempt.estimated_cost)}</dd></div>
+                <div><dt>推理费用</dt><dd>{attempt.estimated_cost == null ? "—" : requestCost.format(attempt.estimated_cost)}</dd></div>
                 <div><dt>状态</dt><dd>{attempt.status_code ? `HTTP ${attempt.status_code}` : attempt.outcome === "cost_limit_exceeded" ? "成本约束跳过" : attempt.outcome === "unavailable" ? "不可用" : "未调用"}</dd></div>
                 <div><dt>推理耗时</dt><dd>{attempt.latency_ms == null ? "—" : formatLatency(attempt.latency_ms)}</dd></div>
               </>}
@@ -1775,7 +1777,7 @@ function RequestTraceDetail({
         {tokenSegments.map((item) => <div className={`trace-token-fact ${item.className}`} key={item.label}><dt>{item.label}</dt><dd>{tokenValue(item)}</dd></div>)}
         <div className="trace-token-cost">
           <dt>估算费用</dt>
-          <dd>{!inputOutputMeasured ? usagePlaceholder : costAvailable || blockedBeforeModel ? `${cacheUsageUnmeasured ? "≥ " : ""}${currency.format(request.estimated_cost)}` : "未计价"}</dd>
+          <dd>{!inputOutputMeasured ? usagePlaceholder : costAvailable || blockedBeforeModel ? `${cacheUsageUnmeasured ? "≥ " : ""}${requestCost.format(request.estimated_cost)}` : "未计价"}</dd>
           {inputOutputMeasured && costAvailable && <dd className="trace-cost-calculation"><RequestCostCalculation request={request} /></dd>}
         </div>
       </dl>
@@ -1869,7 +1871,7 @@ export function TraceRow({
       </div>
       <small>{state === "measured" ? `${compact.format(item.total_tokens)} tokens` : placeholder}</small>
       <strong>
-        {state !== "measured" ? placeholder : costAvailable ? currency.format(item.estimated_cost) : "未计价"}
+        {state !== "measured" ? placeholder : costAvailable ? requestCost.format(item.estimated_cost) : "未计价"}
       </strong>
     </button>
   );
