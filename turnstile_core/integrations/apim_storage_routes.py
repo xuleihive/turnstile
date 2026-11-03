@@ -1978,6 +1978,10 @@ def fixed_operation(
             "interval": "1",
             "first-fast-retry": "true",
         })
+        # APIM keeps the previous member's backend headers; only some members set this one.
+        ET.SubElement(retry_node, "set-header", {
+            "name": "x-turnstile-pool-deployment", "exists-action": "delete",
+        })
         ET.SubElement(retry_node, "forward-request", {
             "timeout": "120", "buffer-request-body": "true",
             "buffer-response": "true" if operation == "microsoft-decision" else "false",

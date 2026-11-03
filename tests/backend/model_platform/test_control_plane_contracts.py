@@ -3977,6 +3977,11 @@ def _assert_pool_retries_every_request_and_hides_rate_limit_details(
     assert pooled.find("./retry/forward-request") is forwards[0]
     retry = pooled.find("./retry")
     assert retry is not None
+    # A member's deployment header must not reach the member chosen for the retry.
+    assert [(child.tag, child.get("name"), child.get("exists-action")) for child in retry] == [
+        ("set-header", "x-turnstile-pool-deployment", "delete"),
+        ("forward-request", None, None),
+    ]
     assert retry.get("condition") == (
         "@(context.Response != null && context.Response.StatusCode == 429)"
     )

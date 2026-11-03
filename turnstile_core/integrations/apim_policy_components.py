@@ -55,7 +55,14 @@ def validate_native_stream_policy(source: str, operation_id: str) -> str:
             return bool(children) and children[-1].tag == "otherwise" and all(
                 child.tag == "when" for child in children[:-1]
             ) and all(len(child) == 1 and immediate(child[0]) for child in children)
-        return node.tag in {"backend", "retry"} and len(node) == 1 and immediate(node[0])
+        if node.tag == "retry":
+            children = list(node)
+            return bool(children) and all(
+                child.tag == "set-header" and child.get("exists-action") == "delete"
+                and not list(child)
+                for child in children[:-1]
+            ) and immediate(children[-1])
+        return node.tag == "backend" and len(node) == 1 and immediate(node[0])
 
     if immediate(backend):
         return source

@@ -1064,6 +1064,7 @@ class ApimPolicyCompiler:
           count="{pool.rate_limit.max_attempts_per_request - 1}"
           interval="{pool.rate_limit.retry_interval_seconds}"
           first-fast-retry="{str(pool.rate_limit.first_fast_retry).lower()}">
+                    <set-header name="x-turnstile-pool-deployment" exists-action="delete" />
                     <forward-request timeout="{pool.rate_limit.backend_timeout_seconds}" buffer-request-body="true" buffer-response="false" />
         </retry>
       </when>"""
