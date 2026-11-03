@@ -128,6 +128,7 @@ from turnstile_core.integrations.apim_policy_components import (
     expression_token_spans,
     parse_policy,
     validate_executable_policy,
+    validate_native_stream_policy,
 )
 from turnstile_core.integrations.apim_storage_routes import (
     FixedProgramVerifier,
@@ -3930,6 +3931,8 @@ def test_compiler_emits_native_apim_pool_breakers_retry_and_probe_routes() -> No
         member for member in members if member.title.endswith("Secondary Foundry runtime")
     )
     assert dict(secondary.headers)["api-key"] == "{{secondary-foundry-key}}"
+    primary_member = next(member for member in members if member is not secondary)
+    assert "api-key" not in dict(primary_member.headers)
     assert {item.id for item in compiled.named_values} == {"secondary-foundry-key"}
     breaker = members[0].circuit_breaker
     assert breaker is not None
@@ -3977,9 +3980,11 @@ def _assert_pool_retries_every_request_and_hides_rate_limit_details(
     assert pooled.find("./retry/forward-request") is forwards[0]
     retry = pooled.find("./retry")
     assert retry is not None
-    # A member's deployment header must not reach the member chosen for the retry.
+    # Headers that only some members set must not reach the member chosen for the retry.
     assert [(child.tag, child.get("name"), child.get("exists-action")) for child in retry] == [
         ("set-header", "x-turnstile-pool-deployment", "delete"),
+        ("set-header", "api-key", "delete"),
+        ("set-header", "x-api-key", "delete"),
         ("forward-request", None, None),
     ]
     assert retry.get("condition") == (
@@ -4001,6 +4006,7 @@ def _assert_pool_retries_every_request_and_hides_rate_limit_details(
 
 def test_fixed_pool_retries_budgeted_requests_and_hides_member_rate_limits() -> None:
     from turnstile_core.integrations.apim_storage_routes import (
+        FIXED_OPERATIONS,
         FixedRouteBinding,
         fixed_operation,
     )
@@ -4015,11 +4021,11 @@ def test_fixed_pool_retries_budgeted_requests_and_hides_member_rate_limits() -> 
         ledger_table_endpoint="https://unitstore.table.core.windows.net",
         ledger_table_name="TurnstileLedger",
         trust_binding_sha256="a" * 64,
+        supported_profiles=("openai-v1", "anthropic-messages", "microsoft-decision"),
         pool_enabled=True,
+        decision_enabled=True,
     )
-    for operation in (
-        "chat-completions", "responses", "responses-compact", "anthropic-messages",
-    ):
+    for operation in (name for name in FIXED_OPERATIONS if name != "images-generations"):
         _assert_pool_retries_every_request_and_hides_rate_limit_details(
             ElementTree.fromstring(fixed_operation(operation, binding)),
             "./backend/choose/when",
@@ -4029,6 +4035,24 @@ def test_fixed_pool_retries_budgeted_requests_and_hides_member_rate_limits() -> 
     )
     assert "<retry" not in unpooled
     assert "StatusCode == 429" not in unpooled
+
+
+def test_native_stream_pool_retry_only_deletes_headers_before_forwarding() -> None:
+    def policy(step: str) -> str:
+        return (
+            '<policies><inbound><base /></inbound><backend><retry condition="@(true)" count="1"'
+            f' interval="1">{step}<forward-request buffer-response="false" /></retry></backend>'
+            "<outbound><base /></outbound><on-error><base /></on-error></policies>"
+        )
+
+    deleted = policy('<set-header name="api-key" exists-action="delete" />')
+    assert validate_native_stream_policy(deleted, "chat-completions") == deleted
+    for step in (
+        '<set-header name="api-key" exists-action="override"><value>k</value></set-header>',
+        '<set-variable name="unit" value="1" />',
+    ):
+        with pytest.raises(PolicyCompilationError, match="explicit and unbuffered"):
+            validate_native_stream_policy(policy(step), "chat-completions")
 
 def test_backend_pool_accepts_distinct_deployments_in_one_runtime() -> None:
     runtime_id = UUID("30000000-0000-4000-8000-000000000001")
