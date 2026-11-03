@@ -309,6 +309,65 @@ def test_program_refresh_adopts_the_current_application_denial(tier: str) -> Non
     assert again.operation_policies == refreshed.operation_policies
 
 
+@pytest.mark.parametrize("tier", ["Developer", "StandardV2"])
+def test_program_refresh_adopts_the_current_responses_cache_write_usage(
+    tier: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from turnstile_core.integrations import apim_budget_execution as budget_execution
+    from turnstile_core.integrations.apim_model_availability import compose_availability_parent
+    from turnstile_core.integrations.apim_policy_components import component_digest
+    from turnstile_core.integrations.apim_storage_routes import (
+        refresh_fixed_budget_execution_policy,
+        upgrade_fixed_pool_program,
+    )
+
+    plan = onboarding_plan(service_tier=tier)
+    capability = self_hosted_gateway_capability_for_tier(plan.service_tier)
+    template = (REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
+    legacy_template = template.replace(
+        '          ?? (long?)usage?[&quot;input_tokens_details&quot;]?'
+        '[&quot;cache_write_tokens&quot;]\n',
+        "",
+    )
+    legacy_usage = budget_execution.COMPLETE_USAGE.replace(
+        'var write = anthropic ? usage["cache_creation_input_tokens"]\n'
+        '        : (usage["prompt_tokens_details"] ?? usage["input_tokens_details"])'
+        '?["cache_write_tokens"];',
+        'var write = anthropic ? usage["cache_creation_input_tokens"] : '
+        'usage["prompt_tokens_details"]?["cache_write_tokens"];',
+    )
+    with monkeypatch.context() as previous:
+        previous.setattr(budget_execution, "COMPLETE_USAGE", legacy_usage)
+        installed = render_onboarding_fixed_program(
+            plan.request, onboarding_configuration(), legacy_template,
+            self_hosted_gateway=capability,
+        )
+    current = render_onboarding_fixed_program(
+        plan.request, onboarding_configuration(), template, self_hosted_gateway=capability,
+    )
+    canonical = compose_availability_parent(
+        onboarding_canonical_parent(template, plan.request.api_id),
+    )
+
+    def refresh(program: FixedRouteProgram) -> FixedRouteProgram:
+        return upgrade_fixed_pool_program(
+            refresh_fixed_budget_execution_policy(
+                program.parent_policy, program.binding, canonical,
+            ),
+            program.binding,
+        )
+
+    refreshed = refresh(installed)
+    again = refresh(refreshed)
+    assert installed.parent_policy != current.parent_policy
+    assert component_digest(parse_policy(refreshed.parent_policy)) == component_digest(
+        parse_policy(current.parent_policy),
+    )
+    assert refreshed.operation_policies == current.operation_policies
+    assert again.parent_policy == refreshed.parent_policy
+    assert again.operation_policies == refreshed.operation_policies
+
+
 _APIM_EXPRESSION = re.compile(r"(>\s*|<!\[CDATA\[\s*|=[\"'])@[({]")
 _APIM_EXPRESSION_END = {
     ">": re.compile(r"\s*<"), "<": re.compile(r"\s*\]\]>"),

@@ -1124,7 +1124,8 @@ COMPLETE_USAGE = """@{
         ?? (decision ? usage["completion_tokens"] : null);
       var read = anthropic ? usage["cache_read_input_tokens"]
         : (usage["prompt_tokens_details"] ?? usage["input_tokens_details"])?["cached_tokens"];
-      var write = anthropic ? usage["cache_creation_input_tokens"] : usage["prompt_tokens_details"]?["cache_write_tokens"];
+      var write = anthropic ? usage["cache_creation_input_tokens"]
+        : (usage["prompt_tokens_details"] ?? usage["input_tokens_details"])?["cache_write_tokens"];
       var required = new[] { inputValue, outputValue };
       if (required.Any(value => value == null || value.Type != JTokenType.Integer || (long)value < 0)
         || (read != null && (read.Type != JTokenType.Integer || (long)read < 0))

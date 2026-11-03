@@ -1500,6 +1500,7 @@ __USAGE_OBSERVER_HEADERS__
           ?? (long?)usage?[&quot;cache_read_input_tokens&quot;]
           ?? (long?)usage?[&quot;cached_tokens&quot;] ?? 0;
         var cacheWrite = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cache_write_tokens&quot;]
+          ?? (long?)usage?[&quot;input_tokens_details&quot;]?[&quot;cache_write_tokens&quot;]
           ?? (long?)usage?[&quot;cache_creation_input_tokens&quot;] ?? 0;
         // OpenAI reports prompt_tokens INCLUDING its cached subset, while Anthropic's
         // input_tokens EXCLUDES it. Both are normalized to the exclusive form so that

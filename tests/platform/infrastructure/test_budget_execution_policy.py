@@ -1,21 +1,41 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from threading import Event
+from typing import Any, cast
 from uuid import UUID
 from xml.etree import ElementTree as ET
 
 import pytest
 
 from scripts.prepare_budget_execution import CutoverReadback, render_candidate
+from tests.backend.persistence.test_price_sync_concurrency import (
+    pricing_postgres as pricing_postgres,
+)
 from tests.backend.telemetry.test_atomic_ledger import EPOCH, NOW, completion, identity, summary
 from tests.platform.api.test_model_router_api import router_repository as router_repository
-from turnstile_core.domain.ledger import LedgerAdmissionReceipt, complete_ledger, reserve_ledger
+from tests.platform.infrastructure.test_envoy_cache_adapter import execution_row, load_shipper
+from turnstile_core.domain.gateway_targets import canonical_usage_id_v2
+from turnstile_core.domain.ledger import (
+    BudgetPriceProjection,
+    LedgerAdmissionReceipt,
+    LedgerAttempt,
+    LedgerCharge,
+    LedgerProtocolConflict,
+    LedgerScope,
+    LedgerSummary,
+    complete_ledger,
+    reserve_ledger,
+    settle_ledger,
+)
+from turnstile_core.domain.models import ModelPrice
 from turnstile_core.integrations import apim_budget_execution as compiler
 from turnstile_core.integrations import apim_model_availability as availability
 from turnstile_core.integrations import apim_storage_routes as storage_routes
@@ -185,6 +205,40 @@ static class Program {
 
 def expression_id(expression: str) -> str:
     return hashlib.sha256(expression.encode()).hexdigest()[:20]
+
+
+def text_usage_expression() -> str:
+    root = parse_policy((ROOT / "infra/policies/foundry-finops-policy.xml").read_text())
+    node = root.find(
+        "./outbound/choose/otherwise/choose/otherwise/set-variable[@name='usagePayload']",
+    )
+    assert node is not None
+    return node.attrib["value"]
+
+
+def responses_observer_event(
+    receipt: LedgerAdmissionReceipt, native: dict[str, Any], streamed: bool,
+) -> dict[str, Any]:
+    request = receipt.identity
+    event = load_shipper().normalize_access_row(execution_row(
+        request_id=request.correlation_id, correlation_id=request.correlation_id,
+        usage_id=canonical_usage_id_v2(
+            request.gateway_profile_id, "unit-service", request.native_gateway_id,
+            request.correlation_id,
+        ),
+        model_id=request.model_id, user_id=request.scope.scope_id, api_format="openai_responses",
+        budget_execution=base64.b64encode(json.dumps(
+            [receipt.model_dump(mode="json")],
+        ).encode()).decode(),
+        response_content_type="text/event-stream" if streamed else "application/json",
+        response_status="completed", last_event_type="response.completed",
+        prompt_tokens=native["input_tokens"], output_tokens=native["output_tokens"],
+        total_tokens=native["total_tokens"],
+        cache_read_tokens=native["input_tokens_details"]["cached_tokens"],
+        cache_write_tokens=native["input_tokens_details"]["cache_write_tokens"],
+    ))
+    assert event is not None
+    return cast(dict[str, Any], event)
 
 
 def application_tpm_expressions() -> dict[str, str]:
@@ -1042,6 +1096,7 @@ def compiled_expressions(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path
     expressions.update(application_attribution_expressions().values())
     expressions.update(native_router_expressions().values())
     expressions.update(business_denial_expressions().values())
+    expressions.add(text_usage_expression())
     expressions.update(value for name, value in vars(availability).items()
                        if name.isupper() and isinstance(value, str) and value.startswith("@"))
     expressions.add(storage_routes.READ_FIXED_CONTENT)
@@ -2158,6 +2213,327 @@ def test_image_completion_usage_settles_only_exact_text_to_image_usage(
         )
     else:
         assert result["ingest_error"] == "usage_parse_failed"
+
+
+@pytest.mark.parametrize("operation", ["responses", "responses-compact", "chat-completions"])
+@pytest.mark.parametrize("reader", ["template", "fixed_program"])
+@pytest.mark.parametrize("details,expected", [
+    ({"cache_write_tokens": 2115, "cached_tokens": 0}, (3, 2115, 2115, 5, 2123)),
+    ({"cache_write_tokens": 0, "cached_tokens": 2115}, (3, 2115, 0, 5, 2123)),
+    ({"cache_write_tokens": 1115, "cached_tokens": 1000}, (3, 2115, 1115, 5, 2123)),
+    ({}, (2118, 0, 0, 5, 2123)),
+])
+def test_responses_completion_preserves_cache_buckets(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    operation: str, reader: str, details: dict[str, int], expected: tuple[int, int, int, int, int],
+) -> None:
+    chat = operation == "chat-completions"
+    response = json.dumps({"status": "completed", "usage": {
+        "prompt_tokens" if chat else "input_tokens": 2118,
+        "prompt_tokens_details" if chat else "input_tokens_details": details,
+        "completion_tokens" if chat else "output_tokens": 5, "total_tokens": 2123,
+    }})
+    model_id = UUID(int=4)
+    projection = BudgetPriceProjection.create(model_id, ModelPrice(
+        input_price_per_million=10, cached_price_per_million=1,
+        cache_write_price_per_million=20, output_price_per_million=30,
+    ), NOW)
+    receipt = LedgerAdmissionReceipt(
+        identity=identity(model_id=str(model_id)), epoch=EPOCH, reserved_tokens=3000,
+        budget_mode="usd", reserved_usd=Decimal("1"), price_snapshot=projection,
+    )
+    expression = compiler.COMPLETE_USAGE if reader == "fixed_program" else text_usage_expression()
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(expression), "body": "{}",
+        "operation": operation, "response": response,
+        "variables": {
+            "isResponsesOperation": not chat,
+            "executionDispatch": {"receipts": [receipt.model_dump(mode="json")]},
+            "executionPlan": {"model_id": str(model_id)},
+        },
+    }])[0]
+    assert result["estimated"] is False
+    assert tuple(result[field] for field in (
+        "input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens",
+    )) == expected[:4]
+    assert result["input_tokens"] + result["cached_tokens"] + result["output_tokens"] == 2123
+    if reader == "fixed_program":
+        assert result["usage_complete"] is True and result["tokens_consumed"] == expected[4]
+        expected_usd = (Decimal(expected[0]) * Decimal("10")
+                        + Decimal(expected[1] - expected[2]) * Decimal("1")
+                        + Decimal(expected[2]) * Decimal("20")
+                        + Decimal(expected[3]) * Decimal("30")) / Decimal(1_000_000)
+        assert Decimal(result["usd_cost"]) == expected_usd
+        assert result["budget_price_projection"] == projection.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("details", [
+    {"cached_tokens": 2115, "cache_write_tokens": 2115},
+    {"cached_tokens": 0, "cache_write_tokens": 2119},
+    {"cached_tokens": 0, "cache_write_tokens": -1},
+    {"cached_tokens": 0, "cache_write_tokens": "2115"},
+    {"cached_tokens": 0, "cache_write_tokens": None},
+])
+def test_responses_completion_rejects_inconsistent_cache_buckets(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, details: dict[str, Any],
+) -> None:
+    result = run_cases(compiled_expressions, tmp_path, [{
+        "expression": expression_id(compiler.COMPLETE_USAGE), "body": "{}",
+        "operation": "responses", "response": json.dumps({"status": "completed", "usage": {
+            "input_tokens": 2118, "input_tokens_details": details,
+            "output_tokens": 5, "total_tokens": 2123,
+        }}), "variables": {},
+    }])[0]
+    assert result["usage_complete"] is False and result["estimated"] is True
+    assert result["input_tokens"] is None and result["cached_tokens"] is None
+
+
+@pytest.mark.parametrize("scope_type", ["person", "application"])
+def test_responses_cache_usage_settles_original_price_once(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, scope_type: str,
+) -> None:
+    scope = LedgerScope.model_validate({
+        "scope_type": scope_type,
+        "scope_id": "unit-cache-budget" if scope_type == "person" else str(UUID(int=8)),
+        "period_start": identity().scope.period_start,
+    })
+    current = summary(
+        limit=0, scope=scope, budget_mode="usd", usd_limit=Decimal("5"),
+        confirmed_usd=Decimal("0.004196000"),
+    )
+    model_id = UUID(int=4)
+    projection = BudgetPriceProjection.create(model_id, ModelPrice(
+        input_price_per_million=1.25, cached_price_per_million=0.125,
+        cache_write_price_per_million=0.125, output_price_per_million=10,
+    ), NOW)
+    expected = (Decimal(3) * Decimal("1.25") + Decimal(2115) * Decimal("0.125")
+                + Decimal(5) * Decimal("10")) / Decimal(1_000_000)
+    assert expected == Decimal("0.000318125")
+
+    for streamed in (False, True):
+        request = identity(f"cache-{scope_type}-{streamed}", scope=scope, model_id=str(model_id))
+        current, attempt = reserve_ledger(
+            current, request, 3000, current.updated_at,
+            reserved_usd=Decimal("0.01"), price_snapshot=projection,
+        )
+        receipt = LedgerAdmissionReceipt(
+            identity=request, epoch=EPOCH, reserved_tokens=3000, budget_mode="usd",
+            reserved_usd=Decimal("0.01"), price_snapshot=projection,
+        )
+        native = {"input_tokens": 2118, "output_tokens": 5, "total_tokens": 2123,
+                  "input_tokens_details": {
+                      "cached_tokens": 2115 if streamed else 0,
+                      "cache_write_tokens": 0 if streamed else 2115,
+                  }}
+        response = json.dumps({"status": "completed", "usage": native})
+        if streamed:
+            response = "event: response.completed\ndata: " + json.dumps({
+                "type": "response.completed", "response": {"status": "completed", "usage": native},
+            }) + "\n\n"
+        variables = {
+            "executionDispatch": {"receipts": [receipt.model_dump(mode="json")]},
+            "executionPlan": {"model_id": str(model_id)},
+        }
+        usage = run_cases(compiled_expressions, tmp_path, [{
+            "expression": expression_id(compiler.COMPLETE_USAGE), "body": "{}",
+            "operation": "responses", "response": response, "variables": variables,
+        }])[0]
+        if streamed:
+            assert usage["usage_complete"] is False
+        else:
+            assert usage["usage_complete"] is True
+            assert Decimal(usage["usd_cost"]) == expected
+            completed = run_cases(compiled_expressions, tmp_path, [{
+                "expression": expression_id(compiler.COMPLETION), "body": "{}",
+                "operation": "responses", "variables": {
+                    "usagePayload": usage, "executionReceipt": receipt.model_dump(mode="json"),
+                    "executionSummaryRead": stored_response(current.model_dump(mode="json")),
+                    "executionAttemptRead": stored_response(attempt.model_dump(mode="json")),
+                },
+            }])[0]
+            assert completed["error"] == "" and completed["already_settled"] is False
+            current = LedgerSummary.model_validate(completed["summary"])
+            attempt = LedgerAttempt.model_validate(completed["attempt"])
+            assert attempt.actual_usd == expected
+            assert attempt.completion_evidence is not None
+
+        observed = responses_observer_event(receipt, native, streamed)
+        assert observed["usage_complete"] is True
+        assert (observed["input_tokens"], observed["cached_tokens"], observed["output_tokens"]) == (
+            3, 2115, 5,
+        )
+        assert observed["cache_write_tokens"] == (0 if streamed else 2115)
+        formal = LedgerCharge(
+            identity=request, epoch=EPOCH, revision=1, evidence_rank=3,
+            evidence_key="observer:" + observed["id"], total_tokens=2123,
+            budget_mode="usd", actual_usd=expected, price_snapshot=projection,
+        )
+        previous = current
+        current, attempt = settle_ledger(current, attempt, formal, current.updated_at)
+        if not streamed:
+            assert current is previous
+        duplicate, duplicate_attempt = settle_ledger(current, attempt, formal, current.updated_at)
+        assert duplicate is current and duplicate_attempt is attempt
+        assert attempt.actual_usd == expected and attempt.actual_tokens == 2123
+        assert current.active_reserved_usd == 0
+        with pytest.raises(LedgerProtocolConflict, match="conflicting amount"):
+            settle_ledger(current, attempt, formal.model_copy(update={
+                "actual_usd": expected + Decimal("0.00000000000001"),
+            }), current.updated_at)
+        with pytest.raises(LedgerProtocolConflict, match="admitted price snapshot"):
+            settle_ledger(current, attempt, formal.model_copy(update={
+                "price_snapshot": projection.model_copy(update={"price_sha256": "f" * 64}),
+            }), current.updated_at)
+
+    assert current.confirmed_usd == Decimal("0.004832250")
+    assert current.confirmed_usd - Decimal("0.004196000") == Decimal("0.000636250")
+
+
+@pytest.mark.parametrize("case_name,cache_read,cache_write", [
+    ("json_write", 0, 2115), ("json_read", 2115, 0), ("json_uncached", 0, 0),
+    ("sse_write", 0, 2115), ("sse_read", 2115, 0), ("sse_uncached", 0, 0),
+    ("old_json", 0, 2115),
+])
+def test_responses_formal_tasks_apply_once_without_hiding_conflicts(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    pricing_postgres: tuple[str, Event], case_name: str, cache_read: int, cache_write: int,
+) -> None:
+    from unittest.mock import Mock
+    from uuid import uuid4
+
+    from turnstile_core.domain.gateway_targets import gateway_deployment_id_for
+    from turnstile_core.ingestion.processor import CoefficientResolver, UsageProcessor
+    from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
+    from turnstile_core.services.budget_settlement import BudgetSettlementService
+
+    scope = identity().scope.model_copy(update={"scope_id": "cache-" + uuid4().hex})
+    request = identity("formal-" + uuid4().hex, scope=scope, model_id=str(UUID(int=4)))
+    projection = BudgetPriceProjection.create(UUID(int=4), ModelPrice(
+        input_price_per_million=1.25, cached_price_per_million=0.125,
+        cache_write_price_per_million=0.125, output_price_per_million=10,
+    ), NOW)
+    current, attempt = reserve_ledger(
+        summary(limit=0, scope=scope, budget_mode="usd", usd_limit=Decimal("5")),
+        request, 3000, NOW, reserved_usd=Decimal("0.01"), price_snapshot=projection,
+    )
+    receipt = LedgerAdmissionReceipt(
+        identity=request, epoch=EPOCH, reserved_tokens=3000, budget_mode="usd",
+        reserved_usd=Decimal("0.01"), price_snapshot=projection,
+    )
+    streamed = case_name.startswith("sse")
+    native = {"input_tokens": 2118, "output_tokens": 5, "total_tokens": 2123,
+              "input_tokens_details": {
+                  "cached_tokens": cache_read, "cache_write_tokens": cache_write,
+              }}
+    if not streamed:
+        usage = run_cases(compiled_expressions, tmp_path, [{
+            "expression": expression_id(compiler.COMPLETE_USAGE), "body": "{}",
+            "operation": "responses",
+            "response": json.dumps({"status": "completed", "usage": native}),
+            "variables": {},
+        }])[0]
+        if case_name == "old_json":
+            usage.update(input_tokens=2118, cached_tokens=0, cache_write_tokens=0)
+        current, attempt = complete_ledger(current, attempt, receipt, completion(
+            2123, input_tokens=usage["input_tokens"], cached_tokens=usage["cached_tokens"],
+            cache_write_tokens=usage["cache_write_tokens"], output_tokens=usage["output_tokens"],
+        ), NOW)
+    before = current
+    observed = responses_observer_event(receipt, native, streamed)
+    expected = (Decimal(2118 - cache_read - cache_write) * Decimal("1.25")
+                + Decimal(cache_read + cache_write) * Decimal("0.125")
+                + Decimal(5) * Decimal("10")) / Decimal(1_000_000)
+    info, _waiting = pricing_postgres
+    repository = PostgreSqlOpsDbProxy(info)
+    try:
+        with repository._connection() as connection:
+            connection.execute(
+                "INSERT INTO gateway_profile(id,name,implementation) VALUES(%s,%s,'apim') "
+                "ON CONFLICT DO NOTHING", (request.gateway_profile_id, "Unit cache accounting"),
+            )
+            connection.execute(
+                """INSERT INTO apim_target_metadata (
+                   gateway_profile_id, arm_resource_id, tenant_id, subscription_id, resource_group,
+                   service_name, api_id, api_path, service_tier, tier_family, service_location,
+                   ownership_mode
+                   ) VALUES (%s,%s,%s,%s,'unit','unit-service','unit','unit','Developer',
+                             'classic','unit','turnstile_managed') ON CONFLICT DO NOTHING""",
+                (
+                    request.gateway_profile_id,
+                    "/subscriptions/" + str(EPOCH) + "/resourceGroups/unit/"
+                    "providers/Microsoft.ApiManagement/service/unit-service", EPOCH, EPOCH,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO gateway_deployment (
+                   id,apim_target_id,native_gateway_id,kind,display_name,hosting_mode,lifecycle_ownership
+                   ) VALUES (%s,%s,'managed','managed','Unit','azure_managed','turnstile_iac')
+                   ON CONFLICT DO NOTHING""",
+                (
+                    gateway_deployment_id_for(request.gateway_profile_id, "managed"),
+                    request.gateway_profile_id,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO budget_execution_scope (
+                   scope_type,scope_id,period_start,epoch,state,admitted_after,legacy_fence_verified_at
+                   ) VALUES ('person',%s,%s,%s,'active',%s,%s)""",
+                (scope.scope_id, scope.period_start, EPOCH, NOW, NOW),
+            )
+        processor = UsageProcessor(repository, CoefficientResolver({}), execution_enabled=True)
+        assert processor.process(observed) is True
+        with repository._connection() as connection:
+            queued = connection.execute(
+                "SELECT * FROM budget_settlement_task WHERE scope_id=%s", (scope.scope_id,),
+            ).fetchone()
+        assert queued is not None
+        assert queued["actual_usd"] == expected
+        assert queued["price_snapshot"] == projection.model_dump(mode="json")
+        assert (
+            queued["evidence_rank"], queued["revision"], queued["applied_revision"],
+        ) == (3, 1, 0)
+
+        def apply(charge: LedgerCharge) -> tuple[LedgerSummary, LedgerAttempt]:
+            nonlocal current, attempt
+            current, attempt = settle_ledger(current, attempt, charge, datetime.now(UTC))
+            return current, attempt
+
+        ledger = Mock()
+        ledger.settle.side_effect = apply
+        service = BudgetSettlementService(repository, ledger)
+        assert service.drain(observed["id"], limit=1) == int(case_name != "old_json")
+        with repository._connection() as connection:
+            applied = connection.execute(
+                "SELECT * FROM budget_settlement_task WHERE id=%s", (queued["id"],),
+            ).fetchone()
+        assert applied is not None and applied["attempts"] == 1
+        if case_name == "old_json":
+            assert current is before and current.confirmed_usd == Decimal("0.002697500")
+            assert applied["applied_revision"] == 0 and applied["applied_at"] is None
+            assert applied["last_error"] == "LedgerProtocolConflict"
+        else:
+            assert applied["applied_revision"] == 1 and applied["applied_at"] is not None
+            assert applied["last_error"] is None
+            assert current.confirmed_usd == expected and current.active_reserved_usd == 0
+            assert processor.process(observed) is True
+            assert service.drain(observed["id"], limit=1) == 0
+            with repository._connection() as connection:
+                repeated = connection.execute(
+                    "SELECT revision,applied_revision,attempts FROM budget_settlement_task "
+                    "WHERE id=%s",
+                    (queued["id"],),
+                ).fetchone()
+            assert repeated is not None
+            assert (
+                repeated["revision"], repeated["applied_revision"], repeated["attempts"],
+            ) == (1, 1, 1)
+            duplicate, duplicate_attempt = settle_ledger(
+                current, attempt, ledger.settle.call_args.args[0], datetime.now(UTC),
+            )
+            assert duplicate is current and duplicate_attempt is attempt
+            assert current.confirmed_usd == expected
+    finally:
+        repository.close()
 
 
 def test_image_response_settles_its_ledger_reservation(
