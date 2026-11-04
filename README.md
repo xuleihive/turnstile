@@ -13,7 +13,7 @@
 <p align="center"><strong>Governed AI access, spend, and operations through one self-hosted control plane.</strong></p>
 
 <p align="center">
-   <a href="https://github.com/xuleihive/turnstile/releases/tag/v1.3"><img alt="Turnstile release v1.3" src="https://img.shields.io/badge/release-v1.3-2f6fdd.svg"></a>
+   <a href="https://github.com/xuleihive/turnstile/releases/tag/v1.4"><img alt="Turnstile release v1.4" src="https://img.shields.io/badge/release-v1.4-2f6fdd.svg"></a>
    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2f6fdd.svg"></a>
    <a href="#prerequisites"><img alt="Python 3.11 or newer" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white"></a>
    <a href="#prerequisites"><img alt="Node.js 20.19.x or 22.12 and newer" src="https://img.shields.io/badge/Node.js-20.19.x%20%7C%2022.12%2B-339933?logo=node.js&amp;logoColor=white"></a>
@@ -32,7 +32,7 @@
 Turnstile is a self-hosted control plane for governed AI model access. It combines an Azure API Management gateway, token and cost telemetry, budgets, application access, model onboarding, release controls, and an operational web console.
 
 > [!NOTE]
-> **Turnstile v1.3** is the current public release. This release adds intelligent model routing and expands backend-pool operations, request diagnostics, and installation recovery. Review migrations, infrastructure requirements, and provider compatibility before upgrading a production deployment.
+> **Turnstile v1.4** is the current public release. Version history and release details are maintained on the [website](https://turn-stile.com/docs) and in [GitHub Releases](https://github.com/xuleihive/turnstile/releases/tag/v1.4).
 
 > [!IMPORTANT]
 > The included infrastructure templates deploy only the Turnstile platform. They do not create an Azure AI Foundry project, deploy provider models, or preload customer connections and models. Operators connect their own Foundry or compatible provider resources after the platform is running.
@@ -61,22 +61,6 @@ Turnstile is a self-hosted control plane for governed AI model access. It combin
 
 > [!WARNING]
 > The GitHub data source and GitHub Copilot integration are still under active development and are not production-ready. Enable them with care, and independently verify usage, cost, and governance data before relying on it for operational or financial decisions. If you only need FinOps for GitHub Copilot, see [OctoFinance](https://github.com/satomic/OctoFinance).
-
-## What's New in v1.3
-
-- **Model Intelligent Router:** a visual canvas and configuration editor for conditional routing,
-   priority and weighted strategies, model-based decisions, and fallback. Versioned publication,
-   per-person router assignments, and decision/attempt Trace records keep routing and access explicit.
-- **Backend-pool operations:** independent pool creation, member compatibility checks, priority,
-   weighting, session affinity, and resilience settings. Background publication can continue after
-   leaving the form, with progress recovery and client integration samples in the detail view.
-- **Usage and request diagnostics:** native APIM client routing, concrete Runtime attribution,
-   per-attempt diagnostics, and expanded Chat, Responses, and Anthropic streaming-usage handling.
-   Missing or incomplete usage remains distinguishable from measured zero.
-- **Installation and recovery:** initial fixed-program installation and registration, scoped
-   Publisher dependency preparation, private outbound networking for newly provisioned StandardV2
-   APIM, and checkpointed installation recovery. Startup checks require both API health and the
-   expected frontend version within the existing startup deadline.
 
 Existing capabilities include catalog and manual model pricing, connection/model discounts,
 regional and context-tier prices, historical price snapshots, versioned model availability,
@@ -193,9 +177,9 @@ In-memory repositories are used only for isolated unit tests. Integration and en
 
 The Bicep templates create Turnstile platform resources such as PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, Web App, Functions, and APIM integration. The deployment does not create an Azure AI Foundry project or provider model deployment.
 
-For **Turnstile v1.3**, choose the matching deployment path:
+For **Turnstile v1.4**, choose the matching deployment path:
 
-- **Upgrading an existing installation:** review the [infrastructure and protocol upgrade requirements](docs/deployment.md#prepare-for-v13). Keep the original state, database, ledger, APIM, identities and history; apply pending migrations and the required infrastructure changes as well as the application packages.
+- **Upgrading an existing installation:** review the [infrastructure and protocol upgrade requirements](docs/deployment.md#prepare-for-v14). Keep the original state, database, ledger, APIM, identities and history; apply pending migrations and the required infrastructure changes as well as the application packages.
 - **Installing from zero:** follow the step-by-step [website deployment guide](https://turn-stile.com/docs/deployment) (repository reference: [fresh-install guide](docs/deployment.md#deploy-v11-from-zero)). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
 
 StandardV2 does not support self-hosted gateways. That optional feature requires a compatible

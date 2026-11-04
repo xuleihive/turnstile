@@ -2,8 +2,13 @@
 
 ## Version scope
 
-**Turnstile v1.3 is the current public release.** The documentation below
+**Turnstile v1.4 is the current public release.** The documentation below
 describes the release workflows and operational boundaries.
+
+v1.4 fixes backend-pool retry credentials and Responses cache-write accounting for new requests.
+The [release notes](https://github.com/xuleihive/turnstile/releases/tag/v1.4) disclose the accepted
+Router/mobile limitations and unverified upgrade and UAT coverage. A targeted billing pass does
+not mean the full release gate passed or historical financial records were repaired.
 
 | Task | Start here | Important boundary |
 | --- | --- | --- |
@@ -13,7 +18,7 @@ describes the release workflows and operational boundaries.
 | Diagnose a Connection | [Connection diagnostics](configuration.md#connection-diagnostics) | Planning is non-inference; a confirmed check may incur provider charges. |
 | Select a Gateway and inspect a failed invocation | [Platform invocation trace](configuration.md#platform-invocation-trace) | A request-attempt record is not billing evidence; unknown usage must remain unknown. |
 | Understand a disabled model switch | [Availability](configuration.md#versioned-model-availability) and [troubleshooting](troubleshooting.md#model-switch-is-disabled-or-unverified) | Accepted intent is not verified Gateway enforcement; availability requires verified Gateway coverage. |
-| Prepare an existing installation | [Upgrade preparation](deployment.md#prepare-for-v13) | Review application, migration and Gateway protocol changes separately; retain existing state and history. |
+| Prepare an existing installation | [Upgrade preparation](deployment.md#prepare-for-v14) | Review application, migration and Gateway protocol changes separately; retain existing state and history. |
 
 ## Operator references
 
