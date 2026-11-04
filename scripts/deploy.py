@@ -90,7 +90,6 @@ PasswordReader = Callable[[str], str]
 SECRET_PARAMETER_NAMES = {
     "postgresAdministratorPassword",
     "credentialEncryptionKey",
-    "managementApiKey",
     "apimSubscriptionKey",
     "apimProbeSubscriptionKey",
     "bootstrapOwnerPasswordHash",
@@ -402,7 +401,6 @@ def load_or_create_secret_material(
     values = {
         "postgresAdministratorPassword": secrets.token_urlsafe(32),
         "credentialEncryptionKey": Fernet.generate_key().decode("ascii"),
-        "managementApiKey": secrets.token_urlsafe(32),
         "apimSubscriptionKey": secrets.token_hex(32),
         "apimProbeSubscriptionKey": secrets.token_hex(32),
         "bootstrapOwnerPasswordHash": hash_password(owner_password),

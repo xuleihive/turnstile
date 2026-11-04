@@ -6,7 +6,7 @@ from functools import lru_cache
 from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
 
 from turnstile_core.config import get_settings
 from turnstile_core.domain.control_plane import GatewayReleaseRetentionPolicy
@@ -82,7 +82,6 @@ def runtime_service(repository: Repository) -> ModelRuntimeService:
 
 
 RuntimeService = Annotated[ModelRuntimeService, Depends(runtime_service)]
-Authorization = Annotated[str | None, Header()]
 
 
 def model_availability_service(repository: Repository) -> ModelAvailabilityService:

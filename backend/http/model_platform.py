@@ -149,7 +149,6 @@ from .publication_auth import PublicationOwner
 from .service_dependencies import (
     ApimOnboardingServiceDependency,
     ApplicationAccessServiceDependency,
-    Authorization,
     ControlPlaneService,
     ModelAvailabilityServiceDependency,
     ModelRouterExecutionServiceDependency,
@@ -217,9 +216,8 @@ gateway_compat_router = APIRouter(
 def get_model_registry(
     service: RuntimeService,
     identity: CurrentSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=False)
+    service.authorize(identity.role, manage=False)
     return service.registry()
 
 
@@ -228,9 +226,8 @@ def create_gateway_profile(
     write: GatewayProfileWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_gateway(write)
 
 
@@ -242,9 +239,8 @@ def update_gateway_profile(
     write: GatewayProfileWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_gateway(write, item_id)
 
 
@@ -285,9 +281,8 @@ def create_provider(
     write: ProviderWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_provider(write)
 
 
@@ -299,9 +294,8 @@ def update_provider(
     write: ProviderWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_provider(write, item_id)
 
 
@@ -310,9 +304,8 @@ def create_runtime(
     write: RuntimeWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_runtime(write)
 
 
@@ -386,9 +379,8 @@ def update_runtime(
     write: RuntimeWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_runtime(write, item_id)
 
 
@@ -400,12 +392,11 @@ def search_price_catalog_models(
     service: RuntimeService,
     identity: CurrentSession,
     q: Annotated[str, Query(max_length=120)] = "",
-    authorization: Authorization = None,
 ) -> PriceCatalogModelsResponse:
     # Reading a vendor's published price list changes nothing and reveals nothing the vendor
     # does not print on its own website, so this is gated like the registry read it sits beside
     # rather than like the write it leads to.
-    service.authorize(identity.role, authorization, manage=False)
+    service.authorize(identity.role, manage=False)
     return service.price_catalog_models(q)
 
 
@@ -417,9 +408,8 @@ def price_catalog_options(
     service: RuntimeService,
     identity: CurrentSession,
     model: Annotated[str, Query(max_length=300)],
-    authorization: Authorization = None,
 ) -> PriceCatalogOptionsResponse:
-    service.authorize(identity.role, authorization, manage=False)
+    service.authorize(identity.role, manage=False)
     return service.price_catalog_options(model)
 
 
@@ -431,12 +421,8 @@ def sync_model_prices(
     service: RuntimeService,
     identity: OwnerSession,
     request: PriceSyncRequest | None = None,
-    authorization: Authorization = None,
 ) -> PriceSyncResponse:
-    # Gated exactly like editing one model's rate by hand: `update_model` already requires an
-    # owner session and skips the management credential for a price-only change, and repricing
-    # in bulk is the same act at a larger scale. One gate, stated once.
-    service.authorize(identity.role, authorization, manage=False)
+    service.authorize(identity.role, manage=True)
     return service.sync_prices(request.model_ids if request else None)
 
 
@@ -445,9 +431,8 @@ def create_model(
     write: ManagedModelWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return service.save_model(write)
 
 
@@ -564,9 +549,8 @@ def update_model(
     write: ManagedModelWrite,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> RegistryResponse:
-    service.authorize_model_update(item_id, write, identity.role, authorization)
+    service.authorize_model_update(item_id, identity.role)
     return service.save_model(write, item_id)
 
 
@@ -2366,9 +2350,8 @@ def plan_enterprise_traffic(
     request: TrafficGenerationRequest,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> TrafficGenerationPlan:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     plan_request = request.model_copy(update={"dry_run": True})
     return TrafficGenerator(service, get_settings()).plan(plan_request)
 
@@ -2378,7 +2361,6 @@ def execute_enterprise_traffic(
     request: TrafficGenerationRequest,
     service: RuntimeService,
     identity: OwnerSession,
-    authorization: Authorization = None,
 ) -> TrafficGenerationResult:
-    service.authorize(identity.role, authorization, manage=True)
+    service.authorize(identity.role, manage=True)
     return TrafficGenerator(service, get_settings()).execute(request, identity.role)

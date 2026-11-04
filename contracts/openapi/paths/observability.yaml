@@ -127,15 +127,6 @@ paths:
     post:
       summary: Plan Enterprise Traffic
       operationId: plan_enterprise_traffic_api_v1_traffic_plan_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -161,15 +152,6 @@ paths:
     post:
       summary: Execute Enterprise Traffic
       operationId: execute_enterprise_traffic_api_v1_traffic_execute_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:

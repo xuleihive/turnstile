@@ -3,15 +3,6 @@ paths:
     get:
       summary: Get Model Registry
       operationId: get_model_registry_api_v1_model_management_get
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1019,15 +1010,6 @@ paths:
     post:
       summary: Create Gateway Profile
       operationId: create_gateway_profile_api_v1_model_management_gateways_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1061,14 +1043,6 @@ paths:
           type: string
           format: uuid
           title: Item Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1180,15 +1154,6 @@ paths:
     post:
       summary: Create Provider
       operationId: create_provider_api_v1_model_management_providers_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1222,14 +1187,6 @@ paths:
           type: string
           format: uuid
           title: Item Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1255,15 +1212,6 @@ paths:
     post:
       summary: Create Runtime
       operationId: create_runtime_api_v1_model_management_runtimes_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1480,14 +1428,6 @@ paths:
           type: string
           format: uuid
           title: Item Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1522,14 +1462,6 @@ paths:
           maxLength: 120
           default: ''
           title: Q
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1557,14 +1489,6 @@ paths:
           type: string
           maxLength: 300
           title: Model
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1584,15 +1508,6 @@ paths:
     post:
       summary: Sync Model Prices
       operationId: sync_model_prices_api_v1_model_management_price_sync_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         content:
           application/json:
@@ -1620,15 +1535,6 @@ paths:
     post:
       summary: Create Model
       operationId: create_model_api_v1_model_management_models_post
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:
@@ -1662,14 +1568,6 @@ paths:
           type: string
           format: uuid
           title: Item Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
       requestBody:
         required: true
         content:

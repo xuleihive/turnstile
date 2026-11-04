@@ -109,9 +109,6 @@ param postgresAdministratorPassword string
 param credentialEncryptionKey string
 
 @secure()
-param managementApiKey string
-
-@secure()
 param apimSubscriptionKey string
 
 @secure()
@@ -263,7 +260,6 @@ module dataPlane 'modules/data-plane.bicep' = {
     postgresTier: postgresTier
     provisionPostgres: provisionPostgres
     credentialEncryptionKey: credentialEncryptionKey
-    managementApiKey: managementApiKey
     apimSubscriptionKey: apimSubscriptionKey
     apimProbeSubscriptionKey: apimProbeSubscriptionKey
     apimPrincipalId: effectiveApimPrincipalId

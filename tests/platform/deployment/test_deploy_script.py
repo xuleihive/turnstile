@@ -103,7 +103,8 @@ def test_secret_state_is_private_stable_and_excludes_plaintext(tmp_path: Path) -
 
     assert first.values == second.values
     assert first.owner_password == "a-secure-owner-password"
-    assert first.values["observerAdapterSharedKey"] != first.values["managementApiKey"]
+    assert "managementApiKey" not in first.values
+    assert first.values["observerAdapterSharedKey"] != first.values["credentialEncryptionKey"]
     assert "a-secure-owner-password" not in inputs.state_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(inputs.state_path.stat().st_mode) == 0o600
 
@@ -111,11 +112,40 @@ def test_secret_state_is_private_stable_and_excludes_plaintext(tmp_path: Path) -
 def test_public_parameter_file_rejects_secure_values(tmp_path: Path) -> None:
     path = _parameters(tmp_path / "parameters.json")
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["parameters"]["managementApiKey"] = {"value": "do-not-store-here"}
+    document["parameters"]["credentialEncryptionKey"] = {"value": "do-not-store-here"}
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(DeploymentError, match="Keep secure parameters out"):
         DeploymentInputs.load("subscription", path)
+
+
+@pytest.mark.parametrize("with_retired_key", [False, True])
+def test_existing_secret_state_does_not_require_or_deploy_management_key(
+    tmp_path: Path, with_retired_key: bool,
+) -> None:
+    inputs = DeploymentInputs.load(
+        "00000000-0000-0000-0000-000000000001", _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    answers = iter(("a-secure-owner-password", "a-secure-owner-password"))
+    original = load_or_create_secret_material(
+        inputs, read_password=lambda _: next(answers), require_owner_password=False,
+    )
+    if with_retired_key:
+        document = json.loads(inputs.state_path.read_text())
+        document["parameters"]["managementApiKey"] = "unit-retired-management-key"
+        inputs.state_path.write_text(json.dumps(document))
+    retained_bytes = inputs.state_path.read_bytes()
+    reused = load_or_create_secret_material(
+        inputs, read_password=lambda _: "not-needed", require_owner_password=False,
+    )
+    assert inputs.state_path.read_bytes() == retained_bytes
+    parameters = deployment_parameters(inputs, reused)["parameters"]
+    assert "managementApiKey" not in parameters
+    for name, value in original.values.items():
+        assert reused.values[name] == value
+    for name in ("credentialEncryptionKey", "apimSubscriptionKey", "apimProbeSubscriptionKey"):
+        assert parameters[name]["value"] == original.values[name]
 
 
 @pytest.mark.parametrize(

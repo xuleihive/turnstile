@@ -113,7 +113,7 @@ docs/             维护人员与运维人员文档
    cp frontend/.env.example frontend/.env.local
    ```
 
-2. 设置 `DATABASE_URL`，为 `CREDENTIAL_ENCRYPTION_KEY` 和 `MANAGEMENT_API_KEY` 分别生成独立值，并按照[配置文档](docs/configuration.md)设置身份验证。
+2. 设置 `DATABASE_URL`，生成 `CREDENTIAL_ENCRYPTION_KEY`，并按照[配置文档](docs/configuration.md)配置 Owner 身份验证。
 
 3. 安装依赖：
 

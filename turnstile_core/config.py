@@ -86,7 +86,6 @@ class Settings(BaseSettings):
     ledger_table_name: str = "TurnstileLedger"
     ledger_reservation_recovery_lag_minutes: int = Field(default=10, ge=6, le=120)
     ledger_reservation_finalization_lag_hours: int = Field(default=24, ge=1, le=168)
-    management_api_key: SecretStr | None = None
     production: bool = False
     image_generation_defaults: ImageGenerationLimits = Field(
         default_factory=lambda: DEFAULT_IMAGE_GENERATION_LIMITS

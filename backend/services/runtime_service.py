@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import logging
 import re
@@ -117,8 +116,6 @@ logger = logging.getLogger(__name__)
 
 
 class ModelRuntimeService:
-    _MODEL_ROUTING_FIELDS = ("provider_id", "runtime_id", "model_key", "upstream_model_id")
-
     def __init__(
         self,
         repository: QueryRepository,
@@ -158,17 +155,7 @@ class ModelRuntimeService:
                 model_id, type(error).__name__,
             )
 
-    def authorize(self, role: str, authorization: str | None, *, manage: bool) -> None:
-        if manage:
-            configured = self._settings.management_api_key
-            if configured is not None:
-                expected = f"Bearer {configured.get_secret_value()}"
-                if authorization is None or not hmac.compare_digest(authorization, expected):
-                    raise HTTPException(status_code=401, detail="Invalid management credential")
-            elif self._settings.production:
-                raise HTTPException(
-                    status_code=503, detail="Management authentication is not configured"
-                )
+    def authorize(self, role: str, *, manage: bool) -> None:
         allowed = {"owner", "admin"} if manage else {"owner", "admin", "member", "service"}
         if role not in allowed:
             raise HTTPException(status_code=403, detail="Role is not allowed for this operation")
@@ -176,9 +163,7 @@ class ModelRuntimeService:
     def authorize_model_update(
         self,
         item_id: UUID,
-        write: ManagedModelWrite,
         role: str,
-        authorization: str | None,
     ) -> None:
         current = next(
             (
@@ -190,12 +175,7 @@ class ModelRuntimeService:
         )
         if current is None:
             raise HTTPException(status_code=404, detail=f"Unknown model: {item_id}")
-        incoming = write.model_dump(mode="python")
-        changes_routing_identity = any(
-            str(current.get(field) or "") != str(incoming.get(field) or "")
-            for field in self._MODEL_ROUTING_FIELDS
-        )
-        self.authorize(role, authorization, manage=changes_routing_identity)
+        self.authorize(role, manage=True)
 
     def registry(self) -> RegistryResponse:
         rows = self._repository.registry()

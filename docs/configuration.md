@@ -8,9 +8,12 @@ Copy `.env.example` to `.env` for the API and `frontend/.env.example` to `fronte
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL 16+ connection string. Require TLS outside a developer machine. |
 | `CREDENTIAL_ENCRYPTION_KEY` | Encrypts provider and integration credentials at rest. |
-| `MANAGEMENT_API_KEY` | Additional bearer credential for management writes that require it; session and role checks still apply. |
 
 ## Authentication
+
+Management writes use the authenticated Owner session and write-origin checks. No shared
+management bearer is required. APIM subscription keys still protect Gateway consumption;
+they are separate from Dashboard management authentication.
 
 | Variable | Purpose |
 | --- | --- |
@@ -98,9 +101,7 @@ connection state or no endpoint. APIM instances shows each instance with its Man
 Self-hosted children. Older backends without the topology capability retain the three-tab view.
 
 APIM registration, initialization preview/start/retry and Self-hosted connection validation use
-the existing Owner session and write-origin checks. They do not prompt for `MANAGEMENT_API_KEY`
-or require an additional management bearer header. Other management endpoints that require
-that credential retain their existing authorization contract.
+the same Owner session and write-origin checks as other management operations.
 
 APIM removal first previews Self-hosted Gateway, runtime and model dependencies, then rechecks
 them before disabling the profile and retiring its deployments. It preserves target metadata and

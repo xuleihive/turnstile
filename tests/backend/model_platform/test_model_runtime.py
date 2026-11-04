@@ -2682,20 +2682,19 @@ def test_apim_registry_excludes_github_copilot_telemetry_identity() -> None:
         )
 
 
-def test_production_management_key_only_protects_mutations(tmp_path: Path) -> None:
+def test_production_management_access_uses_roles_without_shared_key(tmp_path: Path) -> None:
     repository = InMemoryRepository()
     settings = Settings(
         production=True,
-        management_api_key=SecretStr("management-secret"),
         credential_encryption_key=SecretStr(Fernet.generate_key().decode()),
         credential_key_file=tmp_path / "credential.key",
     )
     service = ModelRuntimeService(repository, settings)
-    service.authorize("member", None, manage=False)
+    service.authorize("member", manage=False)
+    service.authorize("owner", manage=True)
     with pytest.raises(Exception) as error:
-        service.authorize("owner", None, manage=True)
-    assert getattr(error.value, "status_code", None) == 401
-    service.authorize("owner", "Bearer management-secret", manage=True)
+        service.authorize("member", manage=True)
+    assert getattr(error.value, "status_code", None) == 403
 
 
 def test_in_memory_apim_seed_separates_public_and_provider_paths() -> None:

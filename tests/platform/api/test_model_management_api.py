@@ -21,7 +21,7 @@ from backend.api import (
 from backend.http.dependencies import get_repository
 from backend.http.publication_auth import require_publication_owner
 from backend.http.service_dependencies import model_availability_service
-from backend.http.session import SessionIdentity, require_authenticated_session
+from backend.http.session import SessionIdentity, get_auth_store, require_authenticated_session
 from backend.services.runtime_service import ModelRuntimeService
 from tests.backend.model_platform.control_plane_support import (
     activate_publication,
@@ -29,6 +29,7 @@ from tests.backend.model_platform.control_plane_support import (
 )
 from tests.backend.model_platform.test_gateway_targets import TARGET, target
 from tests.backend.model_platform.test_image_publication import image_publication
+from tests.platform.api.api_support import MEMBER_SESSION, OWNER_SESSION, StubAuthStore
 from turnstile_core.config import Settings
 from turnstile_core.domain.control_plane import (
     GatewayPublication,
@@ -362,7 +363,7 @@ def management_runtime_service(
     service = ModelRuntimeService(
         publication_api,
         Settings(
-            management_api_key=SecretStr("management-secret"),
+            production=True,
             credential_encryption_key=SecretStr(Fernet.generate_key().decode()),
             apim_principal_id="00000000-0000-0000-0000-000000000705",
         ),
@@ -370,6 +371,111 @@ def management_runtime_service(
     app.dependency_overrides[runtime_service] = lambda: service
     yield service
     app.dependency_overrides.pop(runtime_service, None)
+
+
+@pytest.fixture
+def owner_cookie_management_api(
+    management_runtime_service: ModelRuntimeService,
+) -> Iterator[ModelRuntimeService]:
+    app.dependency_overrides.pop(require_authenticated_session, None)
+    app.dependency_overrides[get_auth_store] = StubAuthStore
+    client.cookies.set(management_runtime_service._settings.session_cookie_name, OWNER_SESSION)
+    yield management_runtime_service
+    client.cookies.clear()
+    app.dependency_overrides.pop(get_auth_store, None)
+
+
+@pytest.mark.parametrize("legacy_key_configured", [False, True])
+def test_owner_model_create_reaches_business_validation_without_management_bearer(
+    publication_api: InMemoryRepository, owner_cookie_management_api: ModelRuntimeService,
+    monkeypatch: pytest.MonkeyPatch, legacy_key_configured: bool,
+) -> None:
+    if legacy_key_configured:
+        monkeypatch.setenv("MANAGEMENT_API_KEY", "unit-retired-management-key")
+    else:
+        monkeypatch.delenv("MANAGEMENT_API_KEY", raising=False)
+    owner_cookie_management_api._settings = Settings(
+        production=True,
+        credential_encryption_key=owner_cookie_management_api._settings.credential_encryption_key,
+    )
+    signed_in = client.get("/api/v1/auth/me")
+    assert signed_in.status_code == 200 and signed_in.json()["role"] == "owner"
+    assert client.get("/api/v1/model-management").status_code == 200
+    original = deepcopy(publication_api.models)
+    model = publication_api.models[0]
+    response = client.post(
+        "/api/v1/model-management/models",
+        headers={"Origin": "http://testserver"},
+        json={
+            "provider_id": str(model["provider_id"]), "runtime_id": str(model["runtime_id"]),
+            "model_key": "unit-owner-decision", "display_name": "Unit Owner Decision",
+            "capabilities": ["decision"], "allowed_roles": ["owner"],
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Publish Decision models through the control plane"
+    assert publication_api.models == original
+
+
+def test_owner_cookie_can_create_and_update_model_without_management_key(
+    publication_api: InMemoryRepository, owner_cookie_management_api: ModelRuntimeService,
+) -> None:
+    del owner_cookie_management_api
+    model = next(item for item in publication_api.models if item["model_key"] == "gpt-5.6-luna")
+    payload = model_write_payload(model)
+    payload.update(
+        model_key="unit-owner-created", display_name="Unit Owner Created", is_default=False,
+    )
+    before = len(publication_api.models)
+    created = client.post(
+        "/api/v1/model-management/models", headers={"Origin": "http://testserver"}, json=payload,
+    )
+    assert created.status_code == 200
+    assert len(publication_api.models) == before + 1
+    saved = next(
+        item for item in publication_api.models if item["model_key"] == "unit-owner-created"
+    )
+    payload["model_key"] = "unit-owner-updated"
+    updated = client.put(
+        f"/api/v1/model-management/models/{saved['id']}",
+        headers={"Origin": "http://testserver"}, json=payload,
+    )
+    assert updated.status_code == 200 and saved["model_key"] == "unit-owner-updated"
+    assert len(publication_api.models) == before + 1
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/api/v1/model-management/models"),
+    ("PUT", "/api/v1/model-management/models/00000000-0000-0000-0000-000000000001"),
+    ("POST", "/api/v1/model-management/gateways"),
+    ("PUT", "/api/v1/model-management/gateways/00000000-0000-0000-0000-000000000001"),
+    ("POST", "/api/v1/model-management/providers"),
+    ("PUT", "/api/v1/model-management/providers/00000000-0000-0000-0000-000000000001"),
+    ("POST", "/api/v1/model-management/runtimes"),
+    ("PUT", "/api/v1/model-management/runtimes/00000000-0000-0000-0000-000000000001"),
+    ("POST", "/api/v1/model-management/connections"),
+    ("POST", "/api/v1/model-management/price-sync"),
+    ("POST", "/api/v1/traffic/plan"),
+    ("POST", "/api/v1/traffic/execute"),
+])
+@pytest.mark.parametrize("access", ["anonymous", "member", "foreign-origin"])
+def test_management_writes_keep_owner_cookie_and_origin_guards(
+    publication_api: InMemoryRepository, owner_cookie_management_api: ModelRuntimeService,
+    method: str, path: str, access: str,
+) -> None:
+    original = deepcopy(publication_api.registry())
+    if access == "anonymous":
+        client.cookies.clear()
+    elif access == "member":
+        client.cookies.set(
+            owner_cookie_management_api._settings.session_cookie_name, MEMBER_SESSION,
+        )
+    origin = "https://foreign.example.test" if access == "foreign-origin" else "http://testserver"
+    response = client.request(
+        method, path, headers={"Origin": origin, "X-Hive-Role": "owner"}, json={},
+    )
+    assert response.status_code == (401 if access == "anonymous" else 403)
+    assert publication_api.registry() == original
 
 
 @pytest.mark.parametrize("minimal", [False, True])
@@ -1417,7 +1523,6 @@ def test_unused_non_default_gateway_can_be_deleted(
         "/api/v1/model-management/gateways",
         headers={
             "Origin": "http://localhost:5173",
-            "Authorization": "Bearer management-secret",
         },
         json={
             "name": "Unused APIM gateway",
@@ -2345,7 +2450,7 @@ def test_owner_session_can_update_model_prices_without_management_bearer(
     assert updated["output_cost_per_million"] == 7.5
 
 
-def test_model_routing_identity_change_requires_management_bearer(
+def test_owner_session_can_change_model_routing_identity_without_management_bearer(
     publication_api: InMemoryRepository,
     management_runtime_service: ModelRuntimeService,
 ) -> None:
@@ -2360,17 +2465,9 @@ def test_model_routing_identity_change_requires_management_bearer(
     path = f"/api/v1/model-management/models/{model['id']}"
     origin = "http://localhost:5173"
 
-    denied = client.put(path, headers={"Origin": origin}, json=payload)
-
-    assert denied.status_code == 401
-    assert model["model_key"] == "gpt-5.6-luna"
-
     allowed = client.put(
         path,
-        headers={
-            "Origin": origin,
-            "Authorization": "Bearer management-secret",
-        },
+        headers={"Origin": origin},
         json=payload,
     )
 

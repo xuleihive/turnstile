@@ -116,7 +116,7 @@ docs/             Maintainer and operator documentation
    cp frontend/.env.example frontend/.env.local
    ```
 
-2. Set `DATABASE_URL`, generate independent values for `CREDENTIAL_ENCRYPTION_KEY` and `MANAGEMENT_API_KEY`, and configure authentication as described in [Configuration](docs/configuration.md).
+2. Set `DATABASE_URL`, generate `CREDENTIAL_ENCRYPTION_KEY`, and configure Owner authentication as described in [Configuration](docs/configuration.md).
 
 3. Install dependencies:
 

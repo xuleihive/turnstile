@@ -19,8 +19,6 @@ param provisionPostgres bool = true
 @secure()
 param credentialEncryptionKey string
 @secure()
-param managementApiKey string
-@secure()
 param apimSubscriptionKey string
 @secure()
 param apimProbeSubscriptionKey string
@@ -216,14 +214,6 @@ resource credentialKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'credential-encryption-key'
   properties: {
     value: credentialEncryptionKey
-  }
-}
-
-resource managementKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'management-api-key'
-  properties: {
-    value: managementApiKey
   }
 }
 
@@ -833,7 +823,6 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'DATABASE_URL', value: postgresConnectionString }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: credentialEncryptionKey }
-        { name: 'MANAGEMENT_API_KEY', value: managementApiKey }
         { name: 'APIM_PRINCIPAL_ID', value: apimPrincipalId }
         { name: 'DATABRICKS_OAUTH_ENABLED', value: string(databricksOAuthEnabled) }
         { name: 'AZURE_TENANT_ID', value: subscription().tenantId }

@@ -29,7 +29,6 @@ Copy `main.parameters.example.json` to an ignored `*.parameters.json` file and r
 
 - `postgresAdministratorPassword`
 - `credentialEncryptionKey`
-- `managementApiKey`
 - `apimSubscriptionKey`
 - `apimProbeSubscriptionKey`
 
@@ -46,7 +45,6 @@ az deployment sub what-if \
   --parameters @infra/main.parameters.json \
   --parameters postgresAdministratorPassword='<secure-value>' \
                credentialEncryptionKey='<secure-value>' \
-               managementApiKey='<secure-value>' \
                apimSubscriptionKey='<secure-value>' \
                apimProbeSubscriptionKey='<secure-value>'
 ```
