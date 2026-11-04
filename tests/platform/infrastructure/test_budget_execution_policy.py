@@ -320,6 +320,10 @@ def native_router_expressions() -> dict[str, str]:
             if node.get("name") == "x-router-name"
             and state_variable in node.findtext("value", "")
         )
+    result["directModelResponseBody"] = next(
+        node.text or "" for node in legacy.iter("set-body")
+        if 'new JProperty("decision_basis", "direct_model")' in (node.text or "")
+    )
     trace = outbound.find(
         ".//send-request[@response-variable-name='routerOutboundTraceWrite']/set-body",
     )
@@ -898,6 +902,144 @@ def test_native_router_model_decision_rewrites_only_to_an_eligible_gateway_alias
     assert candidate_attempt["status_code"] == status_code
     assert candidate_attempt["outcome"] == outcome
     assert candidate_attempt["sequence"] == 2
+
+
+@pytest.mark.parametrize("operation,details_field,prompt_field,output_field", [
+    ("chat-completions", "prompt_tokens_details", "prompt_tokens", "completion_tokens"),
+    ("responses", "input_tokens_details", "input_tokens", "output_tokens"),
+])
+@pytest.mark.parametrize("read,write", [(0, 4520), (1000, 3520), (4520, 0), (0, 0)])
+@pytest.mark.parametrize("normalized", [False, True])
+@pytest.mark.parametrize("attempt_role", ["candidate", "routing_decision"])
+def test_native_router_usage_counts_cache_writes_once(
+    compiled_expressions: tuple[Path, str], tmp_path: Path, operation: str,
+    details_field: str, prompt_field: str, output_field: str, read: int, write: int,
+    normalized: bool, attempt_role: str,
+) -> None:
+    from tests.platform.api.test_model_router_api import model_based_definition
+
+    first, second, decision = (UUID(int=value) for value in (901, 902, 903))
+    definition = model_based_definition(decision, first, second)
+    definition["nodes"] = [node for node in definition["nodes"] if node["type"] != "fallback"]
+    definition["edges"] = [edge for edge in definition["edges"]
+                           if edge["source"] != "fallback" and edge["target"] != "fallback"]
+    document = {
+        "router_id": str(UUID(int=904)), "router_name": "unit-router", "router_version": 1,
+        "gateway_profile_id": "90000000-0000-4000-8000-000000000002",
+        "status": "published", "owner_email": "offline@example.test",
+        "assigned_user_ids": [], "allowed_subscription_ids": ["unit-subscription"],
+        "definition": definition,
+        "candidates_by_id": {str(model_id): {
+            "model_id": str(model_id), "apim_alias": alias, "display_name": alias,
+            "provider_name": "Unit", "runtime_name": "Unit", "profile": "openai-v1",
+            "capabilities": [], "context_window": 16384,
+            "input_cost_per_million": 1.25, "cached_cost_per_million": 0.125,
+            "cache_write_cost_per_million": 1.5, "output_cost_per_million": 10.0,
+            "effective_cost_per_million": 10.0,
+        } for model_id, alias in ((first, "candidate-a"), (second, "candidate-b"))},
+        "routing_models_by_id": {str(decision): {
+            "model_id": str(decision), "apim_alias": "decision-alias",
+            "upstream_model": "decision-deployment", "display_name": "Decision",
+            "provider_name": "Unit", "runtime_name": "Unit",
+            "decision_protocol": "chat_json", "auth_mode": "gateway_route",
+            "capabilities": [], "max_tokens_field": "max_completion_tokens",
+            "input_cost_per_million": 1.25, "cached_cost_per_million": 0.125,
+            "cache_write_cost_per_million": 1.5, "output_cost_per_million": 10.0,
+        }},
+    }
+    body = json.dumps({"model": "unit-router",
+                       "messages": [{"role": "user", "content": "Select candidate B"}]})
+    expressions = native_router_expressions()
+    steps = [{"variable": "routerPlanState",
+              "expression": expression_id(expressions[name])}
+             for name in ("routerPlanState", "routerDecisionResult")]
+    usage = {
+        prompt_field: 4523, details_field: {"cached_tokens": read, "cache_write_tokens": write},
+        output_field: 5, "total_tokens": 4528,
+        **({"cached_tokens": read + write, "cache_write_tokens": write} if normalized else {}),
+    }
+    other_usage = {prompt_field: 11, output_field: 2, "total_tokens": 13}
+    response = json.dumps({"model": "candidate-b", "usage": (
+        usage if attempt_role == "candidate" else other_usage
+    )})
+    case: dict[str, Any] = {
+        "body": body, "subscription": True, "operation": operation, "response": response,
+        "variables": {
+            "routerCachedEntityJson": json.dumps({"Document": json.dumps(document)}),
+            "routerOriginalRequestBody": body,
+            "routerCallerRequestId": str(UUID(int=906)),
+            "routerRequestedModel": "unit-router",
+            "routerDecisionRequestId": str(UUID(int=905)),
+            "routerDecisionHttp": {
+                "__response": True, "status": 200, "headers": {}, "body": json.dumps({
+                    "choices": [{"message": {"content": json.dumps({
+                        "model_id": str(second), "rationale": "Eligible candidate B",
+                    })}}],
+                    "usage": usage if attempt_role == "routing_decision" else other_usage,
+                }),
+            },
+        },
+        "steps": steps,
+        "expression": expression_id(expressions["routerOutboundCompleted"]),
+    }
+    completed, stored = run_cases(compiled_expressions, tmp_path, [case, {
+        **case,
+        "steps": [*steps, {"variable": "routerOutboundCompleted",
+                           "expression": expression_id(expressions["routerOutboundCompleted"])}],
+        "expression": expression_id(expressions["routerTraceBody"]),
+    }])
+    trace = json.loads(json.loads(stored)["Document"])
+    attempt = next(item for item in trace["attempts"] if item["attempt_role"] == attempt_role)
+    assert (attempt["input_tokens"], attempt["cached_tokens"],
+            attempt["cache_write_tokens"], attempt["output_tokens"]) == (
+        4523 - read - write, read + write, write, 5,
+    )
+    assert attempt["input_tokens"] + attempt["cached_tokens"] + attempt["output_tokens"] == 4528
+    assert attempt["estimated_cost"] == round(
+        ((4523 - read - write) * 1.25 + read * 0.125 + write * 1.5 + 5 * 10.0) / 1_000_000, 8,
+    )
+    completion_result = json.loads(completed)
+    if attempt_role == "candidate":
+        assert completion_result["body"]["usage"] == {
+            **usage, "cached_tokens": read + write, "cache_write_tokens": write,
+        }
+    else:
+        decision_usage = trace["usage_records"][0]
+        for field in ("input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens",
+                      "estimated_cost"):
+            assert decision_usage[field] == attempt[field]
+
+
+@pytest.mark.parametrize("normalized", [False, True])
+@pytest.mark.parametrize("read,write", [(0, 4520), (1000, 3520), (4520, 0), (0, 0)])
+def test_direct_model_client_usage_normalizes_cache_writes_once(
+    compiled_expressions: tuple[Path, str], tmp_path: Path,
+    normalized: bool, read: int, write: int,
+) -> None:
+    usage = {
+        "prompt_tokens": 4523, "completion_tokens": 5, "total_tokens": 4528,
+        "prompt_tokens_details": {"cached_tokens": read, "cache_write_tokens": write},
+        **({"cached_tokens": read + write, "cache_write_tokens": write} if normalized else {}),
+    }
+    response = {"id": "unit-provider-request", "model": "unit-model", "usage": usage}
+    expression = native_router_expressions()["directModelResponseBody"]
+    case = {
+        "body": "{}", "operation": "chat-completions", "response": json.dumps(response),
+        "variables": {"routerCallerRequestId": str(UUID(int=906)),
+                      "routerRequestedModel": "unit-model"},
+        "expression": expression_id(expression),
+    }
+    rewritten = json.loads(run_cases(compiled_expressions, tmp_path, [case])[0])
+    assert rewritten["usage"] == {
+        **usage, "cached_tokens": read + write, "cache_write_tokens": write,
+    }
+    assert rewritten["usage"]["cached_tokens"] == read + write
+    assert rewritten["usage"]["prompt_tokens"] == 4523
+    assert rewritten["usage"]["total_tokens"] == 4528
+    repeated = json.loads(run_cases(compiled_expressions, tmp_path, [{
+        **case, "response": json.dumps(rewritten),
+    }])[0])
+    assert repeated["usage"] == rewritten["usage"]
 
 
 @pytest.mark.parametrize("stream", [False, True])
