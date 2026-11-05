@@ -14,7 +14,7 @@ export function applicationRetryDetail(operation: GatewayReleaseOperation | unde
   if (message.startsWith(prefix)) {
     try {
       const diagnostic: unknown = JSON.parse(message.slice(prefix.length))
-      if (diagnostic && typeof diagnostic === "object" && "category" in diagnostic && diagnostic.category === "subscription_not_ready") return null
+      if (diagnostic && typeof diagnostic === "object" && "category" in diagnostic && diagnostic.category === "subscription_not_ready" && "status_code" in diagnostic && diagnostic.status_code === 401) return null
     } catch {}
   }
   return message

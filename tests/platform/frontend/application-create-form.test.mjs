@@ -64,12 +64,51 @@ test('retry details suppress only a parsed subscription readiness diagnostic', (
   const prefix = 'Application data-plane authentication: '
   const waiting = { status: 'verifying_readback', error_message: prefix + JSON.stringify({ category: 'subscription_not_ready', status_code: 401, correlation_id: null }) }
   assert.equal(applicationRetryDetail(undefined), null)
+  assert.equal(applicationRetryDetail({ status: waiting.status }), null)
   assert.equal(applicationRetryDetail({ ...waiting, error_message: null }), null)
+  assert.equal(applicationRetryDetail({ ...waiting, error_message: '' }), null)
   assert.equal(applicationRetryDetail(waiting), null)
   for (const message of [
     prefix + JSON.stringify({ category: 'transport_error', status_code: null, correlation_id: null }),
+    prefix + JSON.stringify({ category: 'transport_error', status_code: 401 }),
+    '{"category":"subscription_not_ready","status_code":401}',
     'APIM permissions failed while checking subscription_not_ready',
     prefix + '{"category":"subscription_not_ready"',
+    prefix + 'null',
+    prefix + 'true',
+    prefix + '401',
+    prefix + '"subscription_not_ready"',
+    prefix + '[]',
+    prefix + '[{"category":"subscription_not_ready","status_code":401}]',
+    prefix + '{}',
   ]) assert.equal(applicationRetryDetail({ ...waiting, error_message: message }), message)
-  for (const status of ['failed', 'restored', 'succeeded']) assert.equal(applicationRetryDetail({ ...waiting, status }), null)
+  for (const status of ['failed', 'restored', 'succeeded']) {
+    for (const error_message of [waiting.error_message, prefix + '{"category":"subscription_not_ready","status_code":503}', 'APIM permissions failed']) {
+      assert.equal(applicationRetryDetail({ ...waiting, status, error_message }), null)
+    }
+  }
+})
+test('retry details preserve non-401 subscription readiness diagnostics verbatim', () => {
+  const prefix = 'Application data-plane authentication: '
+  for (const status_code of [503, 302, 404, 408, 429]) {
+    const message = prefix + '{ "category": "subscription_not_ready", "status_code": ' + status_code + ', "correlation_id": null }\n'
+    assert.equal(applicationRetryDetail({ status: 'verifying_readback', error_message: message }), message)
+  }
+})
+test('retry details preserve missing and nonnumeric subscription readiness statuses verbatim', () => {
+  const prefix = 'Application data-plane authentication: '
+  for (const diagnostic of [
+    '{"category":"subscription_not_ready"}',
+    '{"category":"subscription_not_ready","status_code":null}',
+    '{"category":"subscription_not_ready","status_code":"401"}',
+    '{"category":"subscription_not_ready","status_code":"invalid"}',
+    '{"category":"subscription_not_ready","status_code":true}',
+    '{"category":"subscription_not_ready","status_code":false}',
+    '{"category":"subscription_not_ready","status_code":[]}',
+    '{"category":"subscription_not_ready","status_code":[401]}',
+    '{"category":"subscription_not_ready","status_code":{}}',
+  ]) {
+    const message = prefix + diagnostic
+    assert.equal(applicationRetryDetail({ status: 'verifying_readback', error_message: message }), message)
+  }
 })
