@@ -918,14 +918,13 @@ class InMemoryRepository(
             ),
             "total_requests": count,
             "estimated_cost": round(sum(record.estimated_cost for record in records), 8),
-            "average_latency_ms": round(
-                sum(record.latency_ms for record in records) / count if count else 0, 2
+            "average_latency_ms": (
+                sum(record.latency_ms for record in records) / count if count else 0
             ),
-            "error_rate": round(
+            "error_rate": (
                 100 * sum(record.status_code >= 400 for record in records) / count
                 if count
-                else 0,
-                2,
+                else 0
             ),
             "p50_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.5),
             "p95_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.95),
@@ -1003,15 +1002,39 @@ class InMemoryRepository(
             # Runtime has no separate id in telemetry, so the name is its own key.
             "runtime": ("runtime", "runtime"),
         }
+
+        def group_key(
+            record: TokenUsageRecord, identity_field: str, label_field: str
+        ) -> tuple[str, str]:
+            identity = str(getattr(record, identity_field))
+            label = str(getattr(record, label_field))
+            if identity_field == "model_id":
+                identity = record.model_id or ""
+                label = (
+                    label or identity or "unattributed"
+                    if identity in {"", "unattributed", "unknown"}
+                    else ""
+                )
+            return identity, label
+
+        def display_name(values: list[TokenUsageRecord], label_field: str) -> str:
+            if label_field != "model":
+                return str(getattr(values[0], label_field))
+            latest = max(
+                values, key=lambda record: (bool(record.model), record.ts, record.model)
+            )
+            return latest.model or latest.model_id or "unattributed"
+
         id_field, name_field = fields[dimension]
         grouped: dict[tuple[str, str], list[TokenUsageRecord]] = {}
         records = self._usage_between(from_, to, filters)
         for record in records:
-            key = (str(getattr(record, id_field)), str(getattr(record, name_field)))
+            key = group_key(record, id_field, name_field)
             grouped.setdefault(key, []).append(record)
         total_cost = sum(record.estimated_cost for record in records)
         items = []
         for (id_, name), values in grouped.items():
+            name = display_name(values, name_field)
             totals = self._executive_totals(values)
             if cache_distribution_supported(dimension, filters):
                 self._apply_metric_cache(
@@ -1023,23 +1046,20 @@ class InMemoryRepository(
                 split_id, split_name = fields[split_by]
                 children: dict[tuple[str, str], list[TokenUsageRecord]] = {}
                 for record in values:
-                    child_key = (
-                        str(getattr(record, split_id)),
-                        str(getattr(record, split_name)),
-                    )
+                    child_key = group_key(record, split_id, split_name)
                     children.setdefault(child_key, []).append(record)
                 breakdown = sorted(
                     (
                         {
                             "id": child_id,
-                            "name": child_name,
+                            "name": display_name(child_values, split_name),
                             "total_tokens": sum(
                                 item.input_tokens + item.cached_tokens + item.output_tokens
                                 for item in child_values
                             ),
                             "total_requests": len(child_values),
                         }
-                        for (child_id, child_name), child_values in children.items()
+                        for (child_id, _child_name), child_values in children.items()
                     ),
                     key=lambda entry: -int(entry["total_tokens"]),
                 )

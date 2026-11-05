@@ -1177,7 +1177,24 @@ class PostgreSqlOpsDbProxy(
         limit: int,
         split_by: str | None = None,
     ) -> Sequence[dict[str, Any]]:
-        id_field, name_field = self._DIMENSION_FIELDS[dimension]
+        def dimension_sql(value: str) -> tuple[str, str, str]:
+            identity, label = self._DIMENSION_FIELDS[value]
+            if value != "model":
+                return identity, label, label
+            identity = "COALESCE(model_id, '')"
+            snapshot = (
+                f"CASE WHEN {identity} IN ('', 'unattributed', 'unknown') "
+                f"THEN COALESCE(NULLIF(model, ''), NULLIF({identity}, ''), 'unattributed') "
+                "ELSE '' END"
+            )
+            label = (
+                "COALESCE((ARRAY_AGG(model ORDER BY ts DESC, model COLLATE \"C\" DESC) "
+                "FILTER (WHERE model <> ''))[1], "
+                f"NULLIF({identity}, ''), 'unattributed')"
+            )
+            return identity, label, snapshot
+
+        id_field, name_field, name_group = dimension_sql(dimension)
         filter_sql, filter_parameters = self._filter_sql(filters)
         with self._connection() as connection:
             rows = [
@@ -1206,7 +1223,7 @@ class PostgreSqlOpsDbProxy(
                             ROUND(100.0 * SUM(estimated_cost) / total.cost, 2)
                         END::DOUBLE PRECISION AS share_percent
                     FROM scoped CROSS JOIN total
-                    GROUP BY {id_field}, {name_field}, total.cost
+                    GROUP BY {id_field}, {name_group}, total.cost
                     ORDER BY total_tokens DESC, name
                     LIMIT 100""",
                     [from_, to, *filter_parameters],
@@ -1230,10 +1247,15 @@ class PostgreSqlOpsDbProxy(
                 return rows
             # A second pass rather than one nested query: the parent ranking is already
             # limited, so the split only has to cover the rows that will be rendered.
-            split_id, split_name = self._DIMENSION_FIELDS[split_by]
+            split_id, split_name, split_group = dimension_sql(split_by)
+            parent_group = name_group if dimension == "model" else "''"
+            child_groups = [id_field, split_id, split_group]
+            if dimension == "model":
+                child_groups.insert(1, parent_group)
             children = connection.execute(
                 f"""SELECT
                         {id_field} AS parent_id,
+                        {parent_group} AS parent_name,
                         {split_id} AS id,
                         {split_name} AS name,
                         SUM(input_tokens + cached_tokens + output_tokens)::BIGINT AS total_tokens,
@@ -1241,16 +1263,22 @@ class PostgreSqlOpsDbProxy(
                     FROM token_usage usage
                     WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}
                         AND {id_field} = ANY(%s)
-                    GROUP BY 1, 2, 3
+                    GROUP BY {', '.join(child_groups)}
                     ORDER BY total_tokens DESC""",
                 [from_, to, *filter_parameters, [str(row["id"]) for row in rows]],
             ).fetchall()
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for child in children:
             entry = dict(child)
-            grouped.setdefault(str(entry.pop("parent_id")), []).append(entry)
+            parent_key = (str(entry.pop("parent_id")), str(entry.pop("parent_name")))
+            grouped.setdefault(parent_key, []).append(entry)
         for row in rows:
-            row["breakdown"] = grouped.get(str(row["id"]), [])
+            parent_name = (
+                str(row["name"])
+                if dimension == "model" and row["id"] in {"", "unattributed", "unknown"}
+                else ""
+            )
+            row["breakdown"] = grouped.get((str(row["id"]), parent_name), [])
         return rows
 
     def list_usage_requests(

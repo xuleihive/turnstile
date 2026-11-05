@@ -843,12 +843,19 @@ class AssistantTools:
             registry = self._repository.registry()
             runtimes = {str(item["id"]): str(item["name"]) for item in registry["runtimes"]}
             connections = {
-                str(item["id"]): runtimes.get(str(item["runtime_id"]))
+                str(item["id"]): runtimes.get(str(item.get("runtime_id")))
                 for item in registry["models"]
             }
+            suffixes = [
+                connections.get(str(row["id"])) or f"[{row['id']}]"
+                for row in rows
+            ]
             names = [
-                f"{name} · {connections[str(row['id'])]}"
-                if names.count(name) > 1 and connections.get(str(row["id"])) else name
+                f"{name} · {suffix}" if names.count(name) > 1 else name
+                for name, suffix in zip(names, suffixes, strict=True)
+            ]
+            names = [
+                f"{name} · [{row['id']}]" if names.count(name) > 1 else name
                 for name, row in zip(names, rows, strict=True)
             ]
         chart_rows = [
