@@ -11,6 +11,11 @@ import type {
   GatewayApplicationList,
   ModelRegistry,
   PeopleBudgetFilter,
+  TokenBudgetBulkResult,
+  TokenBudgetBulkWrite,
+  TokenBudgetItem,
+  TokenBudgetPeopleResponse,
+  TokenBudgetResponse,
   TrendDimension,
   UsageFilters,
   UsageRequestPage,
@@ -208,6 +213,40 @@ export async function storeGatewayApplicationBudget(queryClient: QueryClient, ap
   } : current)
   void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications, exact: true })
   void queryClient.invalidateQueries({ queryKey, exact: true })
+}
+
+export async function storePeopleModelPolicy(
+  queryClient: QueryClient,
+  period: string,
+  write: TokenBudgetBulkWrite,
+  result: TokenBudgetBulkResult,
+) {
+  if (write.model_ids == null || result.period !== period || result.department_id !== write.department_id
+    || result.updated_count === 0 || result.model_policy_updated_count !== result.updated_count
+    || (write.selection === "ids" && result.updated_count !== new Set(write.user_ids).size)) return
+  const peopleKey = ["finops", "budgets", "people", period, write.department_id]
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: peopleKey }),
+    queryClient.cancelQueries({ queryKey: finopsKeys.budgets(period) }),
+  ])
+  const wholeDepartment = write.selection === "all_matching" && !write.query && write.status === "all"
+  const userIds = new Set(write.selection === "ids" ? write.user_ids
+    : queryClient.getQueriesData<TokenBudgetPeopleResponse>({
+      queryKey: peopleKey,
+      predicate: query => !query.state.isInvalidated && query.state.status === "success",
+    }).flatMap(([key, data]) =>
+      key[5] === (write.query ?? "") && key[6] === write.status
+        ? data?.items.map(item => item.scope_id) ?? [] : []))
+  const updateItems = (items: TokenBudgetItem[]) => items.map(item =>
+    item.scope_type === "user" && item.parent_scope_id === write.department_id
+      && (wholeDepartment || userIds.has(item.scope_id))
+      ? { ...item, model_policy_configured: true, allowed_model_ids: [...write.model_ids!] } : item)
+  queryClient.setQueriesData<TokenBudgetPeopleResponse>({ queryKey: peopleKey }, current => current ? {
+    ...current, items: updateItems(current.items),
+  } : current)
+  queryClient.setQueriesData<TokenBudgetResponse>({ queryKey: finopsKeys.budgets(period) }, current => current ? {
+    ...current, items: updateItems(current.items),
+  } : current)
 }
 
 export const finopsQueries = {
