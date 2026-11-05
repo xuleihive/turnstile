@@ -61,6 +61,7 @@ _MAX_CONCURRENT_TARGETS = 3
 _TARGET_RENEW_BACKOFF_SECONDS = 300.0
 _TARGET_RENEW_BACKOFF_LOCK = Lock()
 _TARGET_RENEW_BACKOFF_UNTIL: dict[tuple[UUID, str], float] = {}
+_TARGET_AUDIT_BACKOFF_UNTIL: dict[tuple[UUID, str], float] = {}
 
 
 def require_controlled_gateway_token_authority(
@@ -841,20 +842,19 @@ class ModelAvailabilityCoordinator:
 
     def refresh(self, *, renew: bool = False) -> int:
         inventory = self._availability.get_model_availability_inventory()
-        if not inventory:
-            return 0
         now_mono = monotonic()
-        if renew:
-            with _TARGET_RENEW_BACKOFF_LOCK:
-                items = [
-                    (target_id, digest)
-                    for target_id, digest in inventory.items()
-                    if _TARGET_RENEW_BACKOFF_UNTIL.get((target_id, digest), 0.0) <= now_mono
-                ]
-            if not items:
-                return 0
-        else:
-            items = list(inventory.items())
+        with _TARGET_RENEW_BACKOFF_LOCK:
+            for key in list(_TARGET_AUDIT_BACKOFF_UNTIL):
+                if inventory.get(key[0]) != key[1]:
+                    _TARGET_AUDIT_BACKOFF_UNTIL.pop(key, None)
+            backoff = _TARGET_RENEW_BACKOFF_UNTIL if renew else _TARGET_AUDIT_BACKOFF_UNTIL
+            items = [
+                (target_id, digest)
+                for target_id, digest in inventory.items()
+                if backoff.get((target_id, digest), 0.0) <= now_mono
+            ]
+        if not items:
+            return 0
 
         def refresh_target(entry: tuple[UUID, str]) -> Exception | None:
             target_id, digest = entry
@@ -877,14 +877,17 @@ class ModelAvailabilityCoordinator:
                 if error is None:
                     with _TARGET_RENEW_BACKOFF_LOCK:
                         _TARGET_RENEW_BACKOFF_UNTIL.pop((target_id, digest), None)
+                        _TARGET_AUDIT_BACKOFF_UNTIL.pop((target_id, digest), None)
                     completed += 1
                 else:
-                    if renew and not (
-                        isinstance(error, ModelAvailabilityUnavailable)
-                        and str(error) == "Availability proof writer is busy"
-                    ):
-                        with _TARGET_RENEW_BACKOFF_LOCK:
-                            _TARGET_RENEW_BACKOFF_UNTIL[(target_id, digest)] = (
+                    with _TARGET_RENEW_BACKOFF_LOCK:
+                        if (
+                            isinstance(error, ModelAvailabilityUnavailable)
+                            and str(error) == "Availability proof writer is busy"
+                        ):
+                            _TARGET_AUDIT_BACKOFF_UNTIL.pop((target_id, digest), None)
+                        else:
+                            backoff[(target_id, digest)] = (
                                 monotonic() + _TARGET_RENEW_BACKOFF_SECONDS
                             )
                     _log_verification_failure(target_id, error)
