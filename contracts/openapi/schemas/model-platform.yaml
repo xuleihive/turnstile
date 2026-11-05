@@ -2453,6 +2453,8 @@ schemas:
         - upstream_request_failed
         - credential_unreadable
         - credential_vault_unavailable
+        - credential_vault_access_denied
+        - credential_name_conflict
       message:
         type: string
       stage:
@@ -2503,6 +2505,16 @@ schemas:
         - anthropic-messages
         - openai-images
         - microsoft-decision
+        - null
+      credential_recovery:
+        type:
+        - string
+        - 'null'
+        enum:
+        - retry_with_key
+        - republish_with_key
+        - administrator
+        - administrator_republish
         - null
     additionalProperties: false
     type: object

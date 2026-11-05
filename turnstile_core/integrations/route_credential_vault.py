@@ -76,7 +76,10 @@ class RouteCredentialVault:
         self._client = client
         self._clock = clock
 
-    def _request(self, method: str, url: str, body: str | None = None) -> httpx.Response:
+    def _request(
+        self, method: str, url: str, body: str | None = None,
+        *, read_only_recovery: bool = False,
+    ) -> httpx.Response:
         address = urlsplit(url)
         if (
             address.scheme + "://" + address.netloc != self._origin
@@ -94,6 +97,11 @@ class RouteCredentialVault:
                 }, content=body.encode("utf-8") if body is not None else None,
                 timeout=10.0, follow_redirects=False,
             ) as response:
+                if response.status_code in {401, 403}:
+                    error_type = (
+                        RetryablePublicationError if read_only_recovery else PolicyCompilationError
+                    )
+                    raise error_type("Route credential Vault access was denied")
                 raw = bytearray()
                 for chunk in response.iter_bytes():
                     if len(raw) + len(chunk) > 131072:
@@ -108,8 +116,10 @@ class RouteCredentialVault:
     def verify(self, secret_id: str, expected: SecretStr | None = None) -> SecretStr:
         RouteCredential(mode="key_vault_bearer", header="Authorization", secret_id=secret_id)
         response = self._request("GET", secret_id)
-        if response.status_code != 200:
+        if response.status_code == 404:
             raise PolicyCompilationError("Route credential version is unavailable")
+        if response.status_code != 200:
+            raise PolicyCompilationError("Route credential availability could not be verified")
         try:
             document = response.json()
             attributes = document["attributes"]
@@ -147,8 +157,10 @@ class RouteCredentialVault:
         body = canonical_document({"value": secret, "tags": tags, "attributes": {"enabled": True}})
         if checkpoint is None:
             existing = self._request("GET", url)
-            if existing.status_code != 404:
+            if existing.status_code == 200:
                 raise PolicyCompilationError("Route credential name is not an unclaimed resource")
+            if existing.status_code != 404:
+                raise PolicyCompilationError("Route credential availability could not be verified")
             candidate = VaultCheckpoint(
                 publication_id=str(publication_id), source_sha256=source, url=url,
                 issued_epoch=self._clock(),
@@ -183,7 +195,7 @@ class RouteCredentialVault:
                 )
             ):
                 raise ValueError("ROUTE_CREDENTIAL_CHECKPOINT_CHANGED")
-        observed = self._request("GET", candidate.secret_id or url)
+        observed = self._request("GET", candidate.secret_id or url, read_only_recovery=True)
         if observed.status_code != 200:
             raise RetryablePublicationError("Route credential creation requires read-only recovery")
         try:

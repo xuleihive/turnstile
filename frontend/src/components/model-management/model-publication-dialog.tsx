@@ -305,6 +305,51 @@ export function publicationCapabilityMessage(profile: GatewayPublicationFailure[
   return "所选网关程序不支持该模型的接口格式，请先完成网关升级。"
 }
 
+export function publicationFailureMessage(failure: GatewayPublicationFailure | null | undefined): string {
+  switch (failure?.code) {
+    case "publisher_permissions_missing":
+      return "Publisher 缺少此 APIM 的模型发布权限。请由部署管理员核对授权后再重试。"
+    case "publisher_permissions_unverified":
+      return "无法核验 Publisher 的发布权限，当前发布步骤已停止。"
+    case "publisher_authorization_failed":
+      return "Azure 拒绝了 Publisher 的 APIM 管理请求。请核对发布身份的授权。"
+    case "parent_policy_changed":
+      return "APIM 父策略与排队时的快照不一致，请核对变化后再重试。"
+    case "credential_source_missing":
+    case "credential_unreadable":
+      if (failure.credential_recovery === "republish_with_key") {
+        return "本次模型尚未激活，请返回添加模型并提供 API Key，提交新的发布任务；原任务重试不能补充 Key。"
+      }
+      if (failure.credential_recovery === "administrator_republish") {
+        return "连接的受管凭据缺失或无法读取，请联系部署管理员恢复原凭据及其读取权限，再返回添加模型使用原连接提交新发布任务。"
+      }
+      if (failure.credential_recovery === "administrator") {
+        return "连接的受管凭据缺失或无法读取，请联系部署管理员恢复原凭据及其读取权限。"
+      }
+      return failure.code === "credential_source_missing"
+        ? "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。"
+        : "无法读取连接的 API Key，请重新提供 API Key 后重试。"
+    case "credential_vault_unavailable":
+      return "凭据 Key Vault 未配置或未获此网关程序批准，请联系部署管理员检查安装。"
+    case "credential_vault_access_denied":
+      return "Key Vault 拒绝了 Publisher 身份的凭据请求，请联系部署管理员核对该身份的 Vault 访问权限。"
+    case "credential_name_conflict":
+      return "凭据名称已被占用，请联系部署管理员核对归属；不要覆盖或删除已有凭据。"
+    case "gateway_capability_unavailable":
+      return publicationCapabilityMessage(failure.profile)
+    case "apim_infrastructure_upgrade_required":
+      return "发布图像模型前需要升级 APIM 基础设施，请联系部署管理员完成升级。"
+    case "deployment_not_found":
+      return "选定连接中不存在该部署，请使用实际部署名称而不是模型名称。"
+    case "deployment_metadata_unavailable":
+      return "无法读取部署目录，请核对连接认证和目录权限。"
+    case "upstream_request_failed":
+      return "模型验证请求失败，请核对部署名称、接口路径和 HTTP 状态。"
+    default:
+      return "发布未完成，请使用任务 ID 查询诊断记录。"
+  }
+}
+
 export function ModelPublicationDialog({
   registry,
   topology = null,
@@ -674,7 +719,7 @@ export function ModelPublicationDialog({
               {failed || rolledBack ? <TriangleAlert size={15} /> : awaitingAuthorization ? <ShieldCheck size={15} /> : active ? <Check size={15} /> : <ShieldCheck size={15} />}
               <div>
                 <span className="publication-safety-title"><b>{failed ? removing ? "移除未完成" : "发布未完成" : rolledBack ? "已回退" : awaitingAuthorization ? "等待授权" : active ? removing ? "模型已从 Turnstile 移除" : "发布完成" : removing ? "移除尚未完成" : "当前配置仍在生效"}</b>{!failed && !rolledBack && <FieldHelp>{removing ? "历史用量与上游模型保留。" : awaitingAuthorization ? "目标提供方授权就绪后继续验证，验证通过前不启用本次发布。" : active ? "模型已发布，分配人员后即可使用" : "验证通过后启用本次发布。"}</FieldHelp>}</span>
-                {failed && <span className="publication-safety-error">{publication.data.failure?.code === "credential_source_missing" ? "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。" : capabilityFailure ? publicationCapabilityMessage(publication.data.failure?.profile) : publication.data.failure?.message ?? publication.data.error_message ?? (removing ? "移除未完成，生效状态未确认。" : "发布未完成，请使用发布 ID 查看服务日志。")}</span>}
+                {failed && <span className="publication-safety-error">{publicationFailureMessage(publication.data.failure)}</span>}
               </div>
             </div>}
           </>}

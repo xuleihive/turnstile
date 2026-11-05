@@ -36,7 +36,7 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog"
 import { Button } from "../components/ui/button"
-import { publicationCapabilityMessage } from "../components/model-management/model-publication-dialog"
+import { publicationFailureMessage } from "../components/model-management/model-publication-dialog"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select"
 import {
@@ -284,25 +284,11 @@ function PublicationFailureNotice({ failure, publicationId }: {
   failure: GatewayPublicationFailure
   publicationId: string
 }) {
-  const messages: Record<GatewayPublicationFailure["code"], string> = {
-    publisher_permissions_missing: "Publisher 缺少此 APIM 的模型发布权限。请由部署管理员核对授权后再重试。",
-    publisher_permissions_unverified: "无法核验 Publisher 的发布权限，当前发布步骤已停止。",
-    publisher_authorization_failed: "Azure 拒绝了 Publisher 的 APIM 管理请求。请核对发布身份的授权。",
-    parent_policy_changed: "APIM 父策略与排队时的快照不一致，请核对变化后再重试。",
-    credential_source_missing: "APIM 凭据资源尚未创建，请重新提供 API Key 后重试。",
-    gateway_capability_unavailable: publicationCapabilityMessage(failure.profile),
-    deployment_not_found: "选定连接中不存在该部署，请使用实际部署名称而不是模型名称。",
-    deployment_metadata_unavailable: "无法读取部署目录，请核对连接认证和目录权限。",
-    upstream_request_failed: "模型验证请求失败，请核对部署名称、接口路径和 HTTP 状态。",
-    credential_unreadable: "无法读取连接的 API Key，请重新提供 API Key 后重试。",
-    credential_vault_unavailable: "凭据 Key Vault 未配置或未获此网关程序批准，请联系部署管理员检查安装。",
-    publication_failed: "发布未完成，请使用任务 ID 查询诊断记录。",
-  }
   return <div className="gateway-publication-failure" role="alert">
     <AlertTriangle size={16} aria-hidden="true" />
     <div>
       <b>发布失败原因</b>
-      <p>{messages[failure.code] ?? messages.publication_failed}</p>
+      <p>{publicationFailureMessage(failure)}</p>
       <dl>
         {failure.stage && <div><dt>失败阶段</dt><dd>{auditStatusLabels[failure.stage] ?? failure.stage}</dd></div>}
         {failure.http_status && <div><dt>HTTP</dt><dd data-no-localize>{failure.http_status}</dd></div>}

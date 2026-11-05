@@ -1174,6 +1174,7 @@ class GatewayPublicationFailure(StrictModel):
         "apim_infrastructure_upgrade_required", "gateway_capability_unavailable",
         "publication_failed", "deployment_not_found", "deployment_metadata_unavailable",
         "upstream_request_failed", "credential_unreadable", "credential_vault_unavailable",
+        "credential_vault_access_denied", "credential_name_conflict",
     ]
     message: str
     stage: PublicationStatus | None = None
@@ -1182,6 +1183,9 @@ class GatewayPublicationFailure(StrictModel):
     missing_actions: list[str] = Field(default_factory=list)
     profile: Literal[
         "openai-v1", "anthropic-messages", "openai-images", "microsoft-decision",
+    ] | None = Field(default=None, exclude_if=lambda value: value is None)
+    credential_recovery: Literal[
+        "retry_with_key", "republish_with_key", "administrator", "administrator_republish",
     ] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -1204,6 +1208,16 @@ _CREDENTIAL_FAILURES = {
     "Deployment credential vault is unavailable": _UNAVAILABLE_CREDENTIAL_VAULT,
     "Route credential materialization is unavailable": _UNAVAILABLE_CREDENTIAL_VAULT,
     "Route credential Vault is not approved for this program": _UNAVAILABLE_CREDENTIAL_VAULT,
+    "Route credential Vault access was denied": (
+        "credential_vault_access_denied",
+        "Key Vault denied the Publisher identity's credential request. Ask the deployment "
+        "administrator to check that identity's vault access.",
+    ),
+    "Route credential name is not an unclaimed resource": (
+        "credential_name_conflict",
+        "The credential name already exists. Ask the deployment administrator to check its "
+        "ownership; do not overwrite or delete the existing credential.",
+    ),
 }
 
 
@@ -1249,22 +1263,61 @@ def publication_failure(
                 "scripts.deploy enable-capabilities, then publish again."
             ),
         })
+    credential = None
     if publication_missing_credential_source(publication) or (
         publication.error_code == "PolicyCompilationError"
-        and message == "Route credential has no approved original source"
+        and message in {
+            "Route credential has no approved original source",
+            "Route credential version is unavailable",
+        }
     ):
-        return failure.model_copy(update={
-            "code": "credential_source_missing",
-            "message": "The APIM credential resource is missing; provide the API key to retry.",
-        })
-    if not isinstance(message, str) or len(message) > 8192:
-        return failure
-    credential = (
-        _CREDENTIAL_FAILURES.get(message)
-        if publication.error_code == "PolicyCompilationError" else None
-    )
+        credential = ("credential_source_missing", "The credential resource is missing.")
+    if credential is None:
+        if not isinstance(message, str) or len(message) > 8192:
+            return failure
+        credential = (
+            _CREDENTIAL_FAILURES.get(message)
+            if publication.error_code in {"PolicyCompilationError", "RetryablePublicationError"}
+            else None
+        )
     if credential is not None:
-        return failure.model_copy(update={"code": credential[0], "message": credential[1]})
+        result = failure.model_copy(update={"code": credential[0], "message": credential[1]})
+        if credential[0] in {"credential_source_missing", "credential_unreadable"}:
+            binding = publication.desired_spec.bindings[-1]
+            if "model_route_addition" in publication.resource_manifest:
+                recovery = (
+                    "administrator_republish" if binding.key_vault_secret_id is not None
+                    or binding.runtime_config.get("key_vault_secret_id")
+                    else "republish_with_key"
+                )
+            else:
+                recovery = (
+                    "retry_with_key" if publication_retry_requires_credential(publication)
+                    else "administrator"
+                )
+            hint = {
+                "retry_with_key": "Provide the API key again and retry.",
+                "republish_with_key": (
+                    "This model has not been activated. Start a new model publication with the "
+                    "API key; retrying this task cannot accept a replacement key."
+                ),
+                "administrator": (
+                    "Ask the deployment administrator to restore the original credential and "
+                    "its read access."
+                ),
+                "administrator_republish": (
+                    "Ask the deployment administrator to restore the original credential and "
+                    "its read access. Then start a new model publication using the existing "
+                    "connection; retrying this task cannot replace its credential intent."
+                ),
+            }[recovery]
+            result = result.model_copy(update={
+                "message": ("The credential resource is missing. "
+                            if credential[0] == "credential_source_missing" else
+                            "The connection's API key could not be read. ") + hint,
+                "credential_recovery": recovery,
+            })
+        return result
     if message.startswith("Deployment validation failed: "):
         try:
             details = json.loads(message.split(": ", 1)[1])
