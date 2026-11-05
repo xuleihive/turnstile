@@ -1201,11 +1201,9 @@ function RequestTrace({
   const normalizedSearch = searchText.trim().toLocaleLowerCase();
   const matchingRows = requestRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter))
   const firstMatchingId = matchingRows[0] ? requestTraceId(matchingRows[0]) : null
-  const selectedMatches = matchingRows.some((item) => requestTraceId(item) === selected)
   useEffect(() => {
-    // The detail follows the filter; a deep link outside the loaded rows stays selected.
-    if (firstMatchingId && !selectedMatches) setSelected(firstMatchingId)
-  }, [firstMatchingId, selectedMatches])
+    if (!selected && firstMatchingId) setSelected(firstMatchingId)
+  }, [firstMatchingId, selected])
   const loadNextPage = () => {
     if (!query.hasNextPage || query.isFetchingNextPage || loadingNextPageRef.current) return
     loadingNextPageRef.current = true
@@ -1213,7 +1211,7 @@ function RequestTrace({
   }
   if (query.isLoading || overview.isLoading || volumeTrend.isLoading) return <LoadingState />;
   if (query.error || overview.error || volumeTrend.error) return <ErrorState error={query.error ?? overview.error ?? volumeTrend.error} />;
-  if (!requestRows.length)
+  if (!requestRows.length && !selected)
     return (
       <EmptyState
         title="暂无请求记录"

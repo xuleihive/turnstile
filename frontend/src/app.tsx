@@ -53,7 +53,7 @@ import { TurnstileMark } from "./components/turnstile-logo";
 import { ApimLogo, CopilotLogo } from "./components/brand-logos";
 import { FINOPS_NAVIGATE_EVENT } from "./lib/navigation";
 import { useAuth } from "./providers/auth-provider";
-import { dataSource, usageWindow, type UsageWindowRange } from "./data-sources/apim/api";
+import { dataSource, type UsageWindowRange } from "./data-sources/apim/api";
 import {
   finopsQueries,
 } from "./data-sources/apim/queries";
@@ -902,9 +902,8 @@ export function App() {
     () => defaultApimFilters(finopsDays, finopsScope),
     [finopsDays, finopsScope],
   );
-  const sidebarFilters = useMemo(() => usageWindow(30), []);
   const anomalyQuery = useQuery({
-    ...finopsQueries.anomalies(sidebarFilters),
+    ...finopsQueries.anomalies(currentFinopsFilters),
     enabled: selectedDataSource === "apim",
     refetchInterval: 5 * 60_000,
   });
