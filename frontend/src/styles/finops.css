@@ -1088,7 +1088,7 @@ section.simple-pricing { padding-top: 16px; }
 .budget-editor-dialog { width: min(540px, calc(100vw - 32px)); }
 .budget-cost-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
 .budget-cost-summary > svg { flex: 0 0 14px; color: var(--brand); }
-.budget-editor-body { gap: 16px; }
+.budget-editor-body { grid-auto-rows: max-content; gap: 16px; }
 .budget-editor-context { min-height: min-content; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .budget-editor-context > div { min-width: 0; display: grid; gap: 2px; padding: 10px 12px; border-right: 1px solid var(--border); }
 .budget-editor-context > div:last-child { border-right: 0; }
