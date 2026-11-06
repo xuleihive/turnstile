@@ -397,6 +397,10 @@ class GatewayPublicationWorker:
             },
             worker_id,
         )
+        _log_failure(
+            publication, "max_attempts_exceeded",
+            "Gateway publication exceeded its retry limit",
+        )
         return GatewayPublication.model_validate(failed) if failed else publication
 
     @staticmethod

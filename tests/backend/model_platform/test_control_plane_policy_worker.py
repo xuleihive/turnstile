@@ -690,9 +690,75 @@ def test_publication_retry_limit_is_checked_before_resolving_credentials() -> No
     resolver.resolve.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("steps", "phase", "next_status"),
+    [(0, "queued", "validating"), (1, "validating", "provisioning"), (5, "promoting", "active")],
+)
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_publication_attempt_limit_logs_only_the_safe_final_failure(
+    steps: int, phase: str, next_status: str, exhausted: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        bedrock_publication(), "unit-owner",
+    )
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy)
+    for _ in range(steps):
+        assert worker.run_once("worker") is not None
+    previous = transition_publication(
+        repository, publication.id, phase, phase,
+        {
+            "error_code": "RetryablePublicationError",
+            "error_message": (
+                "api_key=unit-only-api-key oauth_client_secret=unit-only-oauth-secret "
+                "Authorization: Bearer unit-only-bearer upstream body unit-only-upstream "
+                "https://upstream.example/error?sig=unit-only-signature#unit-only-fragment"
+            ),
+        },
+        "setup-worker",
+    )
+    assert previous is not None
+    attempt_count = previous["attempt_count"] + 1
+    caplog.set_level("WARNING", logger="turnstile_core.services.gateway_publication_worker")
+    caplog.clear()
+
+    with (patch.object(worker._client_resolver, "resolve", wraps=worker._client_resolver.resolve
+                       ) as resolve,
+          patch.object(repository, "gateway_publication_credential",
+                       wraps=repository.gateway_publication_credential) as credential):
+        result = worker.run_once("worker", max_attempts=attempt_count - int(exhausted))
+
+    assert result is not None and result.id == publication.id
+    assert result.attempt_count == attempt_count
+    if exhausted:
+        assert result.status == "failed"
+        assert result.error_code == "max_attempts_exceeded"
+        assert result.error_message == "Gateway publication exceeded its retry limit"
+        credential.assert_not_called()
+        if phase == "promoting":
+            assert resolve.call_args.kwargs["include_probe_credentials"] is False
+        else:
+            resolve.assert_not_called()
+        assert worker.run_once("worker", max_attempts=0) is None
+        assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
+            ("WARNING", f"Gateway publication {publication.id} failed at {phase}: "
+             "error_code=max_attempts_exceeded "
+             "error_message='Gateway publication exceeded its retry limit'"),
+        ]
+    else:
+        assert result.status == next_status
+        assert caplog.records == []
+    assert not any(value in caplog.text for value in (
+        "bedrock-api-key", "unit-only-api-key", "unit-only-oauth-secret", "unit-only-bearer",
+        "unit-only-upstream", "unit-only-signature", "unit-only-fragment",
+    ))
+
+
 @pytest.mark.parametrize("unknown_current", [False, True])
 def test_promoted_publication_recovers_without_repeating_writes_or_probes(
-    unknown_current: bool,
+    unknown_current: bool, caplog: pytest.LogCaptureFixture,
 ) -> None:
     repository = InMemoryRepository()
     GatewayControlPlaneService(repository).publish(bedrock_publication(), "unit-owner")
@@ -710,6 +776,8 @@ def test_promoted_publication_recovers_without_repeating_writes_or_probes(
     assert pending is not None and pending.status == "promoting"
     client.current = pending.apim_revision
     before = list(client.calls)
+    caplog.set_level("WARNING", logger="turnstile_core.services.gateway_publication_worker")
+    caplog.clear()
     with patch.object(worker._client_resolver, "resolve", wraps=worker._client_resolver.resolve
                       ) as resolve:
         active = worker.run_once("worker", max_attempts=0)
@@ -717,6 +785,7 @@ def test_promoted_publication_recovers_without_repeating_writes_or_probes(
     assert resolve.call_args.kwargs["include_probe_credentials"] is False
     assert client.permission_checks[-1] is True
     assert client.calls == [*before, ("parent-readback", active.apim_revision)]
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize("changed", [False, True])
