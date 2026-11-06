@@ -405,6 +405,10 @@ components:
       $ref: ./openapi/components/common.yaml#/parameters/Workflow
     Model:
       $ref: ./openapi/components/common.yaml#/parameters/Model
+    ApimTargetId:
+      $ref: ./openapi/components/common.yaml#/parameters/ApimTargetId
+    GatewayDeploymentId:
+      $ref: ./openapi/components/common.yaml#/parameters/GatewayDeploymentId
     Cursor:
       $ref: ./openapi/components/common.yaml#/parameters/Cursor
     Limit:

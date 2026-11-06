@@ -44,6 +44,24 @@ parameters:
     in: query
     schema:
       type: string
+  ApimTargetId:
+    name: apim_target_id
+    in: query
+    required: false
+    schema:
+      anyOf:
+      - type: string
+        format: uuid
+      - type: 'null'
+  GatewayDeploymentId:
+    name: gateway_deployment_id
+    in: query
+    required: false
+    schema:
+      anyOf:
+      - type: string
+        format: uuid
+      - type: 'null'
   Cursor:
     name: cursor
     in: query

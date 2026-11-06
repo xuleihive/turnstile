@@ -51,7 +51,7 @@ def _yaml_document(path: Path) -> dict[str, object]:
 
 def _resolve_local_ref(ref: str) -> object:
     file_name, fragment = ref.split("#", 1)
-    value: object = _yaml_document((CONTRACT.parent / file_name).resolve())
+    value: object = _yaml_document((CONTRACT.parent / (file_name or CONTRACT.name)).resolve())
     for raw_part in fragment.removeprefix("/").split("/"):
         part = raw_part.replace("~1", "/").replace("~0", "~")
         value = cast(dict[str, object], value)[part]
@@ -71,7 +71,7 @@ def _resolve_index(values: dict[str, object]) -> dict[str, dict[str, object]]:
     resolved: dict[str, dict[str, object]] = {}
     for name, value in values.items():
         item = cast(dict[str, object], value)
-        if set(item) == {"$ref"}:
+        while set(item) == {"$ref"}:
             item = cast(dict[str, object], _resolve_local_ref(cast(str, item["$ref"])))
         resolved[name] = cast(dict[str, object], canonicalize(item))
     return resolved
@@ -278,6 +278,47 @@ def test_platform_invocation_trace_contract_preserves_unknown_and_explicit_ident
     assert fields["usage_available"]["default"] is True
     for path in ("/api/v1/observability/requests", "/api/v1/observability/requests/{request_id}"):
         assert "get" in _documented_paths()[path]
+
+
+def test_observability_gateway_filter_parameters_resolve_and_match_runtime() -> None:
+    root = _yaml_document(CONTRACT.resolve())
+    components = cast(dict[str, object], root["components"])
+    shared_parameters = cast(dict[str, object], components["parameters"])
+    filters = (
+        ("ApimTargetId", "apim_target_id"),
+        ("GatewayDeploymentId", "gateway_deployment_id"),
+    )
+    for component, _ in filters:
+        assert component in shared_parameters, f"Missing shared filter parameter: {component}"
+        assert shared_parameters[component] == {
+            "$ref": f"./openapi/components/common.yaml#/parameters/{component}",
+        }
+    documented = _documented_paths()
+    actual = app.openapi()["paths"]
+    expected_schema = _schema_contract({
+        "anyOf": [{"type": "string", "format": "uuid"}, {"type": "null"}],
+    })
+    for suffix in ("executive-overview", "distribution", "requests", "anomalies", "trends"):
+        path = f"/api/v1/observability/{suffix}"
+        operation = cast(dict[str, object], documented[path]["get"])
+        parameters = cast(list[dict[str, object]], operation["parameters"])
+        resolved = _resolve_index({
+            str(index): parameter for index, parameter in enumerate(parameters)
+        })
+        for component, name in filters:
+            assert {"$ref": f"#/components/parameters/{component}"} in parameters, path
+            described = [item for item in resolved.values() if item["name"] == name]
+            served = [
+                item for item in actual[path]["get"]["parameters"] if item["name"] == name
+            ]
+            assert len(described) == len(served) == 1, (path, name)
+            documented_parameter, actual_parameter = described[0], served[0]
+            assert documented_parameter["name"] == actual_parameter["name"] == name
+            assert documented_parameter["in"] == actual_parameter["in"] == "query", (path, name)
+            assert documented_parameter["required"] is actual_parameter["required"] is False
+            assert _schema_contract(documented_parameter["schema"]) == (
+                _schema_contract(actual_parameter["schema"])
+            ) == expected_schema, (path, name)
 
 
 def test_image_invocation_contract_requires_a_complete_gateway_selection() -> None:

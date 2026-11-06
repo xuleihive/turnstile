@@ -294,6 +294,8 @@ paths:
             minimum: 100
           - type: 'null'
           title: Status Code
+      - $ref: ../../openapi.yaml#/components/parameters/ApimTargetId
+      - $ref: ../../openapi.yaml#/components/parameters/GatewayDeploymentId
       responses:
         '200':
           description: Successful Response
@@ -435,6 +437,8 @@ paths:
             minimum: 100
           - type: 'null'
           title: Status Code
+      - $ref: ../../openapi.yaml#/components/parameters/ApimTargetId
+      - $ref: ../../openapi.yaml#/components/parameters/GatewayDeploymentId
       responses:
         '200':
           description: Successful Response
@@ -554,6 +558,8 @@ paths:
             minimum: 100
           - type: 'null'
           title: Status Code
+      - $ref: ../../openapi.yaml#/components/parameters/ApimTargetId
+      - $ref: ../../openapi.yaml#/components/parameters/GatewayDeploymentId
       responses:
         '200':
           description: Request trace page
@@ -701,6 +707,8 @@ paths:
             minimum: 100
           - type: 'null'
           title: Status Code
+      - $ref: ../../openapi.yaml#/components/parameters/ApimTargetId
+      - $ref: ../../openapi.yaml#/components/parameters/GatewayDeploymentId
       responses:
         '200':
           description: Successful Response
@@ -868,6 +876,8 @@ paths:
             minimum: 100
           - type: 'null'
           title: Status Code
+      - $ref: ../../openapi.yaml#/components/parameters/ApimTargetId
+      - $ref: ../../openapi.yaml#/components/parameters/GatewayDeploymentId
       responses:
         '200':
           description: Stacked time-series data
