@@ -332,7 +332,9 @@ def test_program_refresh_adopts_router_header_encoding_from_9f6d772(
         for name, count in (("_INBOUND_ROUTER_ENGINE_XML", 2), ("_OUTBOUND_ROUTER_ENGINE_XML", 1)):
             source = getattr(router_policy, name)
             assert source.count(current_condition) == count
-            previous.setattr(router_policy, name, source.replace(current_condition, legacy_condition))
+            previous.setattr(
+                router_policy, name, source.replace(current_condition, legacy_condition),
+            )
         installed = render_onboarding_fixed_program(
             plan.request, onboarding_configuration(), template, self_hosted_gateway=capability,
         )

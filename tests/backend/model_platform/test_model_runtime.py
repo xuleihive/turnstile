@@ -2477,8 +2477,11 @@ def test_connection_discount_retry_converges_after_partial_save_or_projection(
             raise RuntimeError("unit model save interrupted")
         return update(kind, item_id, values)
 
-    with patch.object(repository, "update_registry_item", side_effect=interrupted_update) as updates, \
-            patch.object(service, "sync_prices", side_effect=AssertionError("No catalog sync")) as sync:
+    with patch.object(
+        repository, "update_registry_item", side_effect=interrupted_update,
+    ) as updates, patch.object(
+        service, "sync_prices", side_effect=AssertionError("No catalog sync"),
+    ) as sync:
         if interruption == "model_save":
             with pytest.raises(RuntimeError, match="unit model save interrupted"):
                 service.update_connection(runtime.id, connection)
@@ -2495,7 +2498,9 @@ def test_connection_discount_retry_converges_after_partial_save_or_projection(
             )
         else:
             assert partial[second_id].context_price_tiers == partial[model_id].context_price_tiers
-            assert partial[second_id].input_cost_per_million == partial[model_id].input_cost_per_million
+            assert partial[second_id].input_cost_per_million == (
+                partial[model_id].input_cost_per_million
+            )
         updates.reset_mock()
         projection.reset_mock()
         result = service.update_connection(runtime.id, connection)
@@ -2519,14 +2524,19 @@ def test_connection_discount_retry_converges_after_partial_save_or_projection(
                         model.cached_cost_per_million, model.cache_write_cost_per_million) == (
                     1.0, 4.0, None, None,
                 )
-                expected_schedules = [(0, None, 100000000, 100000000, 100000000, 400000000)]
+                expected_schedules: list[tuple[int, int | None, int, int, int, int]] = [
+                    (0, None, 100000000, 100000000, 100000000, 400000000),
+                ]
             else:
                 tier_rates = {
                     "input_price_per_million", "output_price_per_million",
                     "cached_price_per_million", "cache_write_price_per_million",
                 }
-                assert [tier.model_dump(exclude=tier_rates) for tier in model.context_price_tiers] == [
-                    tier.model_dump(exclude=tier_rates) for tier in before[model.id].context_price_tiers
+                assert [
+                    tier.model_dump(exclude=tier_rates) for tier in model.context_price_tiers
+                ] == [
+                    tier.model_dump(exclude=tier_rates)
+                    for tier in before[model.id].context_price_tiers
                 ]
                 assert [(tier.input_price_per_million, tier.output_price_per_million,
                          tier.cached_price_per_million, tier.cache_write_price_per_million)
