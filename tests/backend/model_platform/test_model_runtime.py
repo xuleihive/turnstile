@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from inspect import signature
 from pathlib import Path
@@ -2239,7 +2240,7 @@ def test_connection_discount_reprices_inheriting_models_from_accepted_list_price
         )
     catalog.lookup.reset_mock()
 
-    # Saving the same discount again is a no-op, not a retry that needs the catalog.
+    # A converged repeat keeps its prices without needing the catalog.
     for discount in (20.0, 20.0, None):
         model = next(model for model in service.update_connection(
             runtime.id, connection.model_copy(update={"price_discount_percent": discount}),
@@ -2255,7 +2256,7 @@ def test_connection_discount_reprices_inheriting_models_from_accepted_list_price
     catalog.lookup.assert_not_called()
 
 
-def test_connection_edits_that_keep_the_discount_leave_model_prices_alone(
+def test_connection_edits_that_keep_the_discount_repair_only_unfinished_model_prices(
     price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
 ) -> None:
     from turnstile_core.domain.runtime_models import ModelConnectionUpdate
@@ -2263,7 +2264,6 @@ def test_connection_edits_that_keep_the_discount_leave_model_prices_alone(
     service, catalog, write, model_id = price_edit_service
     saved = next(model for model in service.save_model(write, model_id).models
                  if model.id == model_id)
-    # Rates that disagree with the connection discount are not rewritten by a rename or toggle.
     service._repository.update_registry_item(
         "runtime", saved.runtime_id, {"price_discount_percent": 20.0},
     )
@@ -2271,20 +2271,22 @@ def test_connection_edits_that_keep_the_discount_leave_model_prices_alone(
     catalog.lookup.reset_mock()
 
     for change in ({"name": "Renamed"}, {"enabled": not runtime.enabled}):
-        model = next(model for model in service.update_connection(runtime.id, ModelConnectionUpdate(
-            name=runtime.name, enabled=runtime.enabled, is_default=runtime.is_default,
-            price_discount_percent=20.0,
-        ).model_copy(update=change)).models if model.id == model_id)
-        assert (model.input_cost_per_million, model.output_cost_per_million) == (2.0, 8.0)
+        with patch.object(service, "_save", wraps=service._save) as save:
+            model = next(model for model in service.update_connection(
+                runtime.id, ModelConnectionUpdate(
+                    name=runtime.name, enabled=runtime.enabled, is_default=runtime.is_default,
+                    price_discount_percent=20.0,
+                ).model_copy(update=change),
+            ).models if model.id == model_id)
+        assert (model.input_cost_per_million, model.output_cost_per_million) == (0.4, 1.6)
+        model_saves = [saved_call for saved_call in save.call_args_list
+                       if saved_call.args[0] == "model"]
+        assert len(model_saves) == (1 if "name" in change else 0)
     catalog.lookup.assert_not_called()
 
 
-def test_connection_discount_reprices_context_tiers_from_their_list_prices(
-    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
-) -> None:
-    from turnstile_core.domain.runtime_models import ModelConnectionUpdate
-
-    service, catalog, _write, model_id = price_edit_service
+@pytest.fixture
+def accepted_discount_context_tiers() -> list[dict[str, Any]]:
     tiers: list[dict[str, Any]] = [
         {"key": "short", "label": "Short", "reference": "azure_retail:A:Short:Global:*",
          "min_input_tokens": 0, "max_input_tokens": 272000, "input_price_per_million": 4.0,
@@ -2297,6 +2299,27 @@ def test_connection_discount_reprices_context_tiers_from_their_list_prices(
          "cache_write_price_per_million": 1.0,
          "list_prices": {"input": 8.0, "output": 30.0, "cached": 1.0, "cache_write": None}},
     ]
+    for tier in tiers:
+        tier.update(
+            model_key=f"azure_retail:A:{tier['key']}", model_label=tier["label"],
+            product="Accepted product", group_key="accepted-context-model",
+            service_tier="standard", deployment="Global", regions=["eastus"],
+            input_range_source={
+                "rule_id": "accepted-context", "url": "https://publisher.example/pricing",
+                "revision": "sha256:accepted-rule", "verified_on": "2026-09-21",
+            },
+        )
+    return tiers
+
+
+def test_connection_discount_reprices_context_tiers_from_their_list_prices(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+    accepted_discount_context_tiers: list[dict[str, Any]],
+) -> None:
+    from turnstile_core.domain.runtime_models import ModelConnectionUpdate
+
+    service, catalog, _write, model_id = price_edit_service
+    tiers = accepted_discount_context_tiers
     service._repository.update_registry_item("model", model_id, {
         "price_source": "azure_retail", "price_reference": "azure_retail:context:unit",
         "context_price_tiers": tiers,
@@ -2333,6 +2356,204 @@ def test_connection_discount_reprices_context_tiers_from_their_list_prices(
     )
     catalog.options.assert_not_called()
     catalog.lookup.assert_not_called()
+
+
+@pytest.mark.parametrize("pricing", ["single", "official_context", "custom_context"])
+@pytest.mark.parametrize("interruption", ["model_save", "projection"])
+@pytest.mark.parametrize("catalog_now", ["unavailable", "drift"])
+def test_connection_discount_retry_converges_after_partial_save_or_projection(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+    accepted_discount_context_tiers: list[dict[str, Any]],
+    pricing: str, interruption: str, catalog_now: str,
+) -> None:
+    from turnstile_core.domain.ledger import BudgetPriceProjection
+    from turnstile_core.domain.runtime_models import ContextPriceRule, ModelConnectionUpdate
+
+    service, catalog, write, model_id = price_edit_service
+    repository = service._repository
+    assert isinstance(repository, InMemoryRepository)
+    saved = next(model for model in service.save_model(write, model_id).models
+                 if model.id == model_id)
+    runtime = next(item for item in service.registry().runtimes if item.id == saved.runtime_id)
+    for name, changes in (
+        ("unit-manual", {"price_source": PriceSource.MANUAL, "price_reference": None,
+                         "input_cost_per_million": 7.0, "output_cost_per_million": 13.0}),
+        ("unit-override", {"price_discount_percent": 10.0}),
+    ):
+        service.save_model(write.model_copy(update={
+            "model_key": name, "display_name": name, "is_default": False, **changes,
+        }))
+    other_runtime = repository.create_registry_item("runtime", {
+        **runtime.model_dump(mode="python"), "id": UUID(int=905),
+        "name": "Other connection", "is_default": False,
+    })
+    service.save_model(write.model_copy(update={
+        "model_key": "unit-other", "display_name": "Other connection model",
+        "runtime_id": other_runtime["id"], "is_default": False,
+    }))
+    tiers = accepted_discount_context_tiers
+    if pricing == "custom_context":
+        rule = ContextPriceRule(
+            short_context_max_tokens=272000, note="Accepted custom rule",
+            source_url="https://publisher.example/custom-pricing",
+        )
+        for tier in tiers:
+            tier["input_range_source"] = {
+                "rule_id": "custom-context-v1", "origin": "custom", "revision": rule.revision,
+                "configured_at": datetime(2026, 9, 21, tzinfo=UTC).isoformat(),
+                "note": rule.note, "url": rule.source_url,
+            }
+    charged_fields = {
+        "input_cost_per_million", "output_cost_per_million",
+        "cached_cost_per_million", "cache_write_cost_per_million",
+    }
+    if pricing != "single":
+        repository.update_registry_item("model", model_id, {
+            "price_reference": "azure_retail:context:unit", "context_price_tiers": tiers,
+            **{field: None for field in charged_fields},
+            **{f"list_{field}": None for field in charged_fields},
+        })
+    repository.update_registry_item("model", model_id, {
+        "pending_list_price": {"input": 99.0, "output": 199.0, "cached": 9.0},
+        "pending_context_price_tiers": [
+            {**tier, "input_price_per_million": 99.0,
+             "list_prices": {**tier["list_prices"], "input": 99.0},
+             "min_input_tokens": 0 if index == 0 else 200001,
+             "max_input_tokens": 200000 if index == 0 else None}
+            for index, tier in enumerate(tiers)
+        ],
+        "price_sync_status": "review_needed", "price_sync_message": "unit retained review",
+        "price_synced_at": datetime(2026, 10, 1, tzinfo=UTC),
+    })
+    second_id = UUID(int=906)
+    repository.create_registry_item("model", {
+        **deepcopy(next(row for row in repository.models if row["id"] == model_id)),
+        "id": second_id, "model_key": "unit-second", "display_name": "Second accepted model",
+        "is_default": False,
+    })
+    inherited_ids = [model_id, second_id]
+    before = {model.id: model for model in service.registry().models}
+    _seed_budget(repository, limit=1000, used=100, mode="audit")
+    repository.usage_records[0] = repository.usage_records[0].model_copy(update={
+        "model_id": str(model_id), "estimated_cost": 0.0002,
+        "input_price_per_million": 2.0, "output_price_per_million": 8.0,
+    })
+    history = [record.model_copy(deep=True) for record in repository.usage_records]
+    catalog.reset_mock()
+    if catalog_now == "unavailable":
+        catalog.lookup.side_effect = TimeoutError("unit catalog unavailable")
+        catalog.options.side_effect = TimeoutError("unit catalog unavailable")
+    else:
+        catalog.lookup.return_value = CatalogEntry(
+            reference=write.price_reference or "", label="Changed catalog model",
+            source=PriceSource.AZURE_RETAIL, input_per_million=99.0, output_per_million=199.0,
+        )
+    connection = ModelConnectionUpdate(
+        name=runtime.name, enabled=runtime.enabled, is_default=runtime.is_default,
+        price_discount_percent=50.0,
+    )
+    projected: dict[UUID, BudgetPriceProjection] = {}
+    projection_interrupted = False
+
+    def project(item_id: UUID, price: BudgetPriceProjection) -> None:
+        nonlocal projection_interrupted
+        if interruption == "projection" and item_id == second_id and not projection_interrupted:
+            projection_interrupted = True
+            raise RuntimeError("unit projection interrupted")
+        projected[item_id] = price
+
+    projection = Mock(side_effect=project)
+    service._project_budget_price = projection
+    update = repository.update_registry_item
+    save_interrupted = False
+
+    def interrupted_update(
+        kind: str, item_id: UUID, values: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        nonlocal save_interrupted
+        if (interruption == "model_save" and kind == "model" and item_id == second_id
+                and not save_interrupted):
+            save_interrupted = True
+            raise RuntimeError("unit model save interrupted")
+        return update(kind, item_id, values)
+
+    with patch.object(repository, "update_registry_item", side_effect=interrupted_update) as updates, \
+            patch.object(service, "sync_prices", side_effect=AssertionError("No catalog sync")) as sync:
+        if interruption == "model_save":
+            with pytest.raises(RuntimeError, match="unit model save interrupted"):
+                service.update_connection(runtime.id, connection)
+        else:
+            service.update_connection(runtime.id, connection)
+        partial = {model.id: model for model in service.registry().models}
+        assert next(item for item in service.registry().runtimes
+                    if item.id == runtime.id).price_discount_percent == 50.0
+        assert set(projected) == {model_id}
+        unchanged = {"effective_discount_percent", "updated_at"}
+        if interruption == "model_save":
+            assert partial[second_id].model_dump(exclude=unchanged) == (
+                before[second_id].model_dump(exclude=unchanged)
+            )
+        else:
+            assert partial[second_id].context_price_tiers == partial[model_id].context_price_tiers
+            assert partial[second_id].input_cost_per_million == partial[model_id].input_cost_per_million
+        updates.reset_mock()
+        projection.reset_mock()
+        result = service.update_connection(runtime.id, connection)
+        assert [saved_call.args[1] for saved_call in updates.call_args_list
+                if saved_call.args[0] == "model"] == (
+            [second_id] if interruption == "model_save" else []
+        )
+        assert [project_call.args[0] for project_call in projection.call_args_list] == inherited_ids
+        for model in result.models:
+            if model.id not in inherited_ids:
+                assert model == before[model.id]
+                continue
+            moved_fields = charged_fields | {
+                "context_price_tiers", "effective_discount_percent", "updated_at",
+            }
+            assert model.model_dump(exclude=moved_fields) == (
+                before[model.id].model_dump(exclude=moved_fields)
+            )
+            if pricing == "single":
+                assert (model.input_cost_per_million, model.output_cost_per_million,
+                        model.cached_cost_per_million, model.cache_write_cost_per_million) == (
+                    1.0, 4.0, None, None,
+                )
+                expected_schedules = [(0, None, 100000000, 100000000, 100000000, 400000000)]
+            else:
+                tier_rates = {
+                    "input_price_per_million", "output_price_per_million",
+                    "cached_price_per_million", "cache_write_price_per_million",
+                }
+                assert [tier.model_dump(exclude=tier_rates) for tier in model.context_price_tiers] == [
+                    tier.model_dump(exclude=tier_rates) for tier in before[model.id].context_price_tiers
+                ]
+                assert [(tier.input_price_per_million, tier.output_price_per_million,
+                         tier.cached_price_per_million, tier.cache_write_price_per_million)
+                        for tier in model.context_price_tiers] == [
+                    (2.0, 10.0, 2.0, 2.0), (4.0, 15.0, 0.5, 0.5),
+                ]
+                assert all(getattr(model, field) is None for field in charged_fields)
+                expected_schedules = [
+                    (0, 272000, 200000000, 200000000, 200000000, 1000000000),
+                    (272001, None, 400000000, 50000000, 50000000, 1500000000),
+                ]
+            assert projected[model.id].model_id == model.id
+            assert projected[model.id].price is not None
+            assert [(schedule["min_input_tokens"], schedule["max_input_tokens"],
+                     schedule["input_rate_units"], schedule["cached_rate_units"],
+                     schedule["cache_write_rate_units"], schedule["output_rate_units"])
+                    for schedule in projected[model.id].rate_schedules] == expected_schedules
+        digests = {item_id: projected[item_id].price_sha256 for item_id in inherited_ids}
+        updates.reset_mock()
+        projection.reset_mock()
+        assert service.update_connection(runtime.id, connection).models == result.models
+        assert not any(saved_call.args[0] == "model" for saved_call in updates.call_args_list)
+        assert [project_call.args[0] for project_call in projection.call_args_list] == inherited_ids
+        assert {item_id: projected[item_id].price_sha256 for item_id in inherited_ids} == digests
+        assert repository.usage_records == history
+        sync.assert_not_called()
+    assert catalog.mock_calls == []
 
 
 def test_non_pricing_edit_does_not_require_an_available_catalog(

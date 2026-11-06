@@ -509,20 +509,19 @@ class ModelRuntimeService:
         values = write.model_dump(mode="python", exclude={"is_default"})
         if bool(current.get("is_default")) != write.is_default:
             values["is_default"] = write.is_default
-        previous_discount = current.get("price_discount_percent")
         self._save("runtime", values, runtime_id)
-        if (
-            float(previous_discount) if previous_discount is not None else None
-        ) == write.price_discount_percent:
-            return self.registry()
         for model in self.registry().models:
             # Models inheriting the connection discount charge their accepted list prices at it.
-            if model.runtime_id != runtime_id or model.price_discount_percent is not None:
+            if (
+                model.runtime_id != runtime_id
+                or model.price_discount_percent is not None
+                or model.price_source is PriceSource.MANUAL
+            ):
                 continue
             repriced = repriced_at_discount(model)
             if repriced is not None:
                 self._save("model", repriced, model.id)
-                self._project_accepted_model_price(model.id)
+            self._project_accepted_model_price(model.id)
         return self.registry()
 
     def delete_connection(self, runtime_id: UUID) -> RegistryResponse:
