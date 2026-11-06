@@ -9,7 +9,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from tests.backend.model_platform.test_model_availability import gateway_availability_fixture
-from turnstile_core.domain.model_availability import ModelAvailabilityCoverage
+from turnstile_core.domain.model_availability import (
+    ModelAvailabilityCoverage,
+    ModelAvailabilityUnavailable,
+)
 from turnstile_core.integrations import model_availability_verifier as gateway_verification
 from turnstile_core.integrations.apim_control_plane_contract import PolicyCompilationError
 from turnstile_core.integrations.apim_publisher_client import AzureApimPublisherClient
@@ -19,6 +22,7 @@ from turnstile_core.services import model_availability as availability
 @pytest.fixture(autouse=True)
 def isolated_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(availability, "_TARGET_AUDIT_BACKOFF_UNTIL", {}, raising=False)
+    monkeypatch.setattr(availability, "_TARGET_AUDIT_FAILING_SINCE", {}, raising=False)
     monkeypatch.setattr(availability, "_TARGET_RENEW_BACKOFF_UNTIL", {})
 
 
@@ -38,7 +42,7 @@ def coordinator_fixture(
     return coordinator, repository
 
 
-def test_failed_audit_has_a_fixed_backoff_shared_across_coordinators(
+def test_continuous_audit_failure_has_a_backoff_shared_across_coordinators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_id = uuid4()
@@ -46,28 +50,45 @@ def test_failed_audit_has_a_fixed_backoff_shared_across_coordinators(
     repository.get_model_availability_inventory.return_value = {target_id: "a" * 64}
     first = availability.ModelAvailabilityCoordinator(repository, Mock(), "unit", "Unit")
     second = availability.ModelAvailabilityCoordinator(repository, Mock(), "unit", "Unit")
-    audit = Mock(side_effect=availability.ModelAvailabilityUnavailable("Unit audit failed"))
+    audit = Mock(side_effect=ModelAvailabilityUnavailable("Unit audit failed"))
     clock = Mock(return_value=1000.0)
     monkeypatch.setattr(availability.ModelAvailabilityCoordinator, "_verify_target", audit)
     monkeypatch.setattr(availability, "monotonic", clock)
 
     assert first.refresh() == 0
     audit.assert_called_once_with(target_id, "a" * 64)
-    for instant in (1001.0, 1299.999):
+    for instant in (1001.0, 1120.0, 1299.999):
         clock.return_value = instant
         assert second.refresh() == 0
-        assert audit.call_count == 1
+        assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    assert audit.call_count == 4
 
     clock.return_value = 1300.0
     assert second.refresh() == 0
-    assert audit.call_count == 2
+    assert audit.call_count == 5
+    assert {(target_id, "a" * 64): 1600.0} == availability._TARGET_AUDIT_BACKOFF_UNTIL
     clock.return_value = 1599.999
     assert first.refresh() == 0
-    assert audit.call_count == 2
+    assert audit.call_count == 5
     clock.return_value = 1600.0
     assert first.refresh() == 0
-    assert audit.call_count == 3
+    assert audit.call_count == 6
     repository.save_model_availability_coverage.assert_not_called()
+
+
+def test_single_transient_failure_is_reaudited_after_two_minutes(
+    monkeypatch: pytest.MonkeyPatch, audit_clock: Mock,
+) -> None:
+    target_id = uuid4()
+    coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
+    audit = Mock(side_effect=[ModelAvailabilityUnavailable("Transient timeout"), None])
+    monkeypatch.setattr(coordinator, "_verify_target", audit)
+    assert coordinator.refresh() == 0
+    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    audit_clock.return_value = 1120.0
+    assert coordinator.refresh() == 1
+    assert audit.call_count == 2
+    assert availability._TARGET_AUDIT_FAILING_SINCE == {}
 
 
 def test_audit_backoff_starts_when_a_slow_failure_finishes(
@@ -83,14 +104,40 @@ def test_audit_backoff_starts_when_a_slow_failure_finishes(
     audit = Mock(side_effect=timeout)
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     assert coordinator.refresh() == 0
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {(target_id, "a" * 64): 1450.0}
+    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
     audit_clock.return_value = 1300.0
     assert coordinator.refresh() == 0
-    assert audit.call_count == 1
-    audit_clock.return_value = 1450.0
+    assert audit.call_count == 2
+    assert {(target_id, "a" * 64): 1750.0} == availability._TARGET_AUDIT_BACKOFF_UNTIL
+    audit_clock.return_value = 1749.999
     assert coordinator.refresh() == 0
     assert audit.call_count == 2
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {(target_id, "a" * 64): 1900.0}
+    audit_clock.return_value = 1750.0
+    assert coordinator.refresh() == 0
+    assert audit.call_count == 3
+    assert {(target_id, "a" * 64): 2200.0} == availability._TARGET_AUDIT_BACKOFF_UNTIL
+
+
+def test_first_failure_does_not_count_time_spent_waiting_or_running(
+    monkeypatch: pytest.MonkeyPatch, audit_clock: Mock,
+) -> None:
+    target_id = uuid4()
+    coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
+
+    def delayed_failure(_target: UUID, _digest: str) -> None:
+        audit_clock.return_value = 1301.0
+        raise ModelAvailabilityUnavailable("First observed failure")
+
+    audit = Mock(side_effect=delayed_failure)
+    monkeypatch.setattr(coordinator, "_verify_target", audit)
+    assert coordinator.refresh() == 0
+    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    assert {(target_id, "a" * 64): 1301.0} == availability._TARGET_AUDIT_FAILING_SINCE
+    audit_clock.return_value = 1421.0
+    audit.side_effect = None
+    assert coordinator.refresh() == 1
+    assert audit.call_count == 2
+    assert availability._TARGET_AUDIT_FAILING_SINCE == {}
 
 
 def test_failed_audit_does_not_throttle_other_targets(
@@ -101,16 +148,18 @@ def test_failed_audit_does_not_throttle_other_targets(
 
     def check(target_id: UUID, _digest: str) -> None:
         if target_id == failed:
-            raise availability.ModelAvailabilityUnavailable("Unit audit failed")
+            raise ModelAvailabilityUnavailable("Unit audit failed")
 
     audit = Mock(side_effect=check)
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     assert coordinator.refresh() == 1
-    audit_clock.return_value = 1001.0
+    audit_clock.return_value = 1300.0
     assert coordinator.refresh() == 1
-    assert audit.call_args_list.count(call(failed, "a" * 64)) == 1
-    assert audit.call_args_list.count(call(healthy, "a" * 64)) == 2
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {(failed, "a" * 64): 1300.0}
+    audit_clock.return_value = 1301.0
+    assert coordinator.refresh() == 1
+    assert audit.call_args_list.count(call(failed, "a" * 64)) == 2
+    assert audit.call_args_list.count(call(healthy, "a" * 64)) == 3
+    assert {(failed, "a" * 64): 1600.0} == availability._TARGET_AUDIT_BACKOFF_UNTIL
 
 
 def test_successful_audit_clears_failure_and_is_not_throttled(
@@ -119,15 +168,19 @@ def test_successful_audit_clears_failure_and_is_not_throttled(
     target_id = uuid4()
     coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
     audit = Mock(side_effect=[
-        availability.ModelAvailabilityUnavailable("Unit audit failed"), None, None,
+        ModelAvailabilityUnavailable("Unit audit failed"),
+        ModelAvailabilityUnavailable("Unit audit failed"), None, None,
     ])
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     assert coordinator.refresh() == 0
     audit_clock.return_value = 1300.0
+    assert coordinator.refresh() == 0
+    audit_clock.return_value = 1600.0
     assert coordinator.refresh() == 1
     assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    assert availability._TARGET_AUDIT_FAILING_SINCE == {}
     assert coordinator.refresh() == 1
-    assert audit.call_count == 3
+    assert audit.call_count == 4
 
 
 def test_digest_changes_discard_previous_audit_backoff(
@@ -135,17 +188,21 @@ def test_digest_changes_discard_previous_audit_backoff(
 ) -> None:
     target_id = uuid4()
     coordinator, repository = coordinator_fixture({target_id: "a" * 64})
-    audit = Mock(side_effect=availability.ModelAvailabilityUnavailable("Unit audit failed"))
+    audit = Mock(side_effect=ModelAvailabilityUnavailable("Unit audit failed"))
     monkeypatch.setattr(coordinator, "_verify_target", audit)
-    for instant, digest in ((1000.0, "a" * 64), (1001.0, "b" * 64), (1002.0, "a" * 64)):
+    for instant, digest, deadline in (
+        (1000.0, "a" * 64, None), (1300.0, "a" * 64, 1600.0),
+        (1301.0, "b" * 64, None), (1302.0, "a" * 64, None),
+    ):
         audit_clock.return_value = instant
         repository.get_model_availability_inventory.return_value = {target_id: digest}
         assert coordinator.refresh() == 0
-        assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {
-            (target_id, digest): instant + 300.0,
-        }
+        assert (
+            {} if deadline is None else {(target_id, digest): deadline}
+        ) == availability._TARGET_AUDIT_BACKOFF_UNTIL
     assert audit.call_args_list == [
-        call(target_id, "a" * 64), call(target_id, "b" * 64), call(target_id, "a" * 64),
+        call(target_id, "a" * 64), call(target_id, "a" * 64),
+        call(target_id, "b" * 64), call(target_id, "a" * 64),
     ]
 
 
@@ -155,22 +212,24 @@ def test_removed_inventory_discards_backoff_before_same_digest_returns(
 ) -> None:
     removed, other = uuid4(), uuid4()
     coordinator, repository = coordinator_fixture({removed: "a" * 64, other: "b" * 64})
-    audit = Mock(side_effect=availability.ModelAvailabilityUnavailable("Unit audit failed"))
+    audit = Mock(side_effect=ModelAvailabilityUnavailable("Unit audit failed"))
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     assert coordinator.refresh() == 0
-    audit_clock.return_value = 1001.0
+    audit_clock.return_value = 1300.0
+    assert coordinator.refresh() == 0
+    audit_clock.return_value = 1301.0
     repository.get_model_availability_inventory.return_value = (
         {other: "b" * 64} if retain_other else {}
     )
     assert coordinator.refresh() == 0
-    assert audit.call_count == 2
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == (
-        {(other, "b" * 64): 1300.0} if retain_other else {}
-    )
+    assert audit.call_count == 4
+    assert (
+        {(other, "b" * 64): 1600.0} if retain_other else {}
+    ) == availability._TARGET_AUDIT_BACKOFF_UNTIL
     repository.get_model_availability_inventory.return_value[removed] = "a" * 64
     assert coordinator.refresh() == 0
-    assert audit.call_args_list.count(call(removed, "a" * 64)) == 2
-    assert audit.call_args_list.count(call(other, "b" * 64)) == 1
+    assert audit.call_args_list.count(call(removed, "a" * 64)) == 3
+    assert audit.call_args_list.count(call(other, "b" * 64)) == 2
 
 
 @pytest.mark.parametrize("renew", [False, True])
@@ -179,21 +238,24 @@ def test_busy_writer_clears_audit_failure_without_a_new_backoff(
 ) -> None:
     target_id = uuid4()
     coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
-    audit = Mock(side_effect=availability.ModelAvailabilityUnavailable("Unit audit failed"))
-    busy = availability.ModelAvailabilityUnavailable("Availability proof writer is busy")
+    audit = Mock(side_effect=ModelAvailabilityUnavailable("Unit audit failed"))
+    busy = ModelAvailabilityUnavailable("Availability proof writer is busy")
     renewal = Mock(side_effect=busy)
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     monkeypatch.setattr(coordinator, "_renew_target", renewal)
     assert coordinator.refresh() == 0
-    audit_clock.return_value = 1001.0 if renew else 1300.0
+    audit_clock.return_value = 1300.0
+    assert coordinator.refresh() == 0
+    audit_clock.return_value = 1301.0 if renew else 1600.0
     if not renew:
         audit.side_effect = busy
     assert coordinator.refresh(renew=renew) == 0
     assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    assert availability._TARGET_AUDIT_FAILING_SINCE == {}
     assert availability._TARGET_RENEW_BACKOFF_UNTIL == {}
     audit.side_effect = None
     assert coordinator.refresh() == 1
-    assert audit.call_count == (2 if renew else 3)
+    assert audit.call_count == (3 if renew else 4)
 
 
 def test_successful_renewal_is_not_delayed_by_audit_backoff_and_clears_it(
@@ -201,18 +263,20 @@ def test_successful_renewal_is_not_delayed_by_audit_backoff_and_clears_it(
 ) -> None:
     target_id = uuid4()
     coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
-    audit = Mock(side_effect=availability.ModelAvailabilityUnavailable("Unit audit failed"))
+    audit = Mock(side_effect=ModelAvailabilityUnavailable("Unit audit failed"))
     renewal = Mock()
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     monkeypatch.setattr(coordinator, "_renew_target", renewal)
     assert coordinator.refresh() == 0
-    audit_clock.return_value = 1001.0
+    audit_clock.return_value = 1300.0
+    assert coordinator.refresh() == 0
+    audit_clock.return_value = 1301.0
     assert coordinator.refresh(renew=True) == 1
     renewal.assert_called_once_with(target_id, "a" * 64)
     assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
     audit.side_effect = None
     assert coordinator.refresh() == 1
-    assert audit.call_count == 2
+    assert audit.call_count == 3
 
 
 def test_audit_failure_does_not_move_the_renewal_retry_deadline(
@@ -220,23 +284,27 @@ def test_audit_failure_does_not_move_the_renewal_retry_deadline(
 ) -> None:
     target_id = uuid4()
     coordinator, _repository = coordinator_fixture({target_id: "a" * 64})
-    failure = availability.ModelAvailabilityUnavailable("Unit target unavailable")
+    failure = ModelAvailabilityUnavailable("Unit target unavailable")
     renewal, audit = Mock(side_effect=failure), Mock(side_effect=failure)
     monkeypatch.setattr(coordinator, "_renew_target", renewal)
     monkeypatch.setattr(coordinator, "_verify_target", audit)
     assert coordinator.refresh(renew=True) == 0
     audit_clock.return_value = 1100.0
     assert coordinator.refresh() == 0
-    assert availability._TARGET_RENEW_BACKOFF_UNTIL == {(target_id, "a" * 64): 1300.0}
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {(target_id, "a" * 64): 1400.0}
+    assert {(target_id, "a" * 64): 1300.0} == availability._TARGET_RENEW_BACKOFF_UNTIL
+    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
     audit_clock.return_value = 1299.999
     assert coordinator.refresh(renew=True) == 0
     assert renewal.call_count == 1
     audit_clock.return_value = 1300.0
     assert coordinator.refresh(renew=True) == 0
     assert renewal.call_count == 2
-    assert availability._TARGET_RENEW_BACKOFF_UNTIL == {(target_id, "a" * 64): 1600.0}
-    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {(target_id, "a" * 64): 1400.0}
+    assert {(target_id, "a" * 64): 1600.0} == availability._TARGET_RENEW_BACKOFF_UNTIL
+    assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+    audit_clock.return_value = 1400.0
+    assert coordinator.refresh() == 0
+    assert {(target_id, "a" * 64): 1700.0} == availability._TARGET_AUDIT_BACKOFF_UNTIL
+    assert {(target_id, "a" * 64): 1600.0} == availability._TARGET_RENEW_BACKOFF_UNTIL
 
 
 def test_fixed_program_audit_recovers_with_the_existing_proof_guard(
@@ -257,7 +325,7 @@ def test_fixed_program_audit_recovers_with_the_existing_proof_guard(
     assert coordinator.refresh() == 0
     audit_clock.return_value = 1299.999
     assert coordinator.refresh() == 0
-    assert audit.call_count == 1
+    assert audit.call_count == 2
     repository.save_model_availability_coverage.assert_not_called()
     now = datetime.now(UTC)
     coverage = ModelAvailabilityCoverage(
@@ -362,10 +430,8 @@ def test_backoff_cannot_extend_proof_expiry_or_the_management_evidence_window(
         result = coordinator.verify(state, {coverage.target_id: "a" * 64})[0]
         assert result.status == "unknown"
         assert result.reason == "model_availability_capability_unverified"
-        assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {
-            (coverage.target_id, "a" * 64): 1521.0,
-        }
-        assert client.verify_model_availability.call_count == 2
+        assert availability._TARGET_AUDIT_BACKOFF_UNTIL == {}
+        assert client.verify_model_availability.call_count == 4
         assert client.renew_model_availability.call_count == 2
         client.confirm_model_availability.assert_not_called()
         verifier.read_policy.assert_not_called()

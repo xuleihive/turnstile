@@ -97,7 +97,14 @@ def test_request_trace_kpis_are_diagnostic_not_executive_duplicates() -> None:
         "const firstMatchingId = matchingRows[0] ? requestTraceId(matchingRows[0]) : null"
         in request_trace
     )
-    assert "if (!selected && firstMatchingId) setSelected(firstMatchingId)" in request_trace
+    assert (
+        "const selectedMatches = matchingRows.some((item) => requestTraceId(item) === selected)"
+        in request_trace
+    )
+    assert (
+        "const nextSelection = keepDeepLink ? initialRequestId : firstMatchingId" in request_trace
+    )
+    assert "if (!selected && firstMatchingId)" not in request_trace
     assert "if (!selected && firstRequestId)" not in request_trace
 
 

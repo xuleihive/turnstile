@@ -915,7 +915,7 @@ section.simple-pricing { padding-top: 16px; }
 .budget-section-summary i { width: 1px; height: 30px; background: var(--border); }
 .budget-allocation-panel { border-radius: 8px; }
 .budget-table-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); }
-.budget-table { min-width: 1076px; }
+.budget-table { min-width: var(--resizable-table-width, 1094px); }
 .budget-table-head, .budget-table-row { display: grid; grid-template-columns: var(--resizable-table-columns, 250px minmax(110px, .9fr) minmax(180px, 1.4fr) minmax(160px, 1.1fr) minmax(160px, 1.1fr) 94px 88px 52px); align-items: center; }
 .budget-table-head { height: 44px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 48%, transparent); color: var(--muted-foreground); font-size: 11px; line-height: 16px; font-weight: 500; }
 .budget-table-head > span { padding: 0 14px; }

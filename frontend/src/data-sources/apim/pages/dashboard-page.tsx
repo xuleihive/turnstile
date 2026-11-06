@@ -1201,9 +1201,16 @@ function RequestTrace({
   const normalizedSearch = searchText.trim().toLocaleLowerCase();
   const matchingRows = requestRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter))
   const firstMatchingId = matchingRows[0] ? requestTraceId(matchingRows[0]) : null
+  const selectedMatches = matchingRows.some((item) => requestTraceId(item) === selected)
+  const keepDeepLink = initialRequestId !== null && statusFilter === "all"
+    && (normalizedSearch === initialRequestId.toLocaleLowerCase()
+      || (requestRows.length === 0 && normalizedSearch === ""))
   useEffect(() => {
-    if (!selected && firstMatchingId) setSelected(firstMatchingId)
-  }, [firstMatchingId, selected])
+    if (!selectedMatches) {
+      const nextSelection = keepDeepLink ? initialRequestId : firstMatchingId
+      if (selected !== nextSelection) setSelected(nextSelection)
+    }
+  }, [firstMatchingId, initialRequestId, keepDeepLink, selected, selectedMatches])
   const loadNextPage = () => {
     if (!query.hasNextPage || query.isFetchingNextPage || loadingNextPageRef.current) return
     loadingNextPageRef.current = true
@@ -1211,7 +1218,7 @@ function RequestTrace({
   }
   if (query.isLoading || overview.isLoading || volumeTrend.isLoading) return <LoadingState />;
   if (query.error || overview.error || volumeTrend.error) return <ErrorState error={query.error ?? overview.error ?? volumeTrend.error} />;
-  if (!requestRows.length && !selected)
+  if (!requestRows.length && !selected && !initialRequestId)
     return (
       <EmptyState
         title="暂无请求记录"

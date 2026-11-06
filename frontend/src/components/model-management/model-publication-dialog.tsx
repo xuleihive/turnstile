@@ -346,7 +346,7 @@ export function publicationFailureMessage(failure: GatewayPublicationFailure | n
     case "upstream_request_failed":
       return "模型验证请求失败，请核对部署名称、接口路径和 HTTP 状态。"
     default:
-      return "发布未完成，请使用任务 ID 查询诊断记录。"
+      return "任务未完成，请使用任务 ID 查询诊断记录。"
   }
 }
 

@@ -190,7 +190,7 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "无法核验 Publisher 的发布权限，当前发布步骤已停止。": "The Publisher's publication permissions could not be verified. The current publication step has stopped.",
   "Azure 拒绝了 Publisher 的 APIM 管理请求。请核对发布身份的授权。": "Azure denied the Publisher's APIM management request. Review the publishing identity's access.",
   "APIM 父策略与排队时的快照不一致，请核对变化后再重试。": "The APIM parent policy differs from the queued snapshot. Review the changes before retrying.",
-  "发布未完成，请使用任务 ID 查询诊断记录。": "Publication did not complete. Use the task ID to locate its diagnostic record.",
+  "任务未完成，请使用任务 ID 查询诊断记录。": "The task did not complete. Use the task ID to locate its diagnostic record.",
   "最近诊断": "Last diagnostic",
   "上次检查通过": "Last check passed",
   "上次调用失败": "Last call failed",

@@ -62,6 +62,7 @@ _TARGET_RENEW_BACKOFF_SECONDS = 300.0
 _TARGET_RENEW_BACKOFF_LOCK = Lock()
 _TARGET_RENEW_BACKOFF_UNTIL: dict[tuple[UUID, str], float] = {}
 _TARGET_AUDIT_BACKOFF_UNTIL: dict[tuple[UUID, str], float] = {}
+_TARGET_AUDIT_FAILING_SINCE: dict[tuple[UUID, str], float] = {}
 
 
 def require_controlled_gateway_token_authority(
@@ -844,9 +845,10 @@ class ModelAvailabilityCoordinator:
         inventory = self._availability.get_model_availability_inventory()
         now_mono = monotonic()
         with _TARGET_RENEW_BACKOFF_LOCK:
-            for key in list(_TARGET_AUDIT_BACKOFF_UNTIL):
-                if inventory.get(key[0]) != key[1]:
-                    _TARGET_AUDIT_BACKOFF_UNTIL.pop(key, None)
+            for state in (_TARGET_AUDIT_BACKOFF_UNTIL, _TARGET_AUDIT_FAILING_SINCE):
+                for key in list(state):
+                    if inventory.get(key[0]) != key[1]:
+                        state.pop(key, None)
             backoff = _TARGET_RENEW_BACKOFF_UNTIL if renew else _TARGET_AUDIT_BACKOFF_UNTIL
             items = [
                 (target_id, digest)
@@ -878,6 +880,7 @@ class ModelAvailabilityCoordinator:
                     with _TARGET_RENEW_BACKOFF_LOCK:
                         _TARGET_RENEW_BACKOFF_UNTIL.pop((target_id, digest), None)
                         _TARGET_AUDIT_BACKOFF_UNTIL.pop((target_id, digest), None)
+                        _TARGET_AUDIT_FAILING_SINCE.pop((target_id, digest), None)
                     completed += 1
                 else:
                     with _TARGET_RENEW_BACKOFF_LOCK:
@@ -886,10 +889,21 @@ class ModelAvailabilityCoordinator:
                             and str(error) == "Availability proof writer is busy"
                         ):
                             _TARGET_AUDIT_BACKOFF_UNTIL.pop((target_id, digest), None)
+                            _TARGET_AUDIT_FAILING_SINCE.pop((target_id, digest), None)
                         else:
-                            backoff[(target_id, digest)] = (
-                                monotonic() + _TARGET_RENEW_BACKOFF_SECONDS
-                            )
+                            failed_at = monotonic()
+                            if renew:
+                                backoff[(target_id, digest)] = (
+                                    failed_at + _TARGET_RENEW_BACKOFF_SECONDS
+                                )
+                            else:
+                                failing_since = _TARGET_AUDIT_FAILING_SINCE.setdefault(
+                                    (target_id, digest), failed_at,
+                                )
+                                if failed_at - failing_since >= _TARGET_RENEW_BACKOFF_SECONDS:
+                                    backoff[(target_id, digest)] = (
+                                        failed_at + _TARGET_RENEW_BACKOFF_SECONDS
+                                    )
                     _log_verification_failure(target_id, error)
             return completed
 

@@ -1260,8 +1260,8 @@ for (const [code, expected] of [
   ["credential_source_missing", "APIM 凭据资源尚未创建，请重新提供 API Key 后重试"],
   ["credential_unreadable", "无法读取连接的 API Key，请重新提供 API Key 后重试"],
   ["credential_vault_unavailable", "凭据 Key Vault 未配置或未获此网关程序批准"],
-  ["publication_failed", "发布未完成，请使用任务 ID 查询诊断记录"],
-  ["future_unknown_code", "发布未完成，请使用任务 ID 查询诊断记录"],
+  ["publication_failed", "任务未完成，请使用任务 ID 查询诊断记录"],
+  ["future_unknown_code", "任务未完成，请使用任务 ID 查询诊断记录"],
 ]) {
   test(`publication failure ${code} renders controlled copy without raw messages or commands`, () => {
     const markup = frontendRequire("react-dom/server").renderToStaticMarkup(

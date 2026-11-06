@@ -46,6 +46,10 @@ const creationCode = await compile("../../../frontend/src/components/model-manag
 const workspaceCode = await compile("../../../frontend/src/components/model-management/apim-gateway-workspace.tsx", ["ApimTable", "GatewayTable", "GatewayChildRow", "InfrastructureActions", "ApimEditor", "GatewayEditor", "GatewayAssociationEditor", "InfrastructureNameEditor", "RemovalDialog", "InfrastructureTableLoading"])
 const pageCode = await compile("../../../frontend/src/pages/model-management-page.tsx", ["ModelWorkspace", "modelManagementTabFromUrl", "ConnectionGatewayCell", "ModelTargetGatewayCell", "ConnectionRow", "RuntimeHealth"])
 const releaseCode = await compile("../../../frontend/src/pages/gateway-releases-page.tsx", ["PublicationFailureNotice", "ChangeColumn"])
+const publicationCode = await compile("../../../frontend/src/components/model-management/model-publication-dialog.tsx")
+const publicationExports = {}
+runInNewContext(publicationCode, { exports: publicationExports, require: name => name === "react/jsx-runtime"
+  ? frontendRequire(name) : new Proxy({}, { get: (_target, key) => key }) })
 const diagnosticCode = await compile("../../../frontend/src/components/model-management/runtime-diagnostic-dialog.tsx")
 const connectionCode = await compile("../../../frontend/src/components/model-management/connection-dialog.tsx")
 const traceCode = await compile("../../../frontend/src/data-sources/apim/pages/dashboard-page.tsx")
@@ -611,7 +615,10 @@ function componentHarness(exportName, props, { operation = null, queryData = {},
     "../../providers/timezone-provider": { useTimezone: () => ({ timezone: "UTC" }) },
     "../components/brand-logos": new Proxy({ providerBrandFromIdentity: () => "generic", gatewayBrandFromIdentity: () => "generic" }, { get: (target, name) => target[name] ?? name }),
     "../components/model-management/apim-gateway-workspace": { MODEL_MANAGEMENT_TABS: ["models", "connections", "gateways", "apim"] },
-    "../components/model-management/model-publication-dialog": { publicationCapabilityMessage: profile => `capability ${profile}` },
+    "../components/model-management/model-publication-dialog": {
+      publicationCapabilityMessage: profile => `capability ${profile}`,
+      publicationFailureMessage: publicationExports.publicationFailureMessage,
+    },
     "../components/model-management/model-vendor-select": vendorExports,
     "../components/ui/use-resizable-pane": { useResizablePane: () => ({ width: 336, minWidth: 272, maxWidth: 460 }) },
   }

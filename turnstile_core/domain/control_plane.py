@@ -1266,6 +1266,7 @@ def publication_failure(
     credential = None
     if publication_missing_credential_source(publication) or (
         publication.error_code == "PolicyCompilationError"
+        and isinstance(message, str)
         and message in {
             "Route credential has no approved original source",
             "Route credential version is unavailable",
@@ -1282,7 +1283,10 @@ def publication_failure(
         )
     if credential is not None:
         result = failure.model_copy(update={"code": credential[0], "message": credential[1]})
-        if credential[0] in {"credential_source_missing", "credential_unreadable"}:
+        if (
+            credential[0] in {"credential_source_missing", "credential_unreadable"}
+            and publication.desired_spec.bindings
+        ):
             binding = publication.desired_spec.bindings[-1]
             if "model_route_addition" in publication.resource_manifest:
                 recovery = (

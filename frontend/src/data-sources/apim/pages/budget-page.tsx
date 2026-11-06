@@ -131,6 +131,12 @@ function formatBudgetUsd(value: string | number | null | undefined, fractionDigi
   }).format(Number(value))
 }
 
+function formatBudgetUsdInput(value: string | null | undefined) {
+  if (!value) return ""
+  const [whole, fraction = ""] = value.split(".")
+  return `${whole}.${fraction.replace(/0+$/, "").padEnd(2, "0")}`
+}
+
 function budgetLimit(item: TokenBudgetItem, mode: BudgetMode = item.budget_mode ?? "tokens") {
   return mode === "usd" ? item.usd_limit == null ? null : Number(item.usd_limit) : item.token_limit
 }
@@ -343,7 +349,7 @@ function BudgetEditor({
   const switchingUnit = item.scope_type === "organization"
     && budgetLimit(item) != null && budgetMode !== (item.budget_mode ?? "tokens")
   const [tokenLimit, setTokenLimit] = useState(String(item.token_limit ?? ""))
-  const [usdLimit, setUsdLimit] = useState(item.usd_limit ?? "")
+  const [usdLimit, setUsdLimit] = useState(() => formatBudgetUsdInput(item.usd_limit))
   const previewRequired = switchingUnit && budgetMode === "usd"
   // The page list omits people, so a department's own allocations come from the full tree.
   const departmentScope = item.scope_type === "department"
@@ -567,7 +573,7 @@ function BudgetRow({
       ? Users
       : UserRound
   const editDisabled = item.scope_type !== "organization" && !parentAllocated
-  return <div className="budget-table-row" data-depth={depth} data-status={item.status}>
+  return <div className="budget-table-row" role="row" data-depth={depth} data-status={item.status}>
     <div className="budget-scope-cell" style={{ "--budget-depth": depth } as React.CSSProperties}>
       {hasChildren
         ? <button type="button" className="budget-tree-toggle" onClick={onToggle} aria-label={expanded ? "折叠" : "展开"}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
@@ -743,7 +749,7 @@ function BulkPeopleEditor({
     singlePerson?.token_limit == null ? "" : String(singlePerson.token_limit),
   )
   const usdMode = people.department_usd_limit != null
-  const [usdLimit, setUsdLimit] = useState(singlePerson?.usd_limit ?? "")
+  const [usdLimit, setUsdLimit] = useState(() => formatBudgetUsdInput(singlePerson?.usd_limit))
   const [threshold, setThreshold] = useState(
     String(singlePerson?.warning_threshold_percent ?? 80),
   )

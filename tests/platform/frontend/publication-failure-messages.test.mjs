@@ -99,6 +99,13 @@ const cases = [
   undefined,
 ]
 
+test("generic removal failure uses a task message rather than a publication message", () => {
+  const result = messages(failure("publication_failed"), false, "model_remove")
+  assert.equal(result.dialogMessage, "任务未完成，请使用任务 ID 查询诊断记录。")
+  assert.equal(result.releaseMessage, result.dialogMessage)
+  assert.equal(text(result.tree).includes("发布未完成"), false)
+})
+
 test("dialog and release details use the same safe owner for every code and recovery state", () => {
   for (const candidate of cases) {
     const result = messages(candidate)

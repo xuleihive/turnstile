@@ -24,7 +24,7 @@ async function compile(path, expose = "") {
 }
 
 const queryCode = await compile("../../../frontend/src/data-sources/apim/queries.ts")
-const pageCode = await compile("../../../frontend/src/data-sources/apim/pages/budget-page.tsx", "export { PeopleBudgetWorkspace }")
+const pageCode = await compile("../../../frontend/src/data-sources/apim/pages/budget-page.tsx", "export { PeopleBudgetWorkspace, BudgetEditor }")
 const plain = value => JSON.parse(JSON.stringify(value))
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
@@ -216,6 +216,7 @@ function harness(initial = peopleResponse(), { seed = true } = {}) {
   }
   return {
     client, props, key, finopsKeys, write, writes, reads, render, find, toggle,
+    budgetEditor: properties => { render(); return expand(component(pageExports.BudgetEditor, properties)) },
     finopsQueries: queryExports.finopsQueries,
     data: () => client.getQueryData(key),
     open: identity => {
@@ -258,6 +259,51 @@ function harness(initial = peopleResponse(), { seed = true } = {}) {
     },
   }
 }
+
+test("budget amount inputs remove only redundant zeros without floating-point rounding", context => {
+  for (const [amount, expected] of [
+    ["2000.00000000000000", "2000.00"],
+    ["1.23000000000000", "1.23"],
+    ["0.00000000000000", "0.00"],
+    ["0.10000000000000", "0.10"],
+    ["42", "42.00"],
+    ["9999999999999999.99000000000000", "9999999999999999.99"],
+    ["0.00000000000001", "0.00000000000001"],
+    [null, ""], [undefined, ""],
+  ]) {
+    const view = harness()
+    context.after(view.close)
+    const item = person("organization-unit", "Unit organization", {
+      scope_type: "organization", parent_scope_id: null, budget_mode: "usd", usd_limit: amount,
+    })
+    const writes = []
+    const tree = view.budgetEditor({ item, items: [item], period: "2026-11", busy: false,
+      error: null, onClose() {}, onDelete() {}, onSave: value => writes.push(plain(value)) })
+    const input = nodes(tree).find(node => node.type === "Input" && node.props.name === "usd_limit")
+    assert.ok(input)
+    assert.equal(input.props.value, expected)
+    if (expected) {
+      nodes(tree).find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+      const valid = !["0.00", "0.00000000000001"].includes(expected)
+      assert.equal(writes.length, valid ? 1 : 0)
+      if (valid) {
+        assert.equal(writes[0].usd_limit, expected)
+        assert.equal(writes[0].budget_mode, "usd")
+      }
+    }
+  }
+})
+
+test("the person budget editor uses the same compact USD input", context => {
+  const view = harness(peopleResponse({ department_usd_limit: "5000.00000000000000", items: [
+    person("alice", "Alice", { budget_mode: "usd", usd_limit: "2000.00000000000000" }),
+  ] }))
+  context.after(view.close)
+  view.open("alice")
+  const input = view.find(node => node.type === "Input" && node.props.name === "usd_limit")
+  assert.ok(input)
+  assert.equal(input.props.value, "2000.00")
+})
 
 test("confirmed editor save updates the selected visible policy before authoritative refresh", async context => {
   const view = harness()

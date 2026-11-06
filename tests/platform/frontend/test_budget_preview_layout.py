@@ -11,6 +11,21 @@ def test_budget_editor_body_rows_keep_intrinsic_content_height() -> None:
     )
 
 
+def test_budget_rows_use_the_shared_resized_width() -> None:
+    source = (FRONTEND_SOURCE / "data-sources/apim/pages/budget-page.tsx").read_text(
+        encoding="utf-8"
+    )
+    styles = (FRONTEND_SOURCE / "styles/model-platform.css").read_text(encoding="utf-8")
+    assert 'className="budget-table-row" role="row"' in source
+    assert ".budget-table { min-width: var(--resizable-table-width, 1094px); }" in (
+        read_frontend_styles()
+    )
+    assert (
+        '.resizable-grid-table [role="row"] { width: max(100%, '
+        'var(--resizable-table-width, 100%)); }' in styles
+    )
+
+
 def test_budget_preview_keeps_scrollable_body_and_separate_footer() -> None:
     styles = read_frontend_styles()
     form = styles.split(".registry-editor {", 1)[1].split("}", 1)[0]

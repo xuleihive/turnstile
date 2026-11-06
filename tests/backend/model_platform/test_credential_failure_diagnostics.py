@@ -4,7 +4,7 @@ import json
 import re
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -12,22 +12,22 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 from pydantic import HttpUrl, SecretStr
-from yaml import safe_load
 
 from backend.services.runtime_service import ModelRuntimeService
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     GatewayControlPlaneService,
-    GatewayPublicationCreate,
     activate_publication,
     external_tenant_foundry_publication,
     transition_publication,
 )
+from tests.platform.contracts.test_openapi import _yaml_document
 from turnstile_core.config import Settings
 from turnstile_core.domain.budget_counting import BudgetPublicationContracts
 from turnstile_core.domain.control_plane import (
     GatewayCredentialRotation,
     GatewayPublication,
+    GatewayPublicationCreate,
     GatewayPublicationFailure,
     GatewayPublicationRetry,
     GatewayPublicationView,
@@ -37,7 +37,11 @@ from turnstile_core.domain.control_plane import (
     RuntimeTarget,
     publication_failure,
 )
-from turnstile_core.domain.runtime_models import ModelConnectionCreate, ProviderTarget
+from turnstile_core.domain.runtime_models import (
+    ConnectionAuthMode,
+    ModelConnectionCreate,
+    ProviderTarget,
+)
 from turnstile_core.domain.storage_routes import (
     ActiveRouteHead,
     ConnectionApproval,
@@ -59,7 +63,6 @@ from turnstile_core.security import CredentialCipher
 from turnstile_core.services.control_plane import ControlPlaneConflictError
 from turnstile_core.services.route_publication import (
     build_route_publication_task,
-    route_credential_source,
 )
 from turnstile_core.services.storage_route_publisher import FixedRoutePublisherFactory
 
@@ -228,6 +231,40 @@ def test_credential_failures_expose_only_safe_distinct_codes(
     assert message not in failure.message
 
 
+@pytest.mark.parametrize("message", [{"error": "private-detail"}, ["private-detail"], 42])
+def test_non_string_publication_errors_remain_safe(message: object) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "unit-owner",
+    ).model_copy(update={
+        "status": PublicationStatus.FAILED, "error_code": "PolicyCompilationError",
+        "error_message": message,
+    })
+    failure = publication_failure(publication)
+    assert failure is not None and failure.code == "publication_failed"
+    assert "private-detail" not in failure.model_dump_json()
+
+
+@pytest.mark.parametrize("kind", [PublicationKind.MODEL_REMOVE, PublicationKind.ROUTE_RECONCILE])
+@pytest.mark.parametrize("error_code", ["PolicyCompilationError", "CredentialSourceMissingError"])
+def test_missing_credential_without_bindings_has_no_invalid_recovery(
+    kind: PublicationKind, error_code: str,
+) -> None:
+    repository = InMemoryRepository()
+    original = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "unit-owner",
+    )
+    publication = original.model_copy(update={
+        "status": PublicationStatus.FAILED, "publication_kind": kind,
+        "error_code": error_code, "error_message": "Route credential version is unavailable",
+        "desired_spec": original.desired_spec.model_copy(update={"bindings": []}),
+    })
+    failure = publication_failure(publication)
+    assert failure is not None and failure.code == "credential_source_missing"
+    assert failure.credential_recovery is None
+    assert failure.message == "The credential resource is missing."
+
+
 @pytest.mark.parametrize("managed", [False, True])
 @pytest.mark.parametrize("message", [
     "Route credential has no approved original source",
@@ -272,12 +309,16 @@ def test_model_addition_recovery_matches_the_real_retry_credential_contract(
 
 def test_credential_failure_schema_and_types_match_the_safe_domain_contract() -> None:
     root = Path(__file__).resolve().parents[3]
-    schema = safe_load((root / "contracts/openapi/schemas/model-platform.yaml").read_text())
+    schema = cast(dict[str, Any], _yaml_document(
+        root / "contracts/openapi/schemas/model-platform.yaml",
+    ))
     properties = schema["schemas"]["GatewayPublicationFailure"]["properties"]
     domain = GatewayPublicationFailure.model_json_schema()["properties"]
     assert set(properties["code"]["enum"]) == set(domain["code"]["enum"])
     source = (root / "frontend/src/data-sources/apim/types.ts").read_text()
-    failure_type = source.split("export type GatewayPublicationFailure = {", 1)[1].split("\n}", 1)[0]
+    failure_type = source.split("export type GatewayPublicationFailure = {", 1)[1].split(
+        "\n}", 1,
+    )[0]
     code = next(line for line in failure_type.splitlines() if line.strip().startswith("code:"))
     assert set(re.findall(r'"([a-z_]+)"', code)) == set(properties["code"]["enum"])
     recovery = next(line for line in failure_type.splitlines()
@@ -295,7 +336,9 @@ def _managed_route_fixture() -> tuple[Any, ...]:
     publication = service.publish(external_tenant_foundry_publication(repository), "unit-owner")
     current = "queued"
     for status in ("validating", "provisioning", "building_revision", "verifying", "promoting"):
-        assert transition_publication(repository, publication.id, current, status, {}, "unit-worker")
+        assert transition_publication(
+            repository, publication.id, current, status, {}, "unit-worker",
+        )
         current = status
     activate_publication(repository, publication.id, "unit-worker")
     original = publication.desired_spec.bindings[-1]
@@ -369,7 +412,10 @@ def _managed_route_fixture() -> tuple[Any, ...]:
         "fixed_route_head": head.model_dump(mode="json"),
         "budget_contracts": budgets.model_dump(mode="json"),
     }})
-    return repository, service, cipher, GatewayPublication.model_validate(row), installation, configuration, fence, proof, head
+    return (
+        repository, service, cipher, GatewayPublication.model_validate(row), installation,
+        configuration, fence, proof, head,
+    )
 
 
 def test_route_reconcile_credential_recovery_does_not_promise_original_task_retry() -> None:
@@ -442,11 +488,13 @@ def test_credential_recovery_runs_real_vault_and_publication_preparation(
             repository, account="unit-initial-foundry", deployment="unit-new-model",
         )
         existing_runtime_ids = {row["id"] for row in repository.runtimes}
-        registry = ModelRuntimeService(repository, Settings()).save_connection(ModelConnectionCreate(
-            gateway_profile_id=APIM_ID, provider=write.provider, auth_mode="api_key",
+        connection = ModelConnectionCreate(
+            gateway_profile_id=APIM_ID, provider=write.provider,
+            auth_mode=ConnectionAuthMode.API_KEY,
             foundry_project_endpoint=write.runtime.foundry_project_endpoint,
             foundry_inference_endpoint=write.runtime.foundry_inference_endpoint,
-        ))
+        )
+        registry = ModelRuntimeService(repository, Settings()).save_connection(connection)
         runtime = next(item for item in registry.runtimes if item.id not in existing_runtime_ids)
         write.runtime = RuntimeTarget(existing_id=runtime.id, api_key=write.runtime.api_key)
         first = service.publish(write, "unit-owner")
@@ -459,7 +507,10 @@ def test_credential_recovery_runs_real_vault_and_publication_preparation(
         assert failure is not None and failure.credential_recovery == "republish_with_key"
         candidate = service.publish(write, "unit-owner")
         assert candidate.id != first.id
-        assert candidate.model_copy().desired_spec.bindings[-1].model == first.desired_spec.bindings[-1].model
+        assert (
+            candidate.desired_spec.bindings[-1].model
+            == first.desired_spec.bindings[-1].model
+        )
     else:
         binding = base.desired_spec.bindings[-1]
         write = GatewayPublicationCreate(
@@ -488,7 +539,9 @@ def test_credential_recovery_runs_real_vault_and_publication_preparation(
             document["id"] = url + "/" + "b" * 32
             documents[url] = documents[document["id"]] = document
             return httpx.Response(201, json={"id": document["id"]})
-        return httpx.Response(200, json=documents[url]) if url in documents else httpx.Response(404)
+        return (
+            httpx.Response(200, json=documents[url]) if url in documents else httpx.Response(404)
+        )
 
     tokens = Mock()
     tokens.token.return_value = "diagnostic-test-token"
@@ -502,31 +555,41 @@ def test_credential_recovery_runs_real_vault_and_publication_preparation(
     port.projection.read_active.return_value = (head, 'W/"base"')
     port.projection.read_program_proof.return_value = (proof, 'W/"proof"')
     port.projection.read_model_active.return_value = None
-    factory = FixedRoutePublisherFactory(repository, configurations, active_fence=lambda target: fence,
-        availability_projector=Mock(), clock=lambda: 1100, cipher=cipher)
+    factory = FixedRoutePublisherFactory(
+        repository, configurations, active_fence=lambda target: fence,
+        availability_projector=Mock(), clock=lambda: 1100, cipher=cipher,
+    )
     client_type = httpx.Client
     transport = httpx.MockTransport(respond)
     with client_type(transport=transport) as client:
         factory._client, factory._tokens = client, tokens
         port._client = client
         monkeypatch.setattr(publisher_module, "ManagedIdentityTokenProvider", lambda: tokens)
-        monkeypatch.setattr(publisher_module.httpx, "Client",
+        monkeypatch.setattr(httpx, "Client",
                             lambda **options: client_type(transport=transport))
-        monkeypatch.setattr(factory, "_open", lambda *args, **kwargs: nullcontext((port, management)))
+        monkeypatch.setattr(
+            factory, "_open", lambda *args, **kwargs: nullcontext((port, management)),
+        )
         if operation == "rotation":
             with pytest.raises(PolicyCompilationError, match="version is unavailable"):
-                RouteCredentialVault(installation.credential_vault_origin, cipher, tokens, client).verify(original)
+                vault = RouteCredentialVault(
+                    installation.credential_vault_origin, cipher, tokens, client,
+                )
+                vault.verify(original)
         claimed = repository.claim_gateway_publication("unit-worker", 180)
         assert claimed is not None and claimed["id"] == candidate.id
         if operation == "administrator":
             with pytest.raises(PolicyCompilationError, match="version is unavailable"):
-                factory.prepare(GatewayPublication.model_validate(claimed), "unit-worker", lambda: None)
+                factory.prepare(
+                    GatewayPublication.model_validate(claimed), "unit-worker", lambda: None,
+                )
             assert transition_publication(repository, candidate.id, "queued", "failed", {
                 "error_code": "PolicyCompilationError",
                 "error_message": "Route credential version is unavailable",
             }, "unit-worker")
             failure = publication_failure(service.publication(candidate.id))
-            assert failure is not None and failure.credential_recovery == "administrator_republish"
+            assert failure is not None
+            assert failure.credential_recovery == "administrator_republish"
             documents[original] = {"id": original, "value": "diagnostic-original-key",
                                    "attributes": {"enabled": True}}
             with pytest.raises(ControlPlaneConflictError, match="zero-probe preparation denial"):
@@ -537,19 +600,28 @@ def test_credential_recovery_runs_real_vault_and_publication_preparation(
             assert service.publication(failed_id).status is PublicationStatus.FAILED
             claimed = repository.claim_gateway_publication("unit-worker", 180)
             assert claimed is not None and claimed["id"] == candidate.id
-        task = factory.prepare(GatewayPublication.model_validate(claimed), "unit-worker", lambda: None)
+        task = factory.prepare(
+            GatewayPublication.model_validate(claimed), "unit-worker", lambda: None,
+        )
         row = repository.get_gateway_publication(candidate.id)
         assert row is not None
         prepared = GatewayPublication.model_validate(row)
         factory._verify_credentials(prepared, base, installation)
     assert task.publication_id == str(candidate.id)
-    assert task.plan.changed_aliases == (candidate.desired_spec.bindings[-1].model.model_key,)
+    assert task.plan.changed_aliases == (
+        candidate.desired_spec.bindings[-1].model.model_key,
+    )
     assert len(task.plan.snapshot.routes) == 1
     assert management.prepare_route_connection.call_count == 1
-    assert sum(method == "PUT" for method, url in requests) == (0 if operation == "administrator" else 1)
+    assert sum(method == "PUT" for method, url in requests) == (
+        0 if operation == "administrator" else 1
+    )
     if operation == "rotation":
         assert requests.count(("GET", original)) == 1
     elif operation == "administrator":
         assert requests.count(("GET", original)) >= 3
-        assert management.prepare_route_connection.call_args.args[0].credential.secret_id == original
+        assert (
+            management.prepare_route_connection.call_args.args[0].credential.secret_id
+            == original
+        )
     assert "diagnostic-replacement-key" not in task.model_dump_json()
