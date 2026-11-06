@@ -347,7 +347,7 @@ Publish a Decision model such as Decision-1 on an existing Microsoft Foundry Con
 
 Model Intelligent Router can use a published Decision model for model-based routing: select it as the Router's decision model and publish a new Router version. The gateway sends the routing question to its own Decision operation with the caller's subscription, routes to the candidate the Decision model chooses and records the returned probabilities in Request Trace. The Decision call and the candidate call are each metered and charged once. Publish a Decision model with a price: the publication dialog searches the Azure list price (`Microsoft Decision 1`) by default, and a manual price needs both input and output rates.
 
-Router responses carry the Router name in `x-router-name`. A name made only of ASCII characters is sent as-is; a name with any other character is percent-encoded (UTF-8, RFC 3986), so decode the header when it contains `%`. Neither path escapes ASCII control characters, so do not use line breaks or other control characters in Router names.
+Router responses carry the Router name in `x-router-name`. Names containing only printable ASCII (`0x20-0x7E`), including spaces and literal `%`, are sent unchanged. If a name contains any other character, the entire name is percent-encoded (UTF-8, RFC 3986); spaces then become `%20` and literal `%` becomes `%25`. ASCII control characters (`0x00-0x1F` and `0x7F`, including CR/LF, TAB, NUL and DEL) are never emitted raw. A `%` alone is not an encoding marker: a printable ASCII name such as `50%20 router` remains literal. Use the JSON `router_name` for the unambiguous original name. Header serialization does not change stored Router names, JSON names or model identities.
 
 ### Pool conversation affinity
 

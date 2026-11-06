@@ -1901,7 +1901,7 @@ def invoke_model(
 
 
 def _header_text(value: str) -> str:
-    if value.isascii():
+    if all(" " <= character <= "~" for character in value):
         return value
     return quote(value, safe="")
 

@@ -1151,17 +1151,25 @@ def test_native_router_name_header_is_ascii_for_any_router_name(
     state_variable: str, expression_name: str,
 ) -> None:
     expression = native_router_expressions()[expression_name]
-    names = ["Unified Router 1", "统一条件路由", "50% router"]
+    cases = [
+        ("Unified Router 1", "Unified Router 1"),
+        ("统一条件路由", "%E7%BB%9F%E4%B8%80%E6%9D%A1%E4%BB%B6%E8%B7%AF%E7%94%B1"),
+        ("50% router", "50% router"), ("50%20 router", "50%20 router"),
+        ("Printable ~% /?+;=,:\"", "Printable ~% /?+;=,:\""),
+        ("Router\r\nx-injected: yes", "Router%0D%0Ax-injected%3A%20yes"),
+        ("Router café \U0001f600", "Router%20caf%C3%A9%20%F0%9F%98%80"),
+        ("路由 %\t名", "%E8%B7%AF%E7%94%B1%20%25%09%E5%90%8D"),
+        *[(f"Router{chr(codepoint)}name", f"Router%{codepoint:02X}name")
+          for codepoint in (*range(0x20), 0x7F)],
+    ]
 
     values = run_cases(compiled_expressions, tmp_path, [{
         "body": "{}", "expression": expression_id(expression),
         "variables": {state_variable: json.dumps({"router_name": name})},
-    } for name in names])
+    } for name, _ in cases])
 
-    assert values == [
-        "Unified Router 1", "%E7%BB%9F%E4%B8%80%E6%9D%A1%E4%BB%B6%E8%B7%AF%E7%94%B1",
-        "50% router",
-    ]
+    assert values == [header for _, header in cases]
+    assert all(" " <= character <= "~" for value in values for character in value)
 
 
 def test_native_router_keeps_other_owner_name_access_after_stale_backfill(

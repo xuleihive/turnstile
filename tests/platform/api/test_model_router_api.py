@@ -2453,6 +2453,13 @@ def test_routed_model_header_uses_the_selected_ascii_gateway_alias(completed_var
 @pytest.mark.parametrize("router_name,header", [
     ("统一条件路由", "%E7%BB%9F%E4%B8%80%E6%9D%A1%E4%BB%B6%E8%B7%AF%E7%94%B1"),
     ("Unified Router 1", "Unified Router 1"), ("50% router", "50% router"),
+    ("50%20 router", "50%20 router"),
+    ("Printable ~% /?+;=,:\"", "Printable ~% /?+;=,:\""),
+    ("Router\r\nx-injected: yes", "Router%0D%0Ax-injected%3A%20yes"),
+    ("Router café \U0001f600", "Router%20caf%C3%A9%20%F0%9F%98%80"),
+    ("路由 %\t名", "%E8%B7%AF%E7%94%B1%20%25%09%E5%90%8D"),
+    *[(f"Router{chr(codepoint)}name", f"Router%{codepoint:02X}name")
+      for codepoint in (*range(0x20), 0x7F)],
 ])
 @pytest.mark.parametrize("path", [
     "/api/v1/model-gateway/chat/completions", "/api/v1/model-gateway/v1/chat/completions",
@@ -2472,7 +2479,8 @@ def test_routed_chat_headers_carry_non_latin_router_and_model_names(
             self, request: ModelInvocationRequest, *, request_id: str | None = None,
             timeout_ms: int | None = None,
         ) -> ModelInvocationResponse:
-            del request, timeout_ms
+            del timeout_ms
+            assert request.model_id == model_id
             return ModelInvocationResponse(
                 request_id=request_id or "req-routed", correlation_id="corr-routed",
                 content="ok", provider="Azure OpenAI", runtime=str(model["runtime_name"]),
@@ -2505,9 +2513,16 @@ def test_routed_chat_headers_carry_non_latin_router_and_model_names(
     # The model was already invoked and billed; the headers must not turn it into a 500.
     assert response.status_code == 200
     assert response.headers["x-router-name"] == header
+    assert all(" " <= character <= "~" for character in response.headers["x-router-name"])
     assert response.headers["x-routed-model"] == model["model_key"]
-    assert response.json()["turnstile_routing"]["router_name"] == router_name
-    assert response.json()["model"] == model["display_name"]
+    body = response.json()
+    assert body["turnstile_routing"]["router_name"] == router_name
+    assert body["turnstile_routing"]["requested_model"] == router_name
+    assert body["turnstile_routing"]["router_id"] == router_id
+    assert body["turnstile_routing"]["selected_model_id"] == str(model_id)
+    assert body["turnstile_routing"]["selected_model_name"] == model["display_name"]
+    assert body["model"] == model["display_name"]
+    assert client.get(f"/api/v1/model-routers/{router_id}").json()["name"] == router_name
 
 
 def router_table_transport(monkeypatch: pytest.MonkeyPatch) -> Any:

@@ -2245,7 +2245,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                         <set-header name="x-router-name" exists-action="override">
                           <value>@{
                             var routerName = (string)JObject.Parse((string)context.Variables["routerPlanState"])["router_name"];
-                            return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                            return routerName.Any(character =&gt; character &lt; 32 || character &gt; 126) ? Uri.EscapeDataString(routerName) : routerName;
                           }</value>
                         </set-header>
                         <set-body>@((string)JObject.Parse((string)context.Variables["routerPlanState"])["anthropic_error_body"])</set-body>
@@ -2657,7 +2657,7 @@ _INBOUND_ROUTER_ENGINE_XML = r"""<inbound>
                         <set-header name="x-router-name" exists-action="override">
                           <value>@{
                             var routerName = (string)JObject.Parse((string)context.Variables["routerAnthropicCompleted"])["router_name"];
-                            return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                            return routerName.Any(character =&gt; character &lt; 32 || character &gt; 126) ? Uri.EscapeDataString(routerName) : routerName;
                           }</value>
                         </set-header>
                         <set-header name="x-router-reason" exists-action="override">
@@ -3349,7 +3349,7 @@ _OUTBOUND_ROUTER_ENGINE_XML = r"""<outbound>
               <set-header name="x-router-name" exists-action="override">
                 <value>@{
                   var routerName = (string)JObject.Parse((string)context.Variables["routerOutboundCompleted"])["router_name"];
-                  return routerName.Any(character =&gt; character &gt; 127) ? Uri.EscapeDataString(routerName) : routerName;
+                  return routerName.Any(character =&gt; character &lt; 32 || character &gt; 126) ? Uri.EscapeDataString(routerName) : routerName;
                 }</value>
               </set-header>
               <set-header name="x-router-reason" exists-action="override">
