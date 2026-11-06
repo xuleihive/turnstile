@@ -27,8 +27,8 @@ New forward-only product upgrades are `017_budget_terminal_observation`,
 `020_failed_publication_spec`, `021_usd_budget_reservations`, `022_subscription_tags`,
 `023_usd_reservation_resolution`, `024_gateway_usage_attribution`,
 `025_usage_cost_component_prices`, `026_invocation_trace_service_identity`,
-`027_product_schema_alignment`, `028_product_index_alignment` and
-`029_model_intelligent_router`. They preserve applied migration
+`027_product_schema_alignment`, `028_product_index_alignment`,
+`029_model_intelligent_router` and `030_transport_status_ingestion`. They preserve applied migration
 bytes and existing usage, financial/audit history and routing identities. The first two add
 immutable admission-bound observations and explicit Owner approval records; elapsed time or
 an HTTP failure alone is not permission to refund unknown usage. Display names no longer
@@ -111,7 +111,7 @@ Validate cross-target foreign keys, the unique enabled default route, preserved 
 and transactional inventory replacement against a separately authorized PostgreSQL environment.
 Local domain and SQL-source tests are not evidence that a migration has been applied.
 
-For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, `008_price_review_and_guard`, `009_context_tier_pricing`, `010_budget_execution_protocol`, `011_gateway_targets`, `012_apim_onboarding`, `013_multi_target_rollout`, `014_self_hosted_gateway_provisioning`, `015_platform_invocation_trace`, `016_model_availability`, `017_budget_terminal_observation`, `018_budget_reservation_resolution`, `019_runtime_display_name`, `020_failed_publication_spec`, `021_usd_budget_reservations`, `022_subscription_tags`, `023_usd_reservation_resolution`, `024_gateway_usage_attribution`, `025_usage_cost_component_prices`, `026_invocation_trace_service_identity`, `027_product_schema_alignment`, `028_product_index_alignment`, and `029_model_intelligent_router`), then run the command again and verify that no migration is reapplied.
+For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, `006_versioned_budget_evidence`, `007_model_price_source`, `008_price_review_and_guard`, `009_context_tier_pricing`, `010_budget_execution_protocol`, `011_gateway_targets`, `012_apim_onboarding`, `013_multi_target_rollout`, `014_self_hosted_gateway_provisioning`, `015_platform_invocation_trace`, `016_model_availability`, `017_budget_terminal_observation`, `018_budget_reservation_resolution`, `019_runtime_display_name`, `020_failed_publication_spec`, `021_usd_budget_reservations`, `022_subscription_tags`, `023_usd_reservation_resolution`, `024_gateway_usage_attribution`, `025_usage_cost_component_prices`, `026_invocation_trace_service_identity`, `027_product_schema_alignment`, `028_product_index_alignment`, `029_model_intelligent_router`, and `030_transport_status_ingestion`), then run the command again and verify that no migration is reapplied.
 
 The initial schema contains no users, credentials, provider connections, runtimes, business models, usage events, or customer data.
 

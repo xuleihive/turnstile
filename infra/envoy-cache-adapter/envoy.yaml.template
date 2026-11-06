@@ -68,6 +68,7 @@ static_resources:
                           stop_reason: "%DYNAMIC_METADATA(turnstile.usage:stop_reason)%"
                           response_content_type: "%RESP(CONTENT-TYPE)%"
                           response_flags: "%RESPONSE_FLAGS%"
+                          response_code_details: "%RESPONSE_CODE_DETAILS%"
                           response_code: "%RESPONSE_CODE%"
                           latency_ms: "%DURATION%"
                 route_config:

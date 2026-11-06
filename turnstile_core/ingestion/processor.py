@@ -78,6 +78,13 @@ class UsageProcessor:
         if close is not None:
             close()
 
+    def retain_failed_event(self, raw_event: bytes, error: Exception) -> bool:
+        retain = getattr(self._repository, "retain_failed_usage_event", None)
+        if retain is None:
+            return False
+        retain(raw_event, type(error).__name__, str(error).encode("unicode_escape").decode("ascii"))
+        return True
+
     def _refresh_registry(self) -> None:
         now = time.monotonic()
         if now - self._registry_read_at < _PRICE_CACHE_SECONDS:
@@ -250,6 +257,12 @@ class UsageProcessor:
 
         ingest_error = event.ingest_error
         estimated = event.estimated
+        status_code = (
+            event.status_code if event.status_code is not None else _status_code(event.status)
+        )
+        if status_code == 0:
+            estimated = True
+            ingest_error = ingest_error or "transport_failure_usage_unknown"
         token_fields = (
             "input_tokens", "cached_tokens", "cache_write_tokens",
             "output_tokens", "tokens_consumed",
@@ -274,7 +287,6 @@ class UsageProcessor:
             # The provider breakdown is unavailable. Persist the request with zeroed counts
             # and an explicit ingest_error instead of inventing a split or dropping the event;
             # reconciliation against the gateway LLM log restores the real values later.
-            status_code = event.status_code or _status_code(event.status)
             input_tokens = 0
             cached_tokens = 0
             cache_write_tokens = 0
@@ -425,7 +437,7 @@ class UsageProcessor:
             et_coeff_m=coefficient,
             latency_ms=event.latency_ms,
             status=event.status,
-            status_code=event.status_code or _status_code(event.status),
+            status_code=status_code,
             estimated_cost=estimated_cost,
             usd_cost=usd_cost,
             usd_price_sha256=(

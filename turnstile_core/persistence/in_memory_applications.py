@@ -887,7 +887,8 @@ class InMemoryApplicationRepositoryMixin:
                         ),
                         "p95_latency_ms": p95,
                         "failed_calls": sum(
-                            (record.status_code or 0) >= 400 for record in records
+                            record.status_code == 0 or (record.status_code or 0) >= 400
+                            for record in records
                         ),
                     },
                 }

@@ -208,6 +208,11 @@ def normalize_access_row(row: dict[str, Any]) -> dict[str, Any] | None:
     if pool_deployment == "unattributed":
         pool_deployment = ""
     effective_runtime = pool_runtime or _text(row, "runtime")
+    status_code = _number(row, "response_code")
+    disconnect_reason = "; ".join(
+        _text(row, field, "") for field in ("response_flags", "response_code_details")
+        if _text(row, field, "")
+    )
     return {
         "id": request_id,
         "request_id": request_id,
@@ -238,10 +243,10 @@ def normalize_access_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "cache_write_tokens": cache_write_tokens,
         "output_tokens": output_tokens,
         "latency_ms": _number(row, "latency_ms"),
-        "status": str(_number(row, "response_code")),
-        "status_code": _number(row, "response_code"),
+        "status": str(status_code),
+        "status_code": status_code,
         "estimated_cost": None,
-        "error_message": None,
+        "error_message": disconnect_reason[:2000] or None if status_code == 0 else None,
         "estimated": False,
         "ingest_source": "eventhub",
         "ingest_error": None,

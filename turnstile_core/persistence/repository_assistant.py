@@ -588,7 +588,9 @@ class PostgreSqlAssistantRepositoryMixin:
                                 0
                             )::DOUBLE PRECISION,
                             'failed_calls',
-                                COUNT(*) FILTER (WHERE usage.status_code >= 400)::BIGINT
+                                COUNT(*) FILTER (
+                                    WHERE usage.status_code = 0 OR usage.status_code >= 400
+                                )::BIGINT
                         ) AS totals
                     FROM token_usage usage
                     WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}

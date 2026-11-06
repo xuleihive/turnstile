@@ -566,6 +566,15 @@ class InMemoryRepository(
         for index, existing in enumerate(self.usage_records):
             if existing.id != record.id:
                 continue
+            if (
+                record.estimated and record.status_code == 0 and existing.estimated
+                and existing.id not in self.reconciled_usage_ids
+                and 100 <= existing.status_code < 400
+            ):
+                self.usage_records[index] = existing.model_copy(update={
+                    field: getattr(record, field)
+                    for field in ("status", "status_code", "error_message", "ingest_error")
+                })
             if existing.estimated and not record.estimated:
                 original_price = (
                     ModelPrice.from_usage_snapshot(existing.model_dump())
@@ -670,12 +679,11 @@ class InMemoryRepository(
         return self.reconciliation_state.get(source)
 
     def oldest_unreconciled_usage(self, since: datetime) -> datetime | None:
-        # `estimated` is what this repository flips when a row is reconciled, standing in
-        # for the `reconciled_at IS NULL` half of the SQL guard.
         pending = [
             record.ts
             for record in self.usage_records
-            if record.estimated and record.status_code < 400 and record.ts >= since
+            if record.estimated and 100 <= record.status_code < 400
+            and record.id not in self.reconciled_usage_ids and record.ts >= since
         ]
         return min(pending) if pending else None
 
@@ -692,7 +700,8 @@ class InMemoryRepository(
             if (
                 item is None
                 or not record.estimated
-                or record.status_code >= 400
+                or not 100 <= record.status_code < 400
+                or record.id in self.reconciled_usage_ids
                 or (record.ingest_error == "stream_cache_usage_unavailable"
                     and record.price_context_snapshot is None)
             ):
@@ -922,18 +931,20 @@ class InMemoryRepository(
                 sum(record.latency_ms for record in records) / count if count else 0
             ),
             "error_rate": (
-                100 * sum(record.status_code >= 400 for record in records) / count
+                100 * sum(not 100 <= record.status_code < 400 for record in records) / count
                 if count
                 else 0
             ),
             "p50_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.5),
             "p95_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.95),
             "p99_latency_ms": InMemoryRepository._percentile_cont(latencies, 0.99),
-            "success_requests": sum(record.status_code < 400 for record in records),
+            "success_requests": sum(100 <= record.status_code < 400 for record in records),
             "client_error_requests": sum(
                 400 <= record.status_code < 500 for record in records
             ),
-            "server_error_requests": sum(record.status_code >= 500 for record in records),
+            "server_error_requests": sum(
+                record.status_code == 0 or record.status_code >= 500 for record in records
+            ),
             "latency_under_1s": in_band(0, 1000),
             "latency_1_to_2s": in_band(1000, 2000),
             "latency_2_to_5s": in_band(2000, 5000),
@@ -1210,7 +1221,7 @@ class InMemoryRepository(
             else "dispatched"
             if attempt
             else None,
-            "gateway_status_code": record.status_code,
+            "gateway_status_code": record.status_code or None,
             "upstream_request_id": completion.upstream_request_id if completion else None,
             "timestamp": record.ts,
             "organization_id": record.organization_id,
@@ -1238,7 +1249,7 @@ class InMemoryRepository(
             "completion_tokens": record.output_tokens,
             "total_tokens": record.input_tokens + record.cached_tokens + record.output_tokens,
             "latency_ms": completion.latency_ms if completion else record.latency_ms,
-            "status_code": completion.status_code if completion else record.status_code,
+            "status_code": completion.status_code if completion else record.status_code or None,
             "estimated_cost": record.estimated_cost,
             "cost_available": (
                 not record.estimated
@@ -1683,7 +1694,8 @@ class InMemoryRepository(
                             [float(record.latency_ms) for record in records], 0.95
                         ),
                         "failed_calls": sum(
-                            1 for record in records if record.status_code >= 400
+                            record.status_code == 0 or record.status_code >= 400
+                            for record in records
                         ),
                     },
                 }

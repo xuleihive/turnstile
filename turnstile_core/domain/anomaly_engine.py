@@ -95,7 +95,7 @@ def evaluate_anomaly_rules(
         if metric == "error_rate_percent":
             if len(scoped) < minimum:
                 continue
-            failed = sum(int(_value(record, "status_code")) >= 400 for record in scoped)
+            failed = sum(not 100 <= int(_value(record, "status_code")) < 400 for record in scoped)
             actual = 100 * failed / len(scoped)
             if actual >= configured_threshold:
                 anomalies.append(

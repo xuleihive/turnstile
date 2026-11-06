@@ -234,7 +234,7 @@ class PostgreSqlOpsDbProxy(
                                                  ), 0
                                              )::DOUBLE PRECISION,
                                              'failed_calls', COUNT(*) FILTER (
-                                                 WHERE status_code >= 400
+                                                 WHERE status_code = 0 OR status_code >= 400
                                              )::BIGINT
                                          ) AS totals
                              FROM combined
@@ -298,6 +298,16 @@ class PostgreSqlOpsDbProxy(
             if self._pool_opened:
                 self._pool.close()
                 self._pool_opened = False
+
+    def retain_failed_usage_event(
+        self, body: bytes, error_type: str, reason: str,
+    ) -> None:
+        with self._connection() as connection, connection.transaction():
+            connection.execute(
+                """INSERT INTO usage_ingestion_failure (body, error_type, reason)
+                   VALUES (%s, %s, %s) ON CONFLICT (body_sha256) DO NOTHING""",
+                (body, error_type, reason),
+            )
 
     def write_token_usage(
         self,
@@ -386,6 +396,17 @@ class PostgreSqlOpsDbProxy(
                             existing, record.input_tokens, record.cached_tokens,
                             record.output_tokens, record.cache_write_tokens,
                         ))
+            if record.estimated and record.status_code == 0:
+                connection.execute(
+                    """UPDATE token_usage SET status = %(status)s,
+                              status_code = %(status_code)s,
+                              error_message = %(error_message)s, ingest_error = %(ingest_error)s
+                       WHERE id = %(id)s AND estimated AND reconciled_at IS NULL
+                         AND status_code BETWEEN 100 AND 399
+                         AND (status_code, error_message, ingest_error) IS DISTINCT FROM
+                             (%(status_code)s, %(error_message)s, %(ingest_error)s)""",
+                    values,
+                )
             values["price_context_snapshot"] = Jsonb(snapshot) if snapshot is not None else None
             connection.execute(
                 """
@@ -637,7 +658,8 @@ class PostgreSqlOpsDbProxy(
             row = connection.execute(
                 """SELECT MIN(ts) AS oldest FROM token_usage
                                      WHERE estimated AND reconciled_at IS NULL
-                                         AND status_code < 400 AND ts >= %(since)s""",
+                                         AND status_code BETWEEN 100 AND 399
+                                         AND ts >= %(since)s""",
                 {"since": since},
             ).fetchone()
         if row is None or row["oldest"] is None:
@@ -713,7 +735,7 @@ class PostgreSqlOpsDbProxy(
                                   <= (tier->>'max_input_tokens')::bigint)
                     ) matched ON TRUE
                     WHERE stored.estimated AND stored.reconciled_at IS NULL
-                      AND stored.status_code < 400
+                      AND stored.status_code BETWEEN 100 AND 399
                 )
                 UPDATE token_usage AS u
                 SET input_tokens = v.input_tokens,
@@ -787,7 +809,7 @@ class PostgreSqlOpsDbProxy(
                 WHERE u.id = v.id
                   AND u.estimated
                   AND u.reconciled_at IS NULL
-                  AND u.status_code < 400
+                  AND u.status_code BETWEEN 100 AND 399
                 """,
                 {
                     "correlation_ids": [item.correlation_id for item in items],
@@ -1079,11 +1101,13 @@ class PostgreSqlOpsDbProxy(
                         ::DOUBLE PRECISION AS p95_latency_ms,
                     COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)
                         ::DOUBLE PRECISION AS p99_latency_ms,
-                    COUNT(*) FILTER (WHERE status_code < 400)::BIGINT AS success_requests,
+                    COUNT(*) FILTER (WHERE status_code BETWEEN 100 AND 399)::BIGINT AS success_requests,
                     COUNT(*) FILTER (
                         WHERE status_code >= 400 AND status_code < 500
                     )::BIGINT AS client_error_requests,
-                    COUNT(*) FILTER (WHERE status_code >= 500)::BIGINT AS server_error_requests,
+                    COUNT(*) FILTER (
+                        WHERE status_code = 0 OR status_code >= 500
+                    )::BIGINT AS server_error_requests,
                     COUNT(*) FILTER (WHERE latency_ms < 1000)::BIGINT AS latency_under_1s,
                     COUNT(*) FILTER (
                         WHERE latency_ms >= 1000 AND latency_ms < 2000
@@ -1108,7 +1132,7 @@ class PostgreSqlOpsDbProxy(
                     COALESCE(SUM(estimated_cost), 0)::DOUBLE PRECISION AS estimated_cost,
                     COALESCE(AVG(latency_ms), 0)::DOUBLE PRECISION AS average_latency_ms,
                     COALESCE(
-                        100.0 * COUNT(*) FILTER (WHERE status_code >= 400)
+                        100.0 * COUNT(*) FILTER (WHERE status_code = 0 OR status_code >= 400)
                         / NULLIF(COUNT(*), 0), 0
                     )::DOUBLE PRECISION AS error_rate,{self._QUALITY_METRICS_SQL}
                 FROM token_usage usage
@@ -1216,7 +1240,7 @@ class PostgreSqlOpsDbProxy(
                         SUM(estimated_cost)::DOUBLE PRECISION AS estimated_cost,
                         AVG(latency_ms)::DOUBLE PRECISION AS average_latency_ms,
                         COALESCE(
-                            100.0 * COUNT(*) FILTER (WHERE status_code >= 400)
+                            100.0 * COUNT(*) FILTER (WHERE status_code = 0 OR status_code >= 400)
                             / NULLIF(COUNT(*), 0), 0
                         )::DOUBLE PRECISION AS error_rate,{self._QUALITY_METRICS_SQL},
                         CASE WHEN total.cost = 0 THEN 0 ELSE
@@ -1302,7 +1326,8 @@ class PostgreSqlOpsDbProxy(
                         (usage.usage_available OR COALESCE(routed.usage_available, FALSE))
                             AS usage_available,
                         usage.platform_outcome,
-                        usage.gateway_status_code, usage.upstream_request_id,
+                        NULLIF(usage.gateway_status_code, 0) AS gateway_status_code,
+                        usage.upstream_request_id,
                         usage.ts AS timestamp,
                         usage.organization_id,
                         usage.organization AS organization_name,
@@ -1331,7 +1356,7 @@ class PostgreSqlOpsDbProxy(
                         )::BIGINT AS total_tokens,
                         COALESCE(routed.latency_ms, usage.latency_ms)::BIGINT
                             AS latency_ms,
-                        usage.status_code,
+                        NULLIF(usage.status_code, 0) AS status_code,
                         COALESCE(
                             routed.estimated_cost,
                             usage.estimated_cost
@@ -1422,7 +1447,8 @@ class PostgreSqlOpsDbProxy(
                 """SELECT
                         usage.request_id, usage.correlation_id,
                         usage.trace_id, usage.usage_available, usage.platform_outcome,
-                        usage.gateway_status_code, usage.upstream_request_id,
+                        NULLIF(usage.gateway_status_code, 0) AS gateway_status_code,
+                        usage.upstream_request_id,
                         usage.ts AS timestamp,
                         usage.organization_id,
                         usage.organization AS organization_name,
@@ -1448,7 +1474,7 @@ class PostgreSqlOpsDbProxy(
                             usage.input_tokens + usage.cached_tokens
                             + usage.output_tokens
                         )::BIGINT AS total_tokens,
-                        usage.latency_ms, usage.status_code,
+                        usage.latency_ms, NULLIF(usage.status_code, 0) AS status_code,
                         usage.estimated_cost::DOUBLE PRECISION,
                         (usage.usage_available AND (usage.estimated_cost > 0
                          OR (usage.input_price_per_million IS NOT NULL

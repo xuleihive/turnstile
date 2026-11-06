@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
@@ -6,6 +7,7 @@ from typing import Any, List  # noqa: UP035 - required by the Azure Functions wo
 from uuid import UUID
 
 import azure.functions as func
+from psycopg import OperationalError
 
 from turnstile_core.config import Settings, get_settings
 from turnstile_core.ingestion.processor import CoefficientResolver, UsageProcessor
@@ -119,6 +121,7 @@ def settle_budget_requests(timer: func.TimerRequest) -> None:
         _close_repository(repository)
 
 
+@app.retry(strategy="fixed_delay", max_retry_count="-1", delay_interval="00:00:05")
 @app.event_hub_message_trigger(
     arg_name="events",
     event_hub_name="%EVENT_HUB_NAME%",
@@ -130,14 +133,29 @@ def process_usage_events(events: List[func.EventHubEvent]) -> None:  # noqa: UP0
     processor = _processor()
     try:
         for event in events:
+            body = event.get_body()
             try:
-                payload: Any = json.loads(event.get_body().decode("utf-8"))
-                if not isinstance(payload, Mapping):
-                    logger.warning("Non-object Event Hub payload skipped")
-                    continue
-                processor.process(payload)
+                payload: Any = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 logger.warning("Malformed Event Hub message skipped")
+                continue
+            if not isinstance(payload, Mapping):
+                logger.warning("Non-object Event Hub payload skipped")
+                continue
+            try:
+                processor.process(payload)
+            except Exception as error:
+                if isinstance(error, OperationalError) and (
+                    error.sqlstate is None or error.sqlstate.startswith(("08", "40", "53", "57"))
+                    or error.sqlstate == "55P03"
+                ):
+                    raise
+                if processor.retain_failed_event(body, error) is not True:
+                    raise
+                logger.warning(
+                    "Failed usage event durably retained body_sha256=%s error_type=%s",
+                    hashlib.sha256(body).hexdigest(), type(error).__name__,
+                )
     finally:
         processor.close()
 
