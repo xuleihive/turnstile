@@ -384,6 +384,164 @@ def test_route_pool_waits_for_apim_to_mark_new_key_vault_references_secret() -> 
         assert len(writes) == 1 + len(pool.members) + len(pool.credential_versions)
 
 
+@pytest.mark.parametrize("state", ["Creating", "Updating", "InProgress", "UnknownState"])
+def test_route_pool_public_metadata_waits_for_apim_provisioning(state: str) -> None:
+    properties = {
+        "displayName": "unit-route-data",
+        "secret": False,
+        "value": "unit-deployment",
+        "provisioningState": state,
+    }
+    with pytest.raises(
+        RetryablePublicationError, match="public metadata.*not yet ready",
+    ) as pending:
+        AzureApimPublisherClient._verify_route_header_value(
+            "unit-route-data", "unit-deployment", properties,
+        )
+    assert "provisioningState" in str(pending.value)
+    assert "unit-deployment" not in str(pending.value)
+
+    properties["provisioningState"] = "Succeeded"
+    AzureApimPublisherClient._verify_route_header_value(
+        "unit-route-data", "unit-deployment", properties,
+    )
+    properties["value"] = "unit-unapproved-deployment"
+    with pytest.raises(PolicyCompilationError, match="public metadata readback changed"):
+        AzureApimPublisherClient._verify_route_header_value(
+            "unit-route-data", "unit-deployment", properties,
+        )
+
+
+def test_route_pool_public_metadata_failed_is_terminal() -> None:
+    value = "unit-private-metadata-value"
+    properties = {
+        "displayName": "unit-route-data",
+        "secret": False,
+        "value": value,
+        "provisioningState": "Failed",
+    }
+    with pytest.raises(
+        PolicyCompilationError, match="public metadata readback changed",
+    ) as failed:
+        AzureApimPublisherClient._verify_route_header_value(
+            "unit-route-data", value, properties,
+        )
+    assert "provisioningState" in str(failed.value)
+    assert value not in str(failed.value)
+
+
+@pytest.mark.parametrize("state", ["Succeeded", "InProgress"])
+@pytest.mark.parametrize(("changes", "field"), [
+    ({"displayName": "unit-unapproved-name"}, "displayName"),
+    ({"secret": True}, "secret"),
+    ({"secret": 0}, "secret"),
+    ({"value": "unit-unapproved-value"}, "value"),
+    ({"keyVault": {"secretIdentifier": "unit-private-reference"}}, "keyVault"),
+    ({"unexpected": "unit-private-extra-value"}, "unexpected_fields"),
+])
+def test_route_pool_public_metadata_mismatch_diagnostics_are_safe(
+    state: str, changes: dict[str, Any], field: str,
+) -> None:
+    properties = {
+        "displayName": "unit-route-data",
+        "secret": False,
+        "value": "unit-private-metadata-value",
+        "provisioningState": state,
+        **changes,
+    }
+    with pytest.raises(
+        PolicyCompilationError, match="public metadata readback changed",
+    ) as failed:
+        AzureApimPublisherClient._verify_route_header_value(
+            "unit-route-data", "unit-private-metadata-value", properties,
+        )
+    assert field in str(failed.value)
+    assert "unit-" not in str(failed.value)
+
+
+@pytest.mark.parametrize("include_state", [False, True])
+def test_route_pool_public_metadata_succeeded_readback_is_unchanged(
+    include_state: bool,
+) -> None:
+    properties: dict[str, Any] = {
+        "displayName": "unit-route-data", "secret": False, "value": "unit-deployment",
+    }
+    if include_state:
+        properties["provisioningState"] = "Succeeded"
+    AzureApimPublisherClient._verify_route_header_value(
+        "unit-route-data", "unit-deployment", properties,
+    )
+
+
+def test_route_pool_public_metadata_invalid_properties_are_safe() -> None:
+    with pytest.raises(
+        PolicyCompilationError, match="public metadata readback changed",
+    ) as failed:
+        AzureApimPublisherClient._verify_route_header_value(
+            "unit-route-data", "unit-private-metadata-value", None,
+        )
+    assert "properties" in str(failed.value)
+    assert "unit-" not in str(failed.value)
+
+
+def test_route_pool_public_metadata_recovers_without_repeating_creation() -> None:
+    settings = publisher_settings().model_copy(update={"apim_gateway_profile_id": APIM_ID})
+    scope = RouteScope(target_id=str(APIM_ID), api_id=settings.apim_api_id, gateway_id="managed")
+    rows: dict[str, dict[str, Any]] = {}
+    writes: list[str] = []
+    public_ready = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "PUT":
+            writes.append(path)
+            rows[path] = json.loads(request.content)["properties"]
+            return httpx.Response(202)
+        if path not in rows:
+            return httpx.Response(404)
+        properties = rows[path]
+        if path.endswith("/namedValues/unit-route-data"):
+            properties = {**properties, "provisioningState":
+                          "Succeeded" if public_ready else "Creating"}
+        return httpx.Response(200, json={"properties": properties})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        tokens = Mock()
+        tokens.token.return_value = "unit-only-token"
+        client = AzureApimPublisherClient(settings, token_provider=tokens, client=transport)
+        backends = tuple(BackendResource(
+            f"unit-member-{index}", "unit", "https://unit.example.test", (), None,
+        ) for index in range(2))
+        members = tuple(RoutePoolMember(
+            runtime_id=str(UUID(int=index + 1)), backend_id=backend.id,
+            dependency_sha256=document_digest(client.route_backend_properties(backend)),
+            priority=index, weight=1,
+        ) for index, backend in enumerate(backends))
+        pool = RouteBackendPool(members=members, rate_limit=GatewayRateLimitResilience(
+            max_attempts_per_request=2, retry_interval_seconds=1, first_fast_retry=True,
+            circuit_breaker=GatewayRateLimitCircuitBreaker(failure_count=1, interval_seconds=60,
+                trip_duration_seconds=60, accept_retry_after=True),
+        ), header_values={"unit-route-data": "unit-deployment"})
+        native_pool = BackendPoolResource(id="unit-pool", title="unit", url="", members=tuple(
+            BackendPoolMemberResource(member.backend_id, member.priority, member.weight)
+            for member in members
+        ))
+        connection = ConnectionRevision(
+            scope=scope, revision_id=str(UUID(int=34)), backend_id="unit-pool",
+            origin="https://unit.example.test", path="/chat/completions", pool=pool,
+            credential=RouteCredential(mode="none"),
+            dependency_sha256=document_digest(client.route_backend_properties(native_pool)),
+        )
+        intents: list[dict[str, Any]] = []
+        with pytest.raises(RetryablePublicationError, match="public metadata.*not yet ready"):
+            client.prepare_route_pool(connection, backends, intents.append)
+        assert len(writes) == len(intents) == 1
+        public_ready = True
+        client.prepare_route_pool(connection, backends, intents.append)
+        assert len(writes) == len(set(writes)) == len(intents) == 4
+        assert client.verify_route_pool(connection) == connection.dependency_sha256
+
+
 @pytest.mark.parametrize("payload", [
     {}, {"value": [], "nextLink": "https://example.test/next"},
     {"value": [{"actions": ["*"], "condition": "unverified"}]},

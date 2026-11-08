@@ -2820,14 +2820,31 @@ class AzureApimPublisherClient(AzureSelfHostedGatewayManagementMixin):
 
     @staticmethod
     def _verify_route_header_value(name: str, value: str, raw: Any) -> None:
-        if (not isinstance(raw, dict) or raw.get("displayName") != name
-                or raw.get("secret") is not False or raw.get("value") != value
-                or raw.get("keyVault") is not None
-                or raw.get("provisioningState", "Succeeded") != "Succeeded"
-                or set(raw) - {
-                    "displayName", "secret", "value", "tags", "keyVault", "provisioningState",
-                }):
-            raise PolicyCompilationError("Fixed route public metadata readback changed")
+        if not isinstance(raw, dict):
+            raise PolicyCompilationError("Fixed route public metadata readback changed: properties")
+        checks = {
+            "displayName": raw.get("displayName") == name,
+            "secret": raw.get("secret") is False,
+            "value": raw.get("value") == value,
+            "keyVault": raw.get("keyVault") is None,
+            "unexpected_fields": not set(raw) - {
+                "displayName", "secret", "value", "tags", "keyVault", "provisioningState",
+            },
+        }
+        changed_fields = [field for field, matches in checks.items() if not matches]
+        if changed_fields:
+            raise PolicyCompilationError(
+                "Fixed route public metadata readback changed: " + ", ".join(changed_fields),
+            )
+        state = raw.get("provisioningState", "Succeeded")
+        if state == "Failed":
+            raise PolicyCompilationError(
+                "Fixed route public metadata readback changed: provisioningState=Failed",
+            )
+        if state != "Succeeded":
+            raise RetryablePublicationError(
+                "APIM public metadata resource is not yet ready: provisioningState",
+            )
 
     def _verify_route_oauth(self, connection: ConnectionRevision) -> None:
         checked: set[str] = set()
