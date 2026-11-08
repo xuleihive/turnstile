@@ -1943,6 +1943,7 @@ def price_edit_service(
     model_id = UUID("40000000-0000-4000-8000-000000000003")
     repository.update_registry_item("model", model_id, {"cached_cost_per_million": 0.45})
     catalog = Mock(spec=CompositeCatalog)
+    catalog.for_sync.return_value = catalog
     reference = "azure_retail:Azure OpenAI:gpt 4.1:Global:*"
     catalog.lookup.return_value = CatalogEntry(
         reference=reference, label="gpt 4.1", source=PriceSource.AZURE_RETAIL,

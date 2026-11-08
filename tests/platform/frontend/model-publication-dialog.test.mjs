@@ -107,11 +107,16 @@ function harness(rawRegistry = registry(), publication, publishFailure, targets 
     assert.ok(control, `Missing selection ${value}`)
     control.props.onValueChange(next)
   }
+  const priceSource = source => {
+    const picker = find(node => node.type === "ModelPriceSourceFields")
+    assert.ok(picker, "Missing shared pricing picker")
+    picker.props.setDraft(current => ({ ...current, priceSource: source }))
+  }
   const submit = async () => {
     find(node => node.type === "Button" && ["发布模型", "正在提交"].includes(text(node))).props.onClick()
     await new Promise(resolve => setImmediate(resolve))
   }
-  return { props, topology, program, writes, queued, render, find, input, select, submit }
+  return { props, topology, program, writes, queued, render, find, input, select, priceSource, submit }
 }
 
 test("publication requires current model-addition program evidence without dispatch", async () => {
@@ -125,6 +130,7 @@ test("publication requires current model-addition program evidence without dispa
     const view = harness()
     Object.assign(view.program, state)
     view.input("foundry-deployment", "unit-model")
+    view.priceSource("manual")
     await view.submit()
     assert.equal(view.writes.length, 0)
     assert.equal(view.find(node => node.type === "Button" && text(node) === "发布模型").props.disabled, true)
@@ -193,6 +199,7 @@ test("explicit deployment choice submits only its target and selected scope", as
   const view = harness(registry(), undefined, undefined, readyTopology())
   view.select("gateway:managed", "gateway:edge")
   view.input("foundry-deployment", "unit-model")
+  view.priceSource("manual")
   await view.submit()
   assert.equal(view.writes.length, 1)
   assert.equal(view.writes[0].gateway_profile_id, "gateway")
@@ -205,6 +212,7 @@ test("a removed explicit deployment blocks publication without choosing another"
   view.select("gateway:managed", "gateway:edge")
   view.input("foundry-deployment", "unit-model")
   view.topology.data.items[0].deployments.pop()
+  view.priceSource("manual")
   await view.submit()
   assert.equal(view.writes.length, 0)
   assert.ok(text(view.render()).includes("请选择可用的 Gateway API。"))
@@ -213,6 +221,7 @@ test("a removed explicit deployment blocks publication without choosing another"
 test("disabled target scoping preserves the legacy publication payload", async () => {
   const view = harness(registry(), undefined, undefined, { deployment_scoping_available: false, items: [] })
   view.input("foundry-deployment", "unit-model")
+  view.priceSource("manual")
   await view.submit()
   assert.equal(view.writes.length, 1)
   assert.equal("deployment_scope" in view.writes[0], false)
@@ -222,6 +231,7 @@ test("publication errors use the existing notice layout without shrinking long m
   const failure = new Error(`API 422: ${"price_source is not supported. ".repeat(30)}`)
   const view = harness(registry(), undefined, failure)
   view.input("foundry-deployment", "gpt-5.6-sol")
+  view.priceSource("manual")
   await view.submit()
   await new Promise(resolve => setImmediate(resolve))
   const alert = view.find(node => node.props?.role === "alert")
@@ -273,6 +283,7 @@ test("publication validation errors show fields and messages instead of raw resp
   }] })}`)
   const view = harness(registry(), undefined, failure)
   view.input("foundry-deployment", "gpt-5.6-sol")
+  view.priceSource("manual")
   await view.submit()
   await new Promise(resolve => setImmediate(resolve))
   const alert = view.find(node => node.props?.role === "alert")
@@ -282,6 +293,7 @@ test("publication validation errors show fields and messages instead of raw resp
 
 test("manual chat prices remain optional and do not send unused catalog fields", async () => {
   const view = harness()
+  view.priceSource("manual")
   view.input("foundry-deployment", "gpt-5.6-sol")
   for (const id of ["publication-input-price", "publication-output-price", "publication-cache-read-price", "publication-cache-write-price"]) {
     assert.equal(view.find(node => node.props?.id === id).props.required === true, false)
@@ -316,6 +328,7 @@ test("source dialog composition retains connection help, deployment help and cre
   const data = registry()
   data.runtimes[0].config = { ...data.runtimes[0].config, auth_strategy: "named_value_api_key", credential_provisioned: false }
   const view = harness(data)
+  view.priceSource("manual")
   const copy = text(view.render())
   for (const phrase of ["选择已有连接，将模型或部署发布到所选网关。", "连接包含服务端点和认证方式", "Turnstile 不会创建上游部署", "首次发布凭据", "价格未填写"]) assert.ok(copy.includes(phrase), phrase)
   const grid = view.find(node => node.props?.className?.includes("publication-model-identity-grid"))
@@ -353,6 +366,7 @@ test("image price states accept explicit zero and submit all three rates without
     image_limits: { max_request_bytes: 24576, max_response_bytes: 16777216, output_reservation_tokens: 8192, timeout_seconds: 180 },
   })
   view.select("chat", "image_generation")
+  view.priceSource("manual")
   view.input("foundry-deployment", " image-deployment ")
   await view.submit()
   assert.equal(view.writes.length, 0)
@@ -381,13 +395,17 @@ test("connection changes clear credentials, model operation, prices and deployme
   data.runtimes.push({ ...data.runtimes[0], id: "second", name: "Second connection" })
   const view = harness(data)
   view.select("chat", "image_generation")
+  view.priceSource("manual")
   view.input("existing-connection-api-key", "unit-key")
   view.input("foundry-deployment", "unit-model")
   view.input("publication-input-price", "5")
   view.select("connection", "second")
-  for (const id of ["existing-connection-api-key", "foundry-deployment", "publication-input-price"]) assert.equal(view.find(node => node.type === "Input" && node.props.id === id).props.value, "")
+  for (const id of ["existing-connection-api-key", "foundry-deployment"]) assert.equal(view.find(node => node.type === "Input" && node.props.id === id).props.value, "")
   assert.ok(view.find(node => node.type === "Select" && node.props.value === "chat"))
-  assert.ok(text(view.render()).includes("价格未填写"))
+  const draft = view.find(node => node.type === "ModelPriceSourceFields").props.draft
+  assert.equal(draft.priceSource, "models_dev")
+  assert.equal(draft.inputPrice, "")
+  assert.equal(draft.priceReference, "")
 })
 
 test("new text models expose the shared pricing picker without a fabricated saved model", () => {
@@ -398,7 +416,7 @@ test("new text models expose the shared pricing picker without a fabricated save
   assert.equal(section.type, "section")
   const picker = view.find(node => node.type === "ModelPriceSourceFields")
   assert.equal(picker.props.model, undefined)
-  assert.equal(picker.props.draft.priceSource, "manual")
+  assert.equal(picker.props.draft.priceSource, "models_dev")
   assert.equal(picker.props.connectionDiscount, 90)
 })
 

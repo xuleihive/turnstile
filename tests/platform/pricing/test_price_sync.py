@@ -39,6 +39,9 @@ class StubCatalog(CompositeCatalog):
         self._raises = raises
         self.lookups: list[str] = []
 
+    def for_sync(self, references: Any) -> StubCatalog:
+        return self
+
     def lookup(self, reference: str) -> CatalogEntry | None:
         self.lookups.append(reference)
         if self._raises:

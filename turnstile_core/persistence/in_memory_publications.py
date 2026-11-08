@@ -2206,6 +2206,7 @@ class InMemoryPublicationRepositoryMixin:
                         "cache_write_cost_per_million"
                     ),
                     "price_source": model_spec.get("price_source", "manual"),
+                    "price_source_snapshot": model_spec.get("price_source_snapshot"),
                     "price_reference": model_spec.get("price_reference"),
                     "price_discount_percent": model_spec.get("price_discount_percent"),
                     "context_price_tiers": model_spec.get("context_price_tiers") or [],

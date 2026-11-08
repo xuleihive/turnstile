@@ -93,7 +93,8 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
   const imagePriceMissing = imageGeneration && [draft.inputPrice, draft.cacheReadPrice, draft.outputPrice].some(value => !value.trim())
   const validationMessage = (dirty || submitted) ? imagePriceMissing ? "请填写文字输入、缓存文字和图像输出单价。" : validation && validation !== "context_pricing_preview" ? VALIDATION_MESSAGES[validation] : null : null
   const update = <K extends keyof ModelEditDraft>(key: K, value: ModelEditDraft[K]) => {
-    setDraft((current) => ({ ...current, [key]: value }))
+    setDraft((current) => ({ ...current, [key]: value,
+      ...(key === "contextWindow" ? { contextWindowEdited: true } : {}) }))
   }
   const close = () => { if (!busy) onClose() }
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -130,9 +131,12 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
           </section>
 
           <section className="simple-model-section simple-connection-section" aria-labelledby={`${id}-pricing`}>
-            <div className="publication-section-heading"><span className="simple-section-title"><b id={`${id}-pricing`}>价格与限制</b></span><span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span></div>
-            {!imageGeneration && <ModelPriceSourceFields model={model} draft={draft} setDraft={setDraft}
-              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null} showAnthropic={!decision} decision={decision} />}
+            <div className="publication-section-heading"><span className="simple-section-title"><b id={`${id}-pricing`}>价格与限制</b><FieldHelp>{followingListPrice
+              ? "跟随官方价时，以上单价由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。"
+              : "留空表示未配置，不等于 0。"}</FieldHelp></span><span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span></div>
+            <ModelPriceSourceFields model={model} draft={draft} setDraft={setDraft}
+              busy={busy} connectionDiscount={runtime?.price_discount_percent ?? null}
+              showAnthropic={!decision && !imageGeneration} decision={decision} imageGeneration={imageGeneration} />
             <div className={imageGeneration || draft.contextPricingPreview ? "form-grid" : "form-grid three"}>
               {!imageGeneration && <EditNumberField id={`${id}-context`} label="上下文窗口" unit="Tokens" integer value={draft.contextWindow} onChange={(value) => update("contextWindow", value)} busy={busy} />}
               {!draft.contextPricingPreview && <EditNumberField id={`${id}-input`} label={imageGeneration ? "文字输入单价" : "输入单价"} value={draft.inputPrice} onChange={(value) => update("inputPrice", value)} busy={busy || followingListPrice} />}
@@ -142,9 +146,6 @@ export function ModelEditDialog({ registry, model, availability, availabilityLoa
               <EditNumberField id={`${id}-cache-read`} label={imageGeneration ? "缓存文字单价" : "缓存读取单价"} value={draft.cacheReadPrice} onChange={(value) => update("cacheReadPrice", value)} busy={busy || followingListPrice} help="留空按输入单价计费；填写 0 表示免费。" />
               {!imageGeneration && <EditNumberField id={`${id}-cache-write`} label="缓存写入单价" value={draft.cacheWritePrice} onChange={(value) => update("cacheWritePrice", value)} busy={busy || followingListPrice} help="留空按缓存读取单价计费；读取单价也未填写时按输入单价。填写 0 表示免费。" />}
             </div>}
-            {!draft.contextPricingPreview && <p className="publication-form-note">{followingListPrice
-              ? "跟随官方价时，以上单价由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。"
-              : "留空表示未配置，不等于 0。"}</p>}
           </section>
 
           <section className="simple-model-section simple-connection-section" aria-labelledby={`${id}-access`}>

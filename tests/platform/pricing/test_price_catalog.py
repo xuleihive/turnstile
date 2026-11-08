@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from turnstile_core.domain.runtime_models import (
+    ContextPriceRule,
     PriceCatalogContextTier,
     PriceCatalogInputRange,
     PriceSource,
@@ -26,6 +27,7 @@ from turnstile_core.pricing.catalog import (
     parse_context_tier,
     parse_meter_name,
 )
+from turnstile_core.pricing.context import resolve_context_prices
 
 
 def meter(name: str, price: float, region: str = "eastus",
@@ -52,6 +54,63 @@ class StubAzure(AzureRetailCatalog):
     def _fetch(self, filter_expression: str) -> Any:
         self.filters.append(filter_expression)
         return _Fetched(rows=self._rows, complete=self._complete)
+
+
+def test_sync_context_options_use_prefetched_quote_without_rereading_the_index() -> None:
+    class IndexUnavailableAzure(StubAzure):
+        def models(self) -> list[CatalogModel]:
+            raise AssertionError("A prefetched quote must not depend on another index read")
+
+    rows = [
+        meter("5.6 sol ShortCo inp Std Gl 1M Tokens", 2,
+              product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.6 sol ShortCo opt Std Gl 1M Tokens", 8,
+              product="Azure OpenAI GPT5", unit="1M"),
+    ]
+    catalog = IndexUnavailableAzure(rows)
+    reference = "azure_retail:Azure OpenAI GPT5:5.6 sol ShortCo Std:Global:*"
+    model_key = ":".join(reference.split(":")[:3])
+    snapshot = CompositeCatalog([catalog]).for_sync([reference])
+    entry = snapshot.lookup(reference)
+    assert entry is not None and entry.input_per_million == 2
+    assert len(catalog.filters) == 1
+    for _ in range(2):
+        options = snapshot.options(model_key)
+        assert options is not None and options.options[0].entry.input_per_million == 2
+        assert options.model.resolved_context_tier is not None
+    assert len(catalog.filters) == 1
+    assert catalog._options == {} and catalog._models is None
+
+
+def test_sync_azure_prefetch_preserves_complete_custom_context_prices() -> None:
+    rows = [
+        meter(f"5.6 luna {tier} {bucket} Std Gl 1M Tokens", price,
+              region="australiaeast", product="Azure OpenAI GPT5", unit="1M")
+        for tier, prices in (
+            ("ShortCo", (0.2, 1.2, 0.02, 0.25)),
+            ("LongCo", (0.4, 1.8, 0.04, 0.5)),
+        )
+        for bucket, price in zip(("inp", "opt", "cd inp", "Cd Wr"), prices, strict=True)
+    ]
+    catalog = CompositeCatalog([StubAzure(rows)])
+    references = [
+        f"azure_retail:Azure OpenAI GPT5:5.6 luna {tier} Std:Global:australiaeast"
+        for tier in ("ShortCo", "LongCo")
+    ]
+    rule = ContextPriceRule(short_context_max_tokens=64000)
+    accepted = resolve_context_prices(catalog, PriceSource.AZURE_RETAIL, references, 80, rule=rule)
+    refreshed = resolve_context_prices(
+        catalog.for_sync(references), PriceSource.AZURE_RETAIL, references, 80,
+        rule=rule, previous_tiers=accepted,
+    )
+    assert refreshed == accepted
+    assert [(tier.key, tier.min_input_tokens, tier.max_input_tokens,
+             tier.input_price_per_million, tier.output_price_per_million,
+             tier.cached_price_per_million, tier.cache_write_price_per_million)
+            for tier in refreshed] == [
+        ("short", 0, 64000, 0.16, 0.96, 0.016, 0.2),
+        ("long", 64001, None, 0.32, 1.44, 0.032, 0.4),
+    ]
 
 
 # --------------------------------------------------------------------------------------------
@@ -662,6 +721,9 @@ def test_the_filter_does_not_assume_the_name_survives_as_one_run_of_text() -> No
 def test_an_unreachable_source_is_named_rather_than_pretended_empty() -> None:
     class Broken:
         source = PriceSource.ANTHROPIC
+
+        def invalidate(self) -> None:
+            return
 
         def models(self) -> list[CatalogModel]:
             raise ValueError("pricing page moved")

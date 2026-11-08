@@ -1961,7 +1961,7 @@ export type ImageInvocationResponse = Pick<ModelInvocationResponse,
   data: Array<{ b64_json: string; media_type: "image/png" | "image/jpeg" | "image/webp" }>
 }
 
-export type PriceSource = "manual" | "azure_retail" | "anthropic"
+export type PriceSource = "manual" | "azure_retail" | "anthropic" | "models_dev"
 
 export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed" | "superseded"
 
@@ -2032,7 +2032,27 @@ export type PriceCatalogModelsResponse = {
   unavailable: string[]
 }
 
+export type PriceMatchRequest = {
+  runtime_id: string
+  model_id?: string
+  names: string[]
+  image_generation?: boolean
+  allow_ai?: boolean
+}
+
+export type PriceMatchResponse = {
+  status: "matched" | "ambiguous" | "unmapped" | "stale"
+  model_entry: PriceCatalogModel | null
+  candidates: PriceCatalogModel[]
+  method: "exact" | "ai" | null
+  price_basis: "deployment" | "origin_reference" | null
+  requires_ai: boolean
+  message: string | null
+}
+
 export type PriceCatalogOption = {
+  entry_digest?: string | null
+  source_metadata?: Record<string, unknown>
   reference: string
   deployment: string
   regions: string[]
@@ -2056,6 +2076,11 @@ export type PriceCatalogOptionsResponse = {
 }
 
 export type PriceSyncDetail = {
+  current_context_price_tiers?: StoredContextPriceTier[]
+  proposed_context_price_tiers?: StoredContextPriceTier[] | null
+  outcome?: string | null
+  current_prices?: { input: number | null; output: number | null; cached: number | null; cache_write: number | null } | null
+  proposed_prices?: { input: number | null; output: number | null; cached: number | null; cache_write: number | null } | null
   model_id: string
   model_key: string
   status: PriceSyncStatus
@@ -2063,6 +2088,11 @@ export type PriceSyncDetail = {
 }
 
 export type PriceSyncResponse = {
+  dry_run?: boolean
+  confirmation_digest?: string | null
+  total?: number
+  skipped_manual?: number
+  unchanged?: number
   considered: number
   updated: number
   unmapped: number

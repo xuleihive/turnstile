@@ -4,6 +4,7 @@ import test from "node:test"
 
 import {
   createModelEditDraft,
+  createModelPriceDraft,
   modelEditHasChanges,
   modelEditPayload,
   modelEditRoleOptions,
@@ -33,6 +34,14 @@ const model = (overrides = {}) => ({
   enabled: true,
   is_default: false,
   ...overrides,
+})
+
+test("new pricing uses public reference while saved and legacy model sources are preserved", () => {
+  assert.equal(createModelPriceDraft().priceSource, "models_dev")
+  for (const price_source of ["manual", "azure_retail", "anthropic", "models_dev"]) {
+    assert.equal(createModelEditDraft(model({ price_source })).priceSource, price_source)
+  }
+  assert.equal(createModelEditDraft(model({ price_source: undefined })).priceSource, "manual")
 })
 
 test("unchanged metadata round-trips while routing identity comes from the saved model", () => {

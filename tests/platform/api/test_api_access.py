@@ -111,7 +111,8 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         route for route in copilot_protected.routes if isinstance(route, APIRoute)
     ]
 
-    assert len(apim_routes) == 150
+    assert len(apim_routes) == 151
+    assert any(route.path == "/api/v1/model-management/price-match" for route in apim_routes)
     pool_reads = {
         route.path: route for route in apim_routes
         if route.path in {

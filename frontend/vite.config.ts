@@ -11,6 +11,8 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "")
   const apiTarget = env.API_PROXY_TARGET || DEFAULT_API_TARGET
   const apiOrigin = new URL(apiTarget).origin
+  const localCookieName = env.API_PROXY_COOKIE_NAME
+  const sessionCookieName = "turnstile_session"
   const apiProxy: ProxyOptions = {
     target: apiTarget,
     changeOrigin: true,
@@ -23,6 +25,26 @@ export default defineConfig(({ mode }) => {
       if (!host || origin !== `${protocol}://${host}`) return
       if (fetchSite && fetchSite !== "same-origin") return
       request.headers.origin = apiOrigin
+    },
+    configure(proxy) {
+      if (!localCookieName) return
+      proxy.on("proxyReq", (proxyRequest, request) => {
+        const cookies = (request.headers.cookie ?? "").split(";")
+          .map(cookie => cookie.trim())
+          .filter(cookie => cookie && !cookie.startsWith(`${sessionCookieName}=`))
+          .map(cookie => cookie.startsWith(`${localCookieName}=`)
+            ? `${sessionCookieName}${cookie.slice(localCookieName.length)}`
+            : cookie)
+        if (cookies.length) proxyRequest.setHeader("cookie", cookies.join("; "))
+        else proxyRequest.removeHeader("cookie")
+      })
+      proxy.on("proxyRes", response => {
+        const cookies = response.headers["set-cookie"]
+        if (cookies) response.headers["set-cookie"] = cookies.map(cookie =>
+          cookie.startsWith(`${sessionCookieName}=`)
+            ? `${localCookieName}${cookie.slice(sessionCookieName.length)}`
+            : cookie)
+      })
     },
   }
 

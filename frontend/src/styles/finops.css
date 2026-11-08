@@ -58,6 +58,8 @@
 .finops-scroll-region::-webkit-scrollbar-thumb { border-radius: 3px; background: var(--scrollbar-thumb); }
 .finops-scroll-region::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 .finops-filter-setting { display: contents; }
+[data-slot="chip"] { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; line-height: 16px; font-weight: 500; white-space: nowrap; }
+[data-slot="chip"] > svg { flex: 0 0 auto; }
 [data-slot="button"] { appearance: none; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; outline: none; background-clip: padding-box; font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; user-select: none; cursor: pointer; transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease; }
 [data-slot="button"][data-variant="ghost"] { background: transparent; color: inherit; }
 [data-slot="button"][data-variant="ghost"]:hover:not(:disabled),

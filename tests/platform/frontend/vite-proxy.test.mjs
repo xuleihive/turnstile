@@ -108,3 +108,64 @@ test("development proxy preserves the write-origin security boundary", async sui
     assert.equal((await read.json()).origin, frontendOrigin)
   })
 })
+
+test("development proxy isolates its cloud session from another localhost frontend", async suite => {
+  const upstream = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
+    response.setHeader("Set-Cookie", request.url.endsWith("logout")
+      ? "turnstile_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+      : "turnstile_session=upstream-value; Path=/; HttpOnly; Secure; SameSite=Lax")
+    response.end(JSON.stringify({ cookie: request.headers.cookie ?? null }))
+  })
+  const apiTarget = await listen(upstream)
+  suite.after(() => close(upstream))
+  const previous = {
+    API_PROXY_TARGET: process.env.API_PROXY_TARGET,
+    API_PROXY_COOKIE_NAME: process.env.API_PROXY_COOKIE_NAME,
+  }
+  let configuration
+  try {
+    process.env.API_PROXY_TARGET = apiTarget
+    process.env.API_PROXY_COOKIE_NAME = "turnstile_fa392958_preview"
+    configuration = viteConfig({ command: "serve", mode: "test" })
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+  const vite = await createViteServer({
+    configFile: false,
+    cacheDir: "frontend/node_modules/.vite-proxy-test",
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false, proxy: configuration.server.proxy },
+  })
+  suite.after(() => vite.close())
+  const frontend = createServer(vite.middlewares)
+  const frontendOrigin = await listen(frontend)
+  suite.after(() => close(frontend))
+
+  await suite.test("renames the upstream Cookie without changing its security attributes", async () => {
+    const response = await fetch(`${frontendOrigin}/api/login`)
+    assert.equal(response.headers.get("set-cookie"),
+      "turnstile_fa392958_preview=upstream-value; Path=/; HttpOnly; Secure; SameSite=Lax")
+  })
+  await suite.test("forwards only this frontend's session under the upstream name", async () => {
+    const response = await fetch(`${frontendOrigin}/api/check`, {
+      headers: { Cookie: "turnstile_session=other-frontend; theme=dark; turnstile_fa392958_preview=preview-value" },
+    })
+    assert.equal((await response.json()).cookie, "theme=dark; turnstile_session=preview-value")
+  })
+  await suite.test("does not authenticate using another frontend's session", async () => {
+    const response = await fetch(`${frontendOrigin}/api/check`, {
+      headers: { Cookie: "turnstile_session=other-frontend" },
+    })
+    assert.equal((await response.json()).cookie, null)
+  })
+  await suite.test("logout expires only this frontend's renamed Cookie", async () => {
+    const response = await fetch(`${frontendOrigin}/api/logout`)
+    assert.equal(response.headers.get("set-cookie"),
+      "turnstile_fa392958_preview=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+  })
+})

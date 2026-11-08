@@ -194,7 +194,8 @@ class InMemoryRegistryRepositoryMixin:
         self, kind: str, item_id: UUID, values: Mapping[str, Any]
     ) -> dict[str, Any] | None:
         if kind == "model" and values.get("price_source") == "manual":
-            values = {**values, "price_reference": None, "context_price_tiers": []}
+            values = {**values, "price_reference": None, "context_price_tiers": [],
+                      "price_source_snapshot": None}
         target = self._registry_target(kind)
         row = self._find(target, item_id)
         if row is None:
@@ -389,6 +390,7 @@ class InMemoryRegistryRepositoryMixin:
                 continue
 
             if update.get("writes"):
+                model["price_source_snapshot"] = update.get("price_source_snapshot")
                 # The accepted baseline moves only when the price is accepted.
                 for column in listed:
                     if update.get(column) is not None:

@@ -1,4 +1,6 @@
 import type {
+  PriceMatchRequest,
+  PriceMatchResponse,
   ApimOnboardingOperations,
   ApimOnboardingPlan,
   ApimOnboardingRequest,
@@ -1021,14 +1023,17 @@ export const dataSource = {
   executeTraffic: (value: TrafficGenerationRequest) => writeJson<TrafficGenerationResult>(
     "/api/v1/traffic/execute", value,
   ),
-  priceCatalogModels: (query: string) => request<PriceCatalogModelsResponse>(
-    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}`,
+  priceCatalogModels: (query: string, source?: string) => request<PriceCatalogModelsResponse>(
+    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}${source ? `&source=${encodeURIComponent(source)}` : ""}`,
+  ),
+  matchPriceModel: (value: PriceMatchRequest) => writeJson<PriceMatchResponse>(
+    "/api/v1/model-management/price-match", value,
   ),
   priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
     `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,
   ),
-  syncPrices: (modelIds?: string[]) => writeJson<PriceSyncResponse>(
+  syncPrices: (modelIds?: string[], options: { dry_run?: boolean; confirmation_digest?: string } = {}) => writeJson<PriceSyncResponse>(
     "/api/v1/model-management/price-sync",
-    { model_ids: modelIds ?? null },
+    { model_ids: modelIds ?? null, ...options },
   ).then((result) => ({ ...result, registry: normalizeRegistry(result.registry) }))
 }

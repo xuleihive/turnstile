@@ -1,4 +1,9 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^官方(输入价|输出价|缓存读取价|缓存写入价)较上次接受的价格变动\s*([\d.]+)%[，,]\s*超过\s*([\d.]+)%\s*复核阈值[，,]\s*未自动写入$/g, (_match, bucket, change, threshold) => {
+    const names: Record<string, string> = { 输入价: "入力", 输出价: "出力", 缓存读取价: "キャッシュ読取", 缓存写入价: "キャッシュ書込" }
+    return `${names[bucket]}の価格が ${change}% 変動し、確認しきい値 ${threshold}% を超えました。現在の単価を維持しています。`
+  }],
+  [/^价目表中找不到 (.+)，保留现有单价$/g, (_match, reference) => `${reference} のカタログ価格が見つかりません。現在の単価を維持しています。`],
   [/^继承连接（([\d.]+)%）$/g, (_match, value) => `接続を継承（${value}%）`],
   [/^继承连接（未设折扣）$/g, () => "接続を継承（割引なし）"],
   [/^当前继承连接折扣\s*([\d.]+)%。$/g, (_match, value) => `現在は接続の割引 ${value}% を継承しています。`],
