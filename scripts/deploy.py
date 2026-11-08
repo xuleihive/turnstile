@@ -962,12 +962,7 @@ def build_packages(
     return packages
 
 
-def deploy_webapp_package(
-    runner: CommandRunner,
-    inputs: DeploymentInputs,
-    app_name: str,
-    package: Path,
-) -> None:
+def _management_access_token(runner: CommandRunner, inputs: DeploymentInputs) -> str:
     token_result = runner.run_json(
         [
             "az",
@@ -983,7 +978,16 @@ def deploy_webapp_package(
             "json",
         ]
     )
-    access_token = _output_string(token_result, "accessToken")
+    return _output_string(token_result, "accessToken")
+
+
+def deploy_webapp_package(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    app_name: str,
+    package: Path,
+) -> None:
+    access_token = _management_access_token(runner, inputs)
     publish_url = (
         f"https://{app_name}.scm.azurewebsites.net/api/publish"
         "?type=zip&clean=true&restart=true"
@@ -1015,8 +1019,13 @@ def deploy_packages(
 ) -> None:
     resource_group = _output_string(outputs, "resourceGroupName")
     api_name = _output_string(outputs, "apiName")
+    published_after = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     deploy_webapp_package(runner, inputs, api_name, packages["api"])
-    wait_for_health(_output_string(outputs, "apiUrl"), timeout_seconds=1800)
+    wait_for_health(
+        _output_string(outputs, "apiUrl"),
+        timeout_seconds=1800,
+        startup_failure=_startup_failure_probe(runner, inputs, api_name, published_after),
+    )
     for output_name, package_name in (
         ("telemetryFunctionName", "telemetry"),
         ("controlPlaneFunctionName", "control-plane"),
@@ -1373,10 +1382,83 @@ def _open_without_proxy(request: urllib.request.Request, timeout: float) -> byte
     return body
 
 
+STARTUP_FAILURE_PROBE_SECONDS = 60
+STARTUP_FAILURE_ATTEMPTS = 3
+_STARTUP_EXCEPTION = re.compile(r"[A-Za-z_][\w.]*(?:Error|Exception)\w*: .+")
+_CONTAINER_EXIT = re.compile(r"Container has finished running with exit code: \d+")
+_STARTUP_FAILURE_LOG = re.compile(r"[A-Za-z0-9_.-]+_failure\.log")
+_CREDENTIAL_HINT = re.compile(r"://|password|secret|token|key=|sig=", re.IGNORECASE)
+
+
+def repeated_startup_failure(log: str, published_after: str) -> str | None:
+    """Return the startup exception repeated by the latest container exits after publish."""
+    exits: list[str | None] = []
+    exception: str | None = None
+    for line in log.splitlines():
+        if "New Cold Start Attempt" in line:
+            exception = None
+            continue
+        stamp, _, entry = line.partition(" ")
+        source, _, text = entry.partition(": ")
+        text = text.strip()
+        if source == "ContainerStream" and _STARTUP_EXCEPTION.fullmatch(text):
+            exception = text
+        elif source == "ContainerStatus" and _CONTAINER_EXIT.match(text):
+            if stamp[:19] >= published_after:
+                exits.append(exception)
+            exception = None
+    recent = exits[-STARTUP_FAILURE_ATTEMPTS:]
+    error = recent[0] if len(recent) == STARTUP_FAILURE_ATTEMPTS else None
+    if error is None or len(set(recent)) != 1:
+        return None
+    if _CREDENTIAL_HINT.search(error):
+        return "a startup exception that may contain credentials (redacted)"
+    return error[:500]
+
+
+def _startup_failure_probe(
+    runner: CommandRunner, inputs: DeploymentInputs, app_name: str, published_after: str,
+) -> Callable[[], str | None]:
+    logs_url = f"https://{app_name}.scm.azurewebsites.net/api/vfs/LogFiles/StartupLogs/"
+    tokens: list[str] = []
+
+    def probe() -> str | None:
+        if not tokens:
+            tokens.append(_management_access_token(runner, inputs))
+        headers = {"Authorization": f"Bearer {tokens[0]}"}
+        try:
+            listing = json.loads(
+                _open_without_proxy(urllib.request.Request(logs_url, headers=headers), 30)
+            )
+            names = sorted(
+                (
+                    entry for entry in listing
+                    if isinstance(entry, dict)
+                    and _STARTUP_FAILURE_LOG.fullmatch(str(entry.get("name", "")))
+                ),
+                key=lambda entry: str(entry.get("mtime", "")),
+            )
+            if not names:
+                return None
+            log = _open_without_proxy(
+                urllib.request.Request(logs_url + str(names[-1]["name"]), headers=headers), 30
+            ).decode("utf-8", errors="replace")
+        except (OSError, urllib.error.URLError, ValueError):
+            return None
+        return repeated_startup_failure(log, published_after)
+
+    return probe
+
+
 def wait_for_health(
-    api_url: str, timeout_seconds: int = 180, *, expected_asset: str | None = None,
+    api_url: str,
+    timeout_seconds: int = 180,
+    *,
+    expected_asset: str | None = None,
+    startup_failure: Callable[[], str | None] | None = None,
 ) -> str:
     deadline = time.monotonic() + timeout_seconds
+    next_probe = time.monotonic() + STARTUP_FAILURE_PROBE_SECONDS
     last_error = "no response"
     stage = "API health"
     while time.monotonic() < deadline:
@@ -1396,6 +1478,15 @@ def wait_for_health(
             return body
         except (OSError, urllib.error.URLError) as error:
             last_error = f"{type(error).__name__}: {error}"
+        if startup_failure is not None and time.monotonic() >= next_probe:
+            next_probe = time.monotonic() + STARTUP_FAILURE_PROBE_SECONDS
+            repeated = startup_failure()
+            if repeated is not None:
+                raise DeploymentError(
+                    f"{stage} check stopped early: the container exited "
+                    f"{STARTUP_FAILURE_ATTEMPTS} times during startup with the same error: "
+                    f"{repeated}"
+                )
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(3, remaining))

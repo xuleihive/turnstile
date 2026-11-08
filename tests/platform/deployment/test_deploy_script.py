@@ -50,6 +50,7 @@ from scripts.deploy import (
     observer_source_version,
     owner_credentials_password,
     pip_linux_dependency_command,
+    repeated_startup_failure,
     restart_runtime_apps,
     runtime_release_parameters,
     temporary_parameter_file,
@@ -2840,7 +2841,7 @@ def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
 ) -> None:
     commands: list[list[str]] = []
     api_deployments: list[tuple[str, Path]] = []
-    health_calls: list[tuple[str, int]] = []
+    health_calls: list[tuple[str, int, bool]] = []
 
     class Runner:
         def run(self, command: Sequence[str], **_: object) -> None:
@@ -2848,7 +2849,9 @@ def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
 
     monkeypatch.setattr(
         "scripts.deploy.wait_for_health",
-        lambda url, timeout_seconds=180: health_calls.append((url, timeout_seconds)),
+        lambda url, timeout_seconds=180, startup_failure=None: health_calls.append(
+            (url, timeout_seconds, callable(startup_failure))
+        ),
     )
     monkeypatch.setattr(
         "scripts.deploy.deploy_webapp_package",
@@ -2878,7 +2881,144 @@ def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
         ("telemetry", Path("telemetry.zip")),
         ("control", Path("control-plane.zip")),
     ]
-    assert health_calls == [("https://api.example.test", 1800)]
+    assert health_calls == [("https://api.example.test", 1800, True)]
+
+
+def _startup_log(*attempts: tuple[str, str]) -> str:
+    lines = ["========== New Cold Start Attempt (2026-11-07T07:40:00+00:00) =========="]
+    for stamp, output in attempts:
+        lines += [
+            f"{stamp}.1+00:00 ContainerStream: Traceback (most recent call last):",
+            f"{stamp}.2+00:00 ContainerStream: {output}",
+            f"{stamp}.3+00:00 ContainerStatus: Container has finished running with exit code: 1.",
+            f"========== New Cold Start Attempt ({stamp}.4+00:00) ==========",
+        ]
+    return "\n".join(lines)
+
+
+def test_repeated_startup_failure_needs_three_identical_exits_after_publish() -> None:
+    dns = (
+        "psycopg.OperationalError: failed to resolve host 'pg.postgres.database.azure.com': "
+        "[Errno -3] Temporary failure in name resolution"
+    )
+    before = [
+        ("2026-11-07T07:41:31", "/opt/python/bin/python: Error while finding module "
+         "specification for 'backend.migrate' (ModuleNotFoundError: No module named "
+         "'backend')"),
+        ("2026-11-07T07:43:45", dns),
+        ("2026-11-07T07:45:24", dns),
+    ]
+    after = "2026-11-07T07:55:27"
+    assert repeated_startup_failure(_startup_log(*before), after) is None
+    two = [("2026-11-07T07:58:40", dns), ("2026-11-07T08:03:05", dns)]
+    assert repeated_startup_failure(_startup_log(*before, *two), after) is None
+    three = [*two, ("2026-11-07T08:06:52", dns)]
+    assert repeated_startup_failure(_startup_log(*before, *three), after) == dns
+    changed = [*two, ("2026-11-07T08:06:52", "RuntimeError: bootstrap failed")]
+    assert repeated_startup_failure(_startup_log(*changed), after) is None
+    silent = [(stamp, "INFO: Waiting for application startup.") for stamp, _ in three]
+    assert repeated_startup_failure(_startup_log(*silent), after) is None
+    leaked = "ValueError: invalid dsn postgresql://owner:hunter2@db/turnstile"
+    redacted = repeated_startup_failure(
+        _startup_log(*[(stamp, leaked) for stamp, _ in three]), after,
+    )
+    assert redacted is not None and "hunter2" not in redacted and "redacted" in redacted
+
+
+def test_api_health_gate_stops_early_when_startup_keeps_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import deploy
+
+    elapsed = [0.0]
+    probes: list[float] = []
+    repeated: list[str | None] = [None, None, "psycopg.OperationalError: failed"]
+
+    def unavailable(request: urllib.request.Request, _timeout: float) -> bytes:
+        raise urllib.error.URLError("HTTP Error 503: Service Unavailable")
+
+    def advance(seconds: float) -> None:
+        elapsed[0] += seconds
+
+    def startup_failure() -> str | None:
+        probes.append(elapsed[0])
+        return repeated[len(probes) - 1] if len(probes) <= len(repeated) else None
+
+    monkeypatch.setattr(deploy, "_open_without_proxy", unavailable)
+    monkeypatch.setattr("scripts.deploy.time.monotonic", lambda: elapsed[0])
+    monkeypatch.setattr("scripts.deploy.time.sleep", advance)
+    with pytest.raises(DeploymentError) as failure:
+        wait_for_health(
+            "https://api.example.test", timeout_seconds=1800, startup_failure=startup_failure,
+        )
+    assert "stopped early" in str(failure.value)
+    assert "psycopg.OperationalError: failed" in str(failure.value)
+    assert len(probes) == 3
+    assert all(later - earlier >= 60 for earlier, later in zip(probes, probes[1:], strict=False))
+    assert elapsed[0] < 300
+
+    elapsed[0] = 0.0
+    probes.clear()
+    repeated.clear()
+
+    def slow_start(request: urllib.request.Request, _timeout: float) -> bytes:
+        if elapsed[0] < 900:
+            raise TimeoutError("read timed out")
+        return b'{"status":"ok"}'
+
+    monkeypatch.setattr(deploy, "_open_without_proxy", slow_start)
+    assert wait_for_health(
+        "https://api.example.test", timeout_seconds=1800, startup_failure=startup_failure,
+    ) == '{"status":"ok"}'
+    assert len(probes) >= 10
+
+
+def test_startup_failure_probe_reads_newest_failure_log_with_one_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import deploy
+
+    commands: list[list[str]] = []
+    requests: list[tuple[str, str | None]] = []
+    dns = "psycopg.OperationalError: failed to resolve host 'pg': [Errno -3] Temporary failure"
+    listing = [
+        {"name": "2026_11_07_old_failure.log", "mtime": "2026-11-07T07:00:00Z"},
+        {"name": "2026_11_07_new_failure.log", "mtime": "2026-11-07T08:26:00Z"},
+        {"name": "../escape_failure.log", "mtime": "2026-11-07T09:00:00Z"},
+        {"name": "2026_11_07_later_success.log", "mtime": "2026-11-07T09:30:00Z"},
+    ]
+    log = _startup_log(*[(f"2026-11-07T08:0{minute}:00", dns) for minute in (1, 4, 7)])
+    listing_missing = [False]
+
+    class Runner:
+        def run_json(self, command: Sequence[str], **_: object) -> dict[str, str]:
+            commands.append(list(command))
+            return {"accessToken": "secret-token"}
+
+    def request(request: urllib.request.Request, _timeout: float) -> bytes:
+        requests.append((request.full_url, request.get_header("Authorization")))
+        if request.full_url.endswith("/StartupLogs/"):
+            if listing_missing[0]:
+                raise urllib.error.URLError("HTTP Error 404: Not Found")
+            return json.dumps(listing).encode()
+        return log.encode()
+
+    monkeypatch.setattr(deploy, "_open_without_proxy", request)
+    probe = deploy._startup_failure_probe(
+        Runner(),  # type: ignore[arg-type]
+        type("Inputs", (), {"subscription": "sub"})(),
+        "api-unit",
+        "2026-11-07T07:55:27",
+    )
+    assert probe() == dns
+    base = "https://api-unit.scm.azurewebsites.net/api/vfs/LogFiles/StartupLogs/"
+    assert requests == [
+        (base, "Bearer secret-token"),
+        (base + "2026_11_07_new_failure.log", "Bearer secret-token"),
+    ]
+    listing_missing[0] = True
+    assert probe() is None
+    assert len(commands) == 1 and "--subscription" in commands[0]
 
 
 def test_webapp_package_deployment_uses_entra_without_logging_token(
