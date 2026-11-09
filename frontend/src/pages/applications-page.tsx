@@ -395,6 +395,7 @@ function ApplicationOrganizationDialog({ application, onClose, onSaved }: {
       if (personSupported) queryClient.setQueryData<GatewayApplicationDetail>(finopsKeys.gatewayApplication(application.id),
         current => current ? { ...current, person_id: value.person_id ?? null, person_name: value.person_name ?? null } : current)
       void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
+      await queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplication(application.id), exact: true })
       onSaved(value.projected)
       onClose()
     },

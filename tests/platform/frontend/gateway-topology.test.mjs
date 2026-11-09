@@ -22,7 +22,7 @@ class ApiError extends Error {
 
 const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
 const { rolldown } = await import(frontendRequire.resolve("rolldown"))
-const { QueryClient } = frontendRequire("@tanstack/react-query")
+const { QueryClient, QueryObserver } = frontendRequire("@tanstack/react-query")
 const filterEntry = fileURLToPath(new URL("../../../frontend/src/lib/model-inventory-filters.ts", import.meta.url))
 const filterBundle = await rolldown({ input: filterEntry, platform: "node" })
 let modelFilters
@@ -52,6 +52,7 @@ runInNewContext(publicationCode, { exports: publicationExports, require: name =>
   ? frontendRequire(name) : new Proxy({}, { get: (_target, key) => key }) })
 const diagnosticCode = await compile("../../../frontend/src/components/model-management/runtime-diagnostic-dialog.tsx")
 const connectionCode = await compile("../../../frontend/src/components/model-management/connection-dialog.tsx")
+const applicationCode = await compile("../../../frontend/src/pages/applications-page.tsx", ["ApplicationOrganizationDialog", "ApplicationBudgetDialog"])
 const traceCode = await compile("../../../frontend/src/data-sources/apim/pages/dashboard-page.tsx")
 const mobileCode = await compile("../../../frontend/src/hooks/use-mobile.ts")
 const bootstrapCode = await compile("../../../frontend/src/lib/gateway-bootstrap.ts")
@@ -502,7 +503,7 @@ test("Gateway creation uses an idempotency header and bootstrap is never cacheab
   assert.deepEqual(JSON.parse(requests[1][1].body), { expires_in_hours: 24, endpoint_control_confirmed: true })
 })
 
-function componentHarness(exportName, props, { operation = null, queryData = {}, mutationPending = false, code = workspaceCode, api = {}, role = "owner", locale = "en-US", globals = {} } = {}) {
+function componentHarness(exportName, props, { operation = null, queryData = {}, mutationPending = false, code = workspaceCode, api = {}, role = "owner", locale = "en-US", globals = {}, client = null } = {}) {
   if (exportName === "ModelWorkspace") props = { checkingRuntimeIds: new Set(), availabilityByModel: new Map(), ...props }
   const slots = []
   let cursor = 0
@@ -513,7 +514,7 @@ function componentHarness(exportName, props, { operation = null, queryData = {},
   const queries = []
   const invalidations = []
   const queryWrites = []
-  const queryClient = { cancelQueries: async () => {}, setQueryData(...values) { queryWrites.push(values) }, getQueriesData() { return [] }, invalidateQueries(options) { invalidations.push(options.queryKey); return Promise.resolve() } }
+  const queryClient = client ?? { cancelQueries: async () => {}, setQueryData(...values) { queryWrites.push(values) }, getQueriesData() { return [] }, invalidateQueries(options) { invalidations.push(options.queryKey); return Promise.resolve() } }
   const imports = {
     react: {
       useId: () => "unit-gateway",
@@ -603,7 +604,8 @@ function componentHarness(exportName, props, { operation = null, queryData = {},
     "../providers/auth-provider": { useAuth: () => ({ user: { role } }) },
     "../data-sources/apim/api": { dataSource: api, ApiError },
     "../../api/client": { ApiError },
-    "../data-sources/apim/queries": { finopsQueries: {
+    "../data-sources/apim/queries": { ...queryHarness(), finopsQueries: {
+      entities: () => ({ queryKey: ["entities"] }),
       registry: () => ({ queryKey: ["registry"] }),
       gatewayApplications: () => ({ queryKey: ["applications"] }),
       gatewayReleases: () => ({ queryKey: ["releases"] }),
@@ -672,6 +674,49 @@ function queryHarness() {
   runInNewContext(queryCode, { exports, require: name => imports[name] ?? {} })
   return exports
 }
+
+test("APP-08: organization changes refresh audit and tag details without a page reload", async () => {
+  const { finopsKeys } = queryHarness()
+  for (const organizationId of ["", "organization-next"]) {
+    const application = { id: "application", organization_id: "organization-original", audit: Array.from({ length: 9 }, (_, index) => ({ id: `audit-${index}` })) }
+    const updated = { ...application, organization_id: organizationId || null,
+      tags: { team: "changed" }, audit: [...application.audit, { id: "organization-saved" }] }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const key = finopsKeys.gatewayApplication(application.id)
+    client.setQueryData(key, application)
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: async () => updated, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const view = componentHarness("ApplicationOrganizationDialog", { application, onClose() {}, onSaved() {} }, {
+        code: applicationCode, client,
+        queryData: { entities: { organizations: [{ id: "organization-next", name: "Next" }] } },
+        api: { updateGatewayApplicationOrganization: async () => ({ organization_id: updated.organization_id, projected: true }) },
+      })
+      view.find(node => node.type === "Select").props.onValueChange(organizationId)
+      view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+      await view.settle()
+      assert.equal(client.getQueryData(key).audit.length, 10)
+      assert.equal(client.getQueryData(key).tags.team, "changed")
+    } finally { unsubscribe(); client.clear() }
+  }
+})
+
+test("APP-08: budget saves retain the audit returned with the new detail", async () => {
+  const { finopsKeys } = queryHarness()
+  const application = { id: "application", budget: null, audit: [{ id: "before" }] }
+  const updated = { ...application, budget: { token_limit: 100000 }, audit: [...application.audit, { id: "budget-saved" }] }
+  const client = new QueryClient()
+  const key = finopsKeys.gatewayApplication(application.id)
+  client.setQueryData(key, application)
+  try {
+    const view = componentHarness("ApplicationBudgetDialog", { application, open: true, writeAvailable: true, onOpenChange() {} }, {
+      code: applicationCode, client, api: { updateGatewayApplicationBudget: async () => updated },
+    })
+    view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+    await view.settle()
+    assert.equal(client.getQueryData(key).audit.length, 2)
+  } finally { client.clear() }
+})
 
 const profiles = [{ id: "first", name: "First", implementation: "apim", enabled: true, is_default: true, base_url: "https://first.example.test" }]
 function topology(changes = {}) {
