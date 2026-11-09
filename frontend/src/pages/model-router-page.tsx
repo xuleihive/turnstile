@@ -244,7 +244,7 @@ function RouterNameDialog({
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
     <DialogContent className="registry-editor-dialog simple-model-dialog" finalFocus={false}>
       <form className="registry-editor simple-model-form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) onSubmit(name.trim(), description.trim()) }}>
-        <DialogHeader className="registry-editor-header"><DialogTitle>{mode === "duplicate" ? "复制路由器" : "编辑基础信息"}</DialogTitle><DialogDescription>{router.name}</DialogDescription></DialogHeader>
+        <DialogHeader className="registry-editor-header"><DialogTitle>{mode === "duplicate" ? "复制路由器" : "编辑基础信息"}</DialogTitle><DialogDescription data-no-localize>{router.name}</DialogDescription></DialogHeader>
         <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" disabled={busy} />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
         <div className="registry-editor-body simple-model-body">
           <label className="router-field"><span>名称</span><Input autoFocus maxLength={120} value={name} onChange={(event) => setName(event.target.value)} /></label>
@@ -484,7 +484,7 @@ function RouterAccessDialog({
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
     <DialogContent className="registry-editor-dialog router-access-dialog" finalFocus={false}>
       <div className="registry-editor router-access-editor">
-        <DialogHeader className="registry-editor-header"><DialogTitle>人员访问</DialogTitle><DialogDescription>{router.name} · 已发布 v{router.version}</DialogDescription></DialogHeader>
+        <DialogHeader className="registry-editor-header"><DialogTitle>人员访问</DialogTitle><DialogDescription><span data-no-localize>{router.name}</span> · 已发布 v{router.version}</DialogDescription></DialogHeader>
         <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" disabled={busy} />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
         <div className="registry-editor-body router-access-body">
           <div className="router-access-toolbar">
@@ -637,7 +637,7 @@ function RouterListPane({
       {matches.map((router) => <div className={`router-list-row ${router.id === selectedId ? "active" : ""}`} key={router.id}>
         <button type="button" className="router-list-main" onClick={() => onSelect(router.id)}>
           <span className="router-list-icon"><GitBranch size={15} /><i data-status={router.status} /></span>
-          <span className="router-list-copy"><b>{router.name}</b><small><span>{STATUS_LABELS[router.status]}</span>{router.version > 0 && <> · v{router.version}</>}{router.status === "published" && router.has_unpublished_changes && <> · <span>未发布</span></>} · <span data-no-localize>{relativeUpdatedAt(router.updated_at)}</span></small></span>
+          <span className="router-list-copy"><b data-no-localize>{router.name}</b><small><span>{STATUS_LABELS[router.status]}</span>{router.version > 0 && <> · v{router.version}</>}{router.status === "published" && router.has_unpublished_changes && <> · <span>未发布</span></>} · <span data-no-localize>{relativeUpdatedAt(router.updated_at)}</span></small></span>
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button type="button" variant="ghost" size="icon-sm" className="router-list-menu" aria-label={`${router.name} 操作`} title="更多操作" disabled={busy} />}><MoreHorizontal size={15} /></DropdownMenuTrigger>
@@ -695,7 +695,7 @@ function RouterEditor({
   const nativeFallback = value.definition.nodes.some((node) => node.fallback_on.length > 0)
   return <section className="router-editor-pane">
     <header className="router-editor-head">
-      <div className="router-editor-identity"><span><GitBranch size={18} /></span><div><div><h2>{value.name || "未命名路由器"}</h2><i data-status={router.status}>{STATUS_LABELS[router.status]}</i>{router.version > 0 && <em>v{router.version}</em>}{dirty && <strong>未保存</strong>}{!dirty && router.status === "published" && router.has_unpublished_changes && <strong>未发布</strong>}</div></div></div>
+      <div className="router-editor-identity"><span><GitBranch size={18} /></span><div><div><h2>{value.name ? <span data-no-localize>{value.name}</span> : "未命名路由器"}</h2><i data-status={router.status}>{STATUS_LABELS[router.status]}</i>{router.version > 0 && <em>v{router.version}</em>}{dirty && <strong>未保存</strong>}{!dirty && router.status === "published" && router.has_unpublished_changes && <strong>未发布</strong>}</div></div></div>
       <div className="router-editor-actions">
         <Button className="router-action-secondary" type="button" variant="outline" disabled={busy || !dirty} onClick={onSave}>{busy ? <RefreshCw className="spin" size={14} /> : <Save size={14} />}<span>保存草稿</span></Button>
         <Button className="router-action-secondary" type="button" variant="outline" disabled={busy} onClick={onValidate}><CheckCircle2 size={14} />校验</Button>

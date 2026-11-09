@@ -35,6 +35,16 @@ def test_model_router_is_an_apim_model_platform_workspace() -> None:
     assert "mock" not in page.lower()
 
 
+def test_model_router_user_names_are_not_localized() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-router-page.tsx").read_text(encoding="utf-8")
+
+    assert '<b data-no-localize>{router.name}</b>' in page
+    assert '<span data-no-localize>{value.name}</span>' in page
+    assert '<DialogDescription data-no-localize>{router.name}</DialogDescription>' in page
+    assert '<span data-no-localize>{router.name}</span> · 已发布' in page
+    assert ': "未命名路由器"}</h2>' in page
+
+
 def test_model_router_lifecycle_uses_the_real_typed_api() -> None:
     api = (FRONTEND_SOURCE / "data-sources/apim/api.ts").read_text(encoding="utf-8")
     queries = (
