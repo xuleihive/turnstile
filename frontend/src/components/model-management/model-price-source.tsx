@@ -143,7 +143,8 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     if (!found) return null
     return found.reference === reference
       ? found
-      : { ...found, reference: reference ?? found.reference }
+      : { ...found, reference: reference ?? found.reference,
+        entry_digest: found.entry_digests_by_reference?.[reference ?? found.reference] ?? found.entry_digest }
   }, [details, draft.priceReference, chosenModel, previewReference])
   // Sibling options for the same deployment are the regions worth choosing between; when a
   // deployment charges one figure everywhere there are no siblings and no question to ask.
@@ -592,7 +593,8 @@ function RegionStep({ peers, selected, busy, onChoose }: {
           const next = peers.find((option) =>
             option.reference === picked
             || Object.values(option.references_by_region ?? {}).includes(picked))
-          if (next) onChoose({ ...next, reference: picked })
+          if (next) onChoose({ ...next, reference: picked,
+            entry_digest: next.entry_digests_by_reference?.[picked] ?? next.entry_digest })
         }}>
         <SelectTrigger className="registry-select-trigger" aria-label="区域">
           <SelectValue><span data-no-localize>{selectedRegion}</span></SelectValue>

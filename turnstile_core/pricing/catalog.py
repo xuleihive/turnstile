@@ -251,6 +251,13 @@ class CatalogOption:
     region_required: bool
     references_by_region: Mapping[str, str] = field(default_factory=dict)
 
+    @property
+    def entry_digests_by_reference(self) -> dict[str, str]:
+        return {
+            reference: replace(self.entry, reference=reference).digest
+            for reference in self.references_by_region.values()
+        }
+
 
 @dataclass(frozen=True)
 class CatalogOptions:
@@ -635,7 +642,7 @@ class AzureRetailCatalog:
             if anchor == "*" and not option.region_required:
                 return option.entry
             if anchor in option.regions:
-                return option.entry
+                return replace(option.entry, reference=reference)
         return None
 
     # -- plumbing ----------------------------------------------------------------------------

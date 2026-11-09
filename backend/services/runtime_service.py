@@ -2544,6 +2544,7 @@ class ModelRuntimeService:
                     deployment=option.deployment,
                     regions=list(option.regions),
                     references_by_region=dict(option.references_by_region),
+                    entry_digests_by_reference=option.entry_digests_by_reference,
                     region_required=option.region_required,
                     input_per_million=option.entry.input_per_million,
                     output_per_million=option.entry.output_per_million,
@@ -2591,6 +2592,10 @@ class ModelRuntimeService:
         unchanged = 0
         for update in summary.updates:
             model = by_id[update.model_id]
+            discount_factor = (
+                1 if model.effective_discount_percent is None
+                else model.effective_discount_percent / 100
+            )
             current_prices = PendingListPrice(**{
                 bucket: getattr(model, column)
                 for bucket, column in zip(columns, charged_columns, strict=True)
@@ -2599,7 +2604,10 @@ class ModelRuntimeService:
                 bucket: getattr(update, column)
                 for bucket, column in zip(columns, charged_columns, strict=True)
             }) if update.writes and update.context_price_tiers is None else (
-                PendingListPrice(**update.pending_list_price) if update.pending_list_price else None
+                PendingListPrice(**{
+                    bucket: None if price is None else round(price * discount_factor, 8)
+                    for bucket, price in update.pending_list_price.items()
+                }) if update.pending_list_price else None
             )
             same = update.writes and (
                 current_prices == proposed if proposed is not None else

@@ -238,6 +238,43 @@ def test_confirmed_preview_uses_existing_write_and_review_rules() -> None:
     assert review.details[0].proposed_prices.input == 9
 
 
+@pytest.mark.parametrize("discount", [None, 80])
+@pytest.mark.parametrize("cache_write", [None, 1.8])
+def test_review_preview_compares_discounted_prices_without_accepting_list_changes(
+    discount: int | None, cache_write: float | None,
+) -> None:
+    runtime, _, model, catalog = service()
+    factor = 1 if discount is None else discount / 100
+    model.update(
+        price_discount_percent=discount,
+        input_cost_per_million=2 * factor,
+        output_cost_per_million=8 * factor,
+        cached_cost_per_million=0.2 * factor,
+        cache_write_cost_per_million=None if cache_write is None else 0.4 * factor,
+        list_cached_cost_per_million=0.2,
+        list_cache_write_cost_per_million=None if cache_write is None else 0.4,
+    )
+    costs = {"input": 9, "output": 80, "cache_read": 0.9}
+    if cache_write is not None:
+        costs["cache_write"] = cache_write
+    catalog._fetch = lambda: document(costs)
+    before = deepcopy(model)
+    preview = runtime.sync_prices([model["id"]], dry_run=True)
+    assert preview.review_needed == 1 and model == before
+    proposed = preview.details[0].proposed_prices
+    assert proposed is not None
+    raw = {"input": 9, "output": 80, "cached": 0.9, "cache_write": cache_write}
+    for bucket, price in raw.items():
+        actual = getattr(proposed, bucket)
+        assert actual is None if price is None else actual == pytest.approx(price * factor)
+    runtime.sync_prices([model["id"]], confirmation_digest=preview.confirmation_digest)
+    assert model["price_sync_status"] == "review_needed"
+    assert model["pending_list_price"] == raw
+    for key in before:
+        if key.startswith("list_") or key.endswith("_cost_per_million"):
+            assert model[key] == before[key]
+
+
 def test_save_refuses_a_quote_that_changed_after_selection() -> None:
     runtime, _, model, catalog = service()
     entry = catalog.entries()[0]
@@ -451,6 +488,67 @@ def test_repeated_public_quote_reuses_publication_after_catalog_refresh(
     repeated = publisher.publish(write, "owner@example.test")
     assert repeated.id == first.id
     assert repeated.desired_spec_sha256 == first.desired_spec_sha256
+
+
+@pytest.mark.parametrize("postgres", [False, True])
+def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
+    pricing_postgres: tuple[str, Event], postgres: bool,
+) -> None:
+    import hashlib
+    import json
+
+    from tests.backend.model_platform.control_plane_support import foundry_publication
+    from tests.platform.pricing.test_price_catalog import GPT_41, StubAzure
+    from turnstile_core.domain.runtime_models import ProviderTarget
+    from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
+    from turnstile_core.services.control_plane import (
+        ControlPlaneConflictError,
+        GatewayControlPlaneService,
+    )
+
+    repository = PostgreSqlOpsDbProxy(pricing_postgres[0]) if postgres else InMemoryRepository()
+    try:
+        registry = repository.registry()
+        publisher = GatewayControlPlaneService(
+            repository, price_catalog=CompositeCatalog([StubAzure(GPT_41)]),
+            apim_principal_id="00000000-0000-0000-0000-000000000705",
+            target_registry_enabled=False,
+        )
+        write = foundry_publication("legacy-quote-retry")
+        write.gateway_profile_id = next(
+            row["id"] for row in registry["gateways"] if row["implementation"] == "apim"
+        )
+        provider = next((row for row in registry["providers"]
+                         if row["brand_key"] == "microsoft_foundry"), None)
+        write.provider = ProviderTarget(existing_id=provider["id"]) if provider else ProviderTarget(
+            template="microsoft_foundry",
+        )
+        write.model.price_source = PriceSource.AZURE_RETAIL
+        write.model.price_reference = "azure_retail:Azure OpenAI:gpt 4.1:Global:*"
+        prepared = publisher._prepare_model_publication(write, None)
+        legacy_payload, _ = publisher._release_payload(prepared.spec)
+        for binding in legacy_payload["bindings"]:
+            binding["model"].pop("price_source_snapshot", None)
+        legacy_digest = hashlib.sha256(json.dumps(
+            legacy_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        original = repository.create_gateway_publication(
+            write.gateway_profile_id, legacy_payload, legacy_digest, "model_add", "legacy-owner",
+        )
+        before = deepcopy(repository.list_gateway_publications())
+        repeated = publisher.publish(write, "owner")
+        assert repeated.id == original["id"]
+        assert repeated.desired_spec_sha256 == legacy_digest
+        assert repository.list_gateway_publications() == before
+        for field, value in (("context_window", 123456), ("price_discount_percent", 80)):
+            changed = write.model_copy(deep=True)
+            setattr(changed.model, field, value)
+            with pytest.raises(ControlPlaneConflictError):
+                publisher.publish(changed, "owner")
+        assert repository.list_gateway_publications() == before
+    finally:
+        if isinstance(repository, PostgreSqlOpsDbProxy):
+            repository.close()
 
 
 def test_stored_catalog_model_ignores_catalog_observation_metadata() -> None:

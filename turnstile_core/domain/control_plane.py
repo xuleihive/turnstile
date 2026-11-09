@@ -426,7 +426,9 @@ class ModelCreateTarget(StrictModel):
 
     price_source: PriceSource = PriceSource.MANUAL
 
-    price_entry_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    price_entry_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None,
+    )
 
     price_reference: str | None = Field(default=None, max_length=1000)
 

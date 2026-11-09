@@ -3102,6 +3102,11 @@ schemas:
           type: string
         type: object
         title: References By Region
+      entry_digests_by_reference:
+        additionalProperties:
+          type: string
+        type: object
+        title: Entry Digests By Reference
       region_required:
         type: boolean
         title: Region Required

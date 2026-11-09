@@ -31,6 +31,7 @@ from .repository_support import (
     _model_removal_manifest,
     _program_migration_manifest,
     _program_migration_retry,
+    _publication_idempotency_digests,
     _require_program_migration_activation,
     _route_reconcile_credential_read_denied,
     _route_reconcile_preparation_failed,
@@ -211,14 +212,20 @@ class PostgreSqlPublicationRepositoryMixin:
                     manifest = validate_manifest(
                         previous, desired_spec, desired_spec_sha256, initial_manifest,
                     )
-            existing = connection.execute(
-                """SELECT * FROM gateway_publication
+            existing = None
+            for digest in _publication_idempotency_digests(
+                desired_spec, desired_spec_sha256, publication_kind, initial_manifest,
+            ):
+                existing = connection.execute(
+                    """SELECT * FROM gateway_publication
                                      WHERE gateway_profile_id = %s AND desired_spec_sha256 = %s
                                          AND status NOT IN ('superseded', 'rolled_back')
                                      ORDER BY generation DESC
                                      LIMIT 1""",
-                (gateway_profile_id, desired_spec_sha256),
-            ).fetchone()
+                    (gateway_profile_id, digest),
+                ).fetchone()
+                if existing is not None:
+                    break
             if existing is not None and model_addition and existing["status"] == "active":
                 removed = connection.execute(
                     """SELECT id FROM gateway_publication

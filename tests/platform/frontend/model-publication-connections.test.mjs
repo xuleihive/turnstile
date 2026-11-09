@@ -1178,9 +1178,12 @@ test("public quote prefills context without overwriting user edits or existing l
     display_name: "Existing", context_window: 32000, allowed_roles: [], capabilities: [],
   })
   assert.equal(applyCatalogOption(existing, "models_dev", quote, null).contextWindow, "32000")
-  for (const context_window of [0, -1, "128000", Infinity]) {
-    const invalid = { ...quote, source_metadata: { context_window } }
+  for (const context_window of [undefined, null, 0, -1, "128000", Infinity]) {
+    const invalid = { ...quote, reference: "models_dev:openai:other-model", source_metadata: { context_window } }
     assert.equal(applyCatalogOption(createModelPriceDraft(), "models_dev", invalid, null).contextWindow, "")
+    assert.equal(applyCatalogOption(initial, "models_dev", invalid, null).contextWindow, "")
+    assert.equal(applyCatalogOption(edited, "models_dev", invalid, null).contextWindow, "64000")
+    assert.equal(applyCatalogOption(existing, "models_dev", invalid, null).contextWindow, "32000")
   }
 })
 
@@ -1229,16 +1232,19 @@ test("manual price selection invalidates a queued automatic match", () => {
   }
 })
 
-test("price preview confirmation allows unchanged quotes to recover source status", () => {
+test("price preview confirmation allows catalog status updates but skips manual-only batches", () => {
   const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-sync-dialog.tsx", import.meta.url), "utf8")
   const condition = source.match(/disabled=\{(busy \|\| !result\.confirmation_digest[^}]+)\}/)
   assert.ok(condition)
   for (const [result, busy, expected] of [
-    [{ confirmation_digest: "accepted", updated: 0, unchanged: 1 }, false, false],
-    [{ confirmation_digest: "accepted", updated: 1, unchanged: 0 }, false, false],
-    [{ confirmation_digest: "accepted", updated: 0, unchanged: 0 }, false, true],
-    [{ confirmation_digest: null, updated: 0, unchanged: 1 }, false, true],
-    [{ confirmation_digest: "accepted", updated: 0, unchanged: 1 }, true, true],
+    [{ confirmation_digest: "accepted", considered: 1, updated: 0, unchanged: 1 }, false, false],
+    [{ confirmation_digest: "accepted", considered: 1, updated: 1, unchanged: 0 }, false, false],
+    [{ confirmation_digest: "accepted", considered: 2, updated: 0, unchanged: 0, review_needed: 2 }, false, false],
+    [{ confirmation_digest: "accepted", considered: 1, updated: 0, unchanged: 0, stale: 1 }, false, false],
+    [{ confirmation_digest: "accepted", considered: 1, updated: 0, unchanged: 0, unmapped: 1 }, false, false],
+    [{ confirmation_digest: "accepted", considered: 0, updated: 0, unchanged: 0, skipped_manual: 1 }, false, true],
+    [{ confirmation_digest: null, considered: 1, updated: 0, unchanged: 1 }, false, true],
+    [{ confirmation_digest: "accepted", considered: 1, updated: 0, unchanged: 1 }, true, true],
   ]) {
     assert.equal(runInNewContext(condition[1], { result, busy }), expected)
   }

@@ -547,6 +547,28 @@ def test_every_region_in_a_group_keeps_its_own_reference() -> None:
             assert reference.endswith(f":{region}")
 
 
+def test_grouped_region_lookup_keeps_the_selected_quote_identity() -> None:
+    rows = [
+        meter(name, price, region=region)
+        for region, factor in (("eastus", 1), ("westus", 1), ("northeurope", 2))
+        for name, price in (
+            ("gpt 4.1 Inp regnl Tokens", 0.002 * factor),
+            ("gpt 4.1 Outp regnl Tokens", 0.008 * factor),
+        )
+    ]
+    catalog = StubAzure(rows)
+    grouped = catalog.options(GPT_41_MODEL).options[0]
+    assert grouped.region_required and grouped.regions == ("eastus", "westus")
+    reference = grouped.references_by_region["westus"]
+    selected = catalog.entry(reference)
+    assert selected is not None
+    assert selected.reference == reference
+    assert selected.provenance["reference"] == reference
+    assert selected.digest != grouped.entry.digest
+    assert selected.input_per_million == grouped.entry.input_per_million
+    assert selected.output_per_million == grouped.entry.output_per_million
+
+
 def test_a_region_reference_survives_the_group_being_split_by_price() -> None:
     """The day the vendor prices two grouped regions apart, each stored reference has to resolve
     to its own region -- not to whichever one sorted first while they agreed."""

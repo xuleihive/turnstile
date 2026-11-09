@@ -14,6 +14,26 @@ from uuid import UUID
 from ..domain.model_router_v3 import RouterSpecV3
 
 
+def _publication_idempotency_digests(
+    desired_spec: Mapping[str, Any], desired_spec_sha256: str, publication_kind: str,
+    initial_manifest: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    if publication_kind != "model_add":
+        return (desired_spec_sha256,)
+    legacy = deepcopy(dict(desired_spec))
+    snapshots = [binding["model"].pop("price_source_snapshot", None)
+                 for binding in legacy["bindings"]]
+    if not any(snapshot is not None for snapshot in snapshots):
+        return (desired_spec_sha256,)
+    document = legacy if initial_manifest is None else {
+        **initial_manifest, "desired_spec": legacy,
+    }
+    digest = hashlib.sha256(json.dumps(
+        document, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return desired_spec_sha256, digest
+
+
 def _managed_model_request_revision(
     publication: Mapping[str, Any] | None, effective_id: UUID | None,
     config: Mapping[str, Any],

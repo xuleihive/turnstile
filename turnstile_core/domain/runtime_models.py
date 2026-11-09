@@ -349,6 +349,7 @@ class PriceCatalogOption(StrictModel):
     # Each region's own reference. The group is how the choice is shown; what gets stored is the
     # region the person picked, so a later price split follows their region and not the first one.
     references_by_region: dict[str, str] = Field(default_factory=dict)
+    entry_digests_by_reference: dict[str, str] = Field(default_factory=dict)
     region_required: bool = False
     input_per_million: float | None = None
     output_per_million: float | None = None

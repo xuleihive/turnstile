@@ -14,6 +14,7 @@ from tests.platform.api.test_model_management_api import (
 )
 from tests.platform.api.test_model_management_api import publication_api as publication_api
 from tests.platform.pricing.test_models_dev import document
+from tests.platform.pricing.test_price_catalog import GPT_41_MODEL, StubAzure, meter
 from tests.platform.pricing.test_price_sync import context_model
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.pricing.catalog import CompositeCatalog
@@ -40,6 +41,40 @@ def test_source_filter_returns_quote_digest_without_other_sources(
     quote = options.json()["options"][0]
     assert len(quote["entry_digest"]) == 64
     assert quote["source_metadata"]["provider_id"] == "openai"
+
+
+@pytest.mark.parametrize("role", ["owner", "member"])
+def test_price_options_expose_each_selected_region_digest_on_the_real_route(
+    publication_api: InMemoryRepository,
+    management_runtime_service: ModelRuntimeService,
+    role: str,
+) -> None:
+    rows = [
+        meter(name, price, region=region)
+        for region, factor in (("eastus", 1), ("westus", 1), ("northeurope", 2))
+        for name, price in (
+            ("gpt 4.1 Inp regnl Tokens", 0.002 * factor),
+            ("gpt 4.1 Outp regnl Tokens", 0.008 * factor),
+        )
+    ]
+    catalog = StubAzure(rows)
+    management_runtime_service._price_catalog = CompositeCatalog([catalog])
+    identity = app.dependency_overrides[require_authenticated_session]()
+    app.dependency_overrides[require_authenticated_session] = lambda: replace(identity, role=role)
+    try:
+        response = client.get(
+            "/api/v1/model-management/price-catalog/options",
+            params={"model": GPT_41_MODEL.key},
+        )
+    finally:
+        app.dependency_overrides[require_authenticated_session] = lambda: identity
+    assert response.status_code == 200
+    grouped = next(option for option in response.json()["options"] if "westus" in option["regions"])
+    for reference in grouped["references_by_region"].values():
+        entry = catalog.entry(reference)
+        assert entry is not None and entry.reference == reference
+        assert grouped["entry_digests_by_reference"][reference] == entry.digest
+    assert len(set(grouped["entry_digests_by_reference"].values())) == 2
 
 
 def test_price_match_is_read_only_uses_the_serving_provider_and_never_implicitly_calls_ai(

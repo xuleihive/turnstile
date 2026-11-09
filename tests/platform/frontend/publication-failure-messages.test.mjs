@@ -22,7 +22,7 @@ async function compile(path, additions = "") {
 
 const dialogCode = await compile("../../../frontend/src/components/model-management/model-publication-dialog.tsx")
 const priceSourceCode = await compile("../../../frontend/src/components/model-management/model-price-source.tsx",
-  "\nexports.PriceArithmetic = PriceArithmetic;\nexports.ModelPriceText = ModelPriceText;\n")
+  "\nexports.PriceArithmetic = PriceArithmetic;\nexports.ModelPriceText = ModelPriceText;\nexports.RegionStep = RegionStep;\n")
 const releaseCode = await compile("../../../frontend/src/pages/gateway-releases-page.tsx",
   "\nexports.failureNotice = PublicationFailureNotice;\n")
 const localeEntry = fileURLToPath(new URL("../../../frontend/src/locales/provider.tsx", import.meta.url))
@@ -45,6 +45,34 @@ function text(value) {
   if (value && typeof value === "object") return text(typeof value.type === "function" ? value.type(value.props) : value.props?.children)
   return value == null || typeof value === "boolean" ? "" : String(value)
 }
+
+test("the actual region picker submits the chosen region quote digest", () => {
+  const source = {}
+  runInNewContext(priceSourceCode, { exports: source, require: name =>
+    name === "react/jsx-runtime" ? frontendRequire(name) : primitives })
+  const east = "azure_retail:Azure OpenAI:gpt-example:Regional:eastus"
+  const west = "azure_retail:Azure OpenAI:gpt-example:Regional:westus"
+  const quote = {
+    reference: east, deployment: "Regional", regions: ["eastus", "westus"],
+    references_by_region: { eastus: east, westus: west }, region_required: true,
+    entry_digest: "e".repeat(64),
+    entry_digests_by_reference: { [east]: "e".repeat(64), [west]: "f".repeat(64) },
+    input_per_million: 2, output_per_million: 8,
+    cached_per_million: 0.2, cache_write_per_million: null,
+  }
+  const selected = []
+  const tree = source.RegionStep({ peers: [quote], selected: quote, busy: false,
+    onChoose: option => selected.push(option) })
+  const control = nodes(tree).find(node => node.props?.name === "price-region")
+  assert.ok(control)
+  control.props.onValueChange(west)
+  assert.equal(selected.length, 1)
+  const draft = pricing.applyCatalogOption(pricing.createModelPriceDraft(), "azure_retail", selected[0], null)
+  assert.equal(draft.priceReference, west)
+  assert.equal(draft.priceEntryDigest, "f".repeat(64))
+  assert.equal(quote.reference, east)
+  assert.equal(quote.entry_digest, "e".repeat(64))
+})
 
 test("model price review reasons are translated as complete messages without separator prefixes", async () => {
   const source = {}

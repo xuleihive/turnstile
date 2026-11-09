@@ -114,6 +114,50 @@ def test_multi_target_service_binds_stable_identity_and_canonical_manual_prices(
     assert service.multi_target_rollout(rollout.id)[0].status == "partial"
 
 
+def test_omitted_quote_digest_preserves_the_pre_pricing_rollout_identity() -> None:
+    repository, children = rollout_fixture()
+    service = GatewayControlPlaneService(repository, TEST_CIPHER, multi_target_rollout_enabled=True)
+    write = multi_request([child["gateway_profile_id"] for child in children])
+    rollout, publications = service.publish_multi_target(write, "owner")
+    assert rollout.id == UUID("dae43f60-b87d-5367-9a4c-efe9898fe1fe")
+    assert rollout.logical_model_id == UUID("26598bf1-851a-5b47-841b-b99ec353ef1a")
+    repeated, _ = service.publish_multi_target(write, "another-owner")
+    assert repeated.id == rollout.id and len(publications) == 2
+    assert len(repository.gateway_publications) == 2
+
+
+def test_catalog_rollout_inherits_provenance_before_either_child_activates() -> None:
+    from tests.platform.pricing.test_models_dev import document
+    from turnstile_core.pricing.models_dev import ModelsDevCatalog
+
+    repository, children = rollout_fixture()
+    adapter = ModelsDevCatalog(fetch=document)
+    entry = adapter.entries()[0]
+    write = multi_request([child["gateway_profile_id"] for child in children])
+    canonical = min(write.children, key=lambda child: str(child.publication.gateway_profile_id))
+    canonical.publication.model.price_source = PriceSource.MODELS_DEV
+    canonical.publication.model.price_reference = entry.reference
+    canonical.publication.model.price_entry_digest = entry.digest
+    service = GatewayControlPlaneService(
+        repository, TEST_CIPHER, price_catalog=CompositeCatalog([adapter]),
+        multi_target_rollout_enabled=True,
+    )
+    _, publications = service.publish_multi_target(write, "owner")
+    models = [publication.desired_spec.bindings[-1].model for publication in publications]
+    snapshot = models[0].price_source_snapshot
+    assert snapshot is not None
+    assert snapshot["entry_digest"] == entry.digest
+    assert snapshot["reference"] == entry.reference
+    assert all(model.price_source_snapshot == snapshot for model in models)
+    for _publication in publications:
+        assert repository.claim_gateway_publication("unit-worker", 180) is not None
+    promote_and_activate(repository, publications[-1].id)
+    accepted = deepcopy(repository.models[0])
+    assert accepted["price_source_snapshot"] == snapshot
+    promote_and_activate(repository, publications[0].id)
+    assert repository.models == [accepted]
+
+
 def test_multi_target_canonical_prices_include_complete_catalog_tiers_and_discounts() -> None:
     repository, children = rollout_fixture()
     catalog = MagicMock(spec=CompositeCatalog)

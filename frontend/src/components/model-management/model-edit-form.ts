@@ -393,7 +393,6 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
     value === null ? "" : discountedRate(value, effectiveDiscountPercent).toString()
   const context = option.source_metadata?.context_window
   const fillContext = source === "models_dev" && !draft.contextWindowEdited
-    && typeof context === "number" && Number.isSafeInteger(context) && context > 0
   return {
     ...resetContextPriceRule(draft),
     priceSource: source,
@@ -405,7 +404,10 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
     outputPrice: rate(option.output_per_million),
     cacheReadPrice: rate(option.cached_per_million),
     cacheWritePrice: rate(option.cache_write_per_million),
-    ...(fillContext ? { contextWindow: String(context) } : {}),
+    ...(fillContext ? {
+      contextWindow: typeof context === "number" && Number.isSafeInteger(context) && context > 0
+        ? String(context) : "",
+    } : {}),
   }
 }
 

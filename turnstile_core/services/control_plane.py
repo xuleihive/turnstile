@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -3859,6 +3860,7 @@ class GatewayControlPlaneService:
                 "price_source": canonical.price_source,
                 "price_reference": canonical.price_reference,
                 "price_discount_percent": canonical.price_discount_percent,
+                "price_source_snapshot": deepcopy(canonical.price_source_snapshot),
                 "context_price_references": list(canonical.context_price_references),
                 "context_price_rule": canonical.context_price_rule,
                 "context_price_tiers": [

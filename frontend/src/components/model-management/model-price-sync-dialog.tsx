@@ -161,7 +161,7 @@ export function ModelPriceSyncDialog({ onComplete }: { onComplete?: (registry: M
         <DialogFooter className="registry-editor-footer price-sync-footer">
           <span className="price-sync-legend"><span>当前单价</span><ArrowRight size={12} aria-hidden="true" /><span>拟采用单价</span></span>
           <Button type="button" variant="outline" disabled={busy} onClick={() => void execute()}><RefreshCw size={14} />重新预览</Button>
-          {result?.dry_run && <Button type="button" disabled={busy || !result.confirmation_digest || result.updated + (result.unchanged ?? 0) === 0}
+          {result?.dry_run && <Button type="button" disabled={busy || !result.confirmation_digest || result.considered === 0}
             onClick={() => void execute(true)}><Check size={14} />确认同步</Button>}
         </DialogFooter>
       </DialogContent>
