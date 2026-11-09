@@ -13,7 +13,7 @@
 <p align="center"><strong>通过一个自托管控制平面统一治理 AI 访问、支出与运营。</strong></p>
 
 <p align="center">
-   <a href="https://github.com/xuleihive/turnstile/releases/tag/v1.4.1"><img alt="Turnstile v1.4.1 版本" src="https://img.shields.io/badge/release-v1.4.1-2f6fdd.svg"></a>
+   <a href="https://github.com/xuleihive/turnstile/releases/tag/v1.4.2"><img alt="Turnstile v1.4.2 版本" src="https://img.shields.io/badge/release-v1.4.2-2f6fdd.svg"></a>
    <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-2f6fdd.svg"></a>
    <a href="#前置条件"><img alt="Python 3.11 或更高版本" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white"></a>
    <a href="#前置条件"><img alt="Node.js 20.19.x 或 22.12 及更高版本" src="https://img.shields.io/badge/Node.js-20.19.x%20%7C%2022.12%2B-339933?logo=node.js&amp;logoColor=white"></a>
@@ -32,7 +32,7 @@
 Turnstile 是一个用于治理 AI 模型访问的自托管控制平面。它整合了 Azure API Management 网关、Token 与成本遥测、预算、应用访问、模型接入、发布控制和运维 Web 控制台。
 
 > [!NOTE]
-> **Turnstile v1.4.1** 是当前公开版本。版本历史和发行细节见[官网文档](https://turn-stile.com/docs)及 [GitHub Releases](https://github.com/xuleihive/turnstile/releases/tag/v1.4.1)。
+> **Turnstile v1.4.2** 是当前公开版本。版本历史和发行细节见[官网文档](https://turn-stile.com/docs)及 [GitHub Releases](https://github.com/xuleihive/turnstile/releases/tag/v1.4.2)。
 
 > [!IMPORTANT]
 > 本仓库包含的基础设施模板只部署 Turnstile 平台，不会创建 Azure AI Foundry 项目、部署提供商模型，也不会预置客户连接和模型。平台运行后，运维人员需要连接自己的 Foundry 或其他兼容提供商资源。
@@ -174,7 +174,7 @@ git diff --check
 
 Bicep 模板会创建 PostgreSQL、Event Hubs、Storage、Key Vault、Application Insights、Web App、Functions 和 APIM 集成等 Turnstile 平台资源，但不会创建 Azure AI Foundry 项目或提供商模型部署。
 
-对于 **Turnstile v1.4.1**，请先选择对应路径：
+对于 **Turnstile v1.4.2**，请先选择对应路径：
 
 - **升级已有安装：**核对[基础设施与协议升级要求](docs/deployment.md#prepare-for-v14)。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需应用待执行迁移和必要的基础设施配置。
 - **完全从零安装：**按照官网[部署指南](https://turn-stile.com/docs/deployment)逐步操作（仓库参考：[全新部署指南](docs/deployment.md#deploy-v11-from-zero)）。使用独立前缀和新状态，默认新建 StandardV2 APIM；提供商模型与凭据需要另行准备。
