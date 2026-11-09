@@ -2541,7 +2541,10 @@ def test_arm_client_inspects_recorded_release_dependencies(
     ) is (failure == "mismatched_named_value")
 
 
-def test_gc_plan_protects_policy_and_pool_references() -> None:
+@pytest.mark.parametrize(
+    "failed_manifest_field", [None, "route_preparation", "route_dependencies", "route_rollback"],
+)
+def test_gc_plan_protects_policy_and_pool_references(failed_manifest_field: str | None) -> None:
     release, _ = _active_bedrock_release()
     assert release.apim_revision is not None
     current = release.model_copy(
@@ -2756,11 +2759,18 @@ def test_gc_plan_protects_policy_and_pool_references() -> None:
         StubTokenProvider(),
         httpx.Client(transport=httpx.MockTransport(handler)),
     )
+    releases = [expired, current, product_linked]
+    if failed_manifest_field is not None:
+        releases.append(release.model_copy(update={
+            "id": UUID("f0000000-0000-4000-8000-000000000004"),
+            "status": "failed", "apim_revision": None, "policy_sha256": None,
+            "resource_manifest": {failed_manifest_field: {}},
+        }))
     evidence = client.plan_release_garbage_collection(
-        [expired, current, product_linked], {str(current.id)}
+        releases, {str(current.id)}
     )
     repeated = client.plan_release_garbage_collection(
-        [expired, current, product_linked], {str(current.id)}
+        releases, {str(current.id)}
     )
     candidates = {
         (value["resource_type"], value["resource_id"])
@@ -2778,6 +2788,25 @@ def test_gc_plan_protects_policy_and_pool_references() -> None:
     assert ("named_value", "named-value-protected") not in candidates
     assert ("named_value", "backend-named-value") not in candidates
     assert ("api_revision", "product-protected-revision") not in candidates
+
+
+@pytest.mark.parametrize(
+    "manifest_field", ["fixed_route_program", "fixed_route_snapshot", "route_configuration"],
+)
+def test_gc_plan_requires_installed_route_evidence(manifest_field: str) -> None:
+    release, _ = _active_bedrock_release()
+    release = release.model_copy(update={
+        "status": "failed", "resource_manifest": {manifest_field: {}},
+    })
+    client = AzureApimPublisherClient(
+        publisher_settings(), StubTokenProvider(),
+        httpx.Client(transport=httpx.MockTransport(
+            lambda request: pytest.fail("Incomplete route evidence must fail before APIM reads"),
+        )),
+    )
+
+    with pytest.raises(PolicyCompilationError, match="complete confirmed configuration evidence"):
+        client.plan_release_garbage_collection([release], {str(release.id)})
 
 
 def test_gc_plan_rejects_pagination_outside_the_configured_apim_service() -> None:

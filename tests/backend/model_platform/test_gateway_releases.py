@@ -1449,6 +1449,49 @@ def test_stale_release_operation_lease_cannot_transition() -> None:
     assert current["status"] == "validating_dependencies"
 
 
+@pytest.mark.parametrize(
+    "manifest_field", ["route_preparation", "route_dependencies", "route_rollback"],
+)
+def test_gc_operation_ignores_failed_uninstalled_route_record(manifest_field: str) -> None:
+    repository, service, client, first, _ = _two_active_releases()
+    failed = repository.get_gateway_publication(first.id)
+    assert failed is not None
+    failed.update({
+        "status": "failed", "apim_revision": None, "policy_sha256": None,
+        "resource_manifest": {manifest_field: {}},
+    })
+    before = deepcopy(failed)
+    accepted = service.request_gc_plan(APIM_ID, "owner@example.com")
+    worker = GatewayReleaseOperationWorker(repository, client, parent_policy=client.policy)
+
+    assert worker.run_once("release-worker") is not None
+    completed = worker.run_once("release-worker")
+
+    assert completed is not None and completed.id == accepted.operation.id
+    assert completed.status == "succeeded"
+    assert completed.gc_plan is not None
+    assert completed.checkpoint == {"dry_run_only": True}
+    assert repository.get_gateway_publication(first.id) == before
+
+
+@pytest.mark.parametrize(
+    "manifest_field", ["fixed_route_program", "fixed_route_snapshot", "route_configuration"],
+)
+def test_gc_operation_rejects_incomplete_installed_route_record(manifest_field: str) -> None:
+    repository, service, client, first, _ = _two_active_releases()
+    failed = repository.get_gateway_publication(first.id)
+    assert failed is not None
+    failed.update({"status": "failed", "resource_manifest": {manifest_field: {}}})
+    service.request_gc_plan(APIM_ID, "owner@example.com")
+    worker = GatewayReleaseOperationWorker(repository, client, parent_policy=client.policy)
+
+    assert worker.run_once("release-worker") is not None
+    completed = worker.run_once("release-worker")
+
+    assert completed is not None and completed.status == "failed"
+    assert completed.gc_plan is None
+
+
 def test_gc_operation_is_retention_aware_dry_run_only() -> None:
     repository, _, client, first, _ = _two_active_releases()
     policy = GatewayReleaseRetentionPolicy(

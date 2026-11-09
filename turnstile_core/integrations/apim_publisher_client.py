@@ -3239,10 +3239,13 @@ class AzureApimPublisherClient(AzureSelfHostedGatewayManagementMixin):
         fixed_revision_ids: set[str] = set()
         fixed_configurations: list[tuple[str, str | None, str | None]] = []
         for release in releases:
-            if not any(field in release.resource_manifest for field in (
+            requires_fixed_evidence = any(field in release.resource_manifest for field in (
                 "fixed_route_program", "route_configuration", "fixed_route_snapshot",
-                "route_preparation", "route_dependencies", "route_rollback",
-            )):
+            )) or (release.status != "failed" and any(
+                field in release.resource_manifest
+                for field in ("route_preparation", "route_dependencies", "route_rollback")
+            ))
+            if not requires_fixed_evidence:
                 continue
             dependencies = (fixed_dependencies or {}).get(str(release.id))
             if (
