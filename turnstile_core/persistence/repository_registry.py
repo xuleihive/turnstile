@@ -83,6 +83,7 @@ class PostgreSqlRegistryRepositoryMixin:
                                     -- backfill.
                                     COALESCE(price.price_source, 'manual') AS price_source,
                                     price.price_reference,
+                                    price.price_source_snapshot,
                                     price.list_input_cost_per_million,
                                     price.list_output_cost_per_million,
                                     price.list_cached_cost_per_million,
@@ -572,6 +573,7 @@ class PostgreSqlRegistryRepositoryMixin:
                 "list_cached_cost_per_million", "list_cache_write_cost_per_million",
                 "pending_list_price", "pending_context_price_tiers",
                 "price_synced_at", "price_sync_status", "price_sync_message",
+                "price_source_snapshot",
             },
         }.get(kind, set())
         price_values = {key: values[key] for key in price_fields if key in values}
@@ -739,6 +741,10 @@ class PostgreSqlRegistryRepositoryMixin:
             )
             for update in updates:
                 parameters = dict(update)
+                parameters["price_source_snapshot"] = (
+                    Jsonb(update["price_source_snapshot"])
+                    if update.get("price_source_snapshot") is not None else None
+                )
                 parameters["pending_list_price"] = (
                     Jsonb(update["pending_list_price"])
                     if update.get("pending_list_price") is not None
@@ -818,6 +824,9 @@ class PostgreSqlRegistryRepositoryMixin:
                 # it is meant to gate agrees with it on the second run.
                 connection.execute(
                     """UPDATE managed_model_price SET
+                           price_source_snapshot = CASE
+                               WHEN %(writes)s THEN %(price_source_snapshot)s::jsonb
+                               ELSE price_source_snapshot END,
                            context_price_tiers = CASE
                                WHEN %(writes)s AND %(context_price_tiers)s::jsonb IS NOT NULL
                                THEN %(context_price_tiers)s::jsonb ELSE context_price_tiers END,
@@ -920,6 +929,7 @@ class PostgreSqlRegistryRepositoryMixin:
             "list_cached_cost_per_million", "list_cache_write_cost_per_million",
             "pending_list_price", "pending_context_price_tiers",
             "price_synced_at", "price_sync_status", "price_sync_message",
+            "price_source_snapshot",
         ):
             previous = current.get(field) if current and not identity_changed else None
             merged[field] = values.get(field, previous)
@@ -936,10 +946,15 @@ class PostgreSqlRegistryRepositoryMixin:
                 "list_cached_cost_per_million", "list_cache_write_cost_per_million",
                 "pending_list_price", "pending_context_price_tiers",
                 "price_synced_at", "price_sync_status", "price_sync_message",
+                "price_source_snapshot",
             ):
                 merged[field] = None
         parameters = {**merged, "model_id": item_id}
         parameters["context_price_tiers"] = Jsonb(merged["context_price_tiers"])
+        parameters["price_source_snapshot"] = (
+            Jsonb(merged["price_source_snapshot"])
+            if merged["price_source_snapshot"] is not None else None
+        )
         for field in ("pending_list_price", "pending_context_price_tiers"):
             parameters[field] = Jsonb(merged[field]) if merged[field] is not None else None
         connection.execute(
@@ -949,14 +964,14 @@ class PostgreSqlRegistryRepositoryMixin:
                    list_output_cost_per_million, list_cached_cost_per_million,
                    list_cache_write_cost_per_million, pending_list_price,
                    pending_context_price_tiers, price_synced_at,
-                   price_sync_status, price_sync_message
+                   price_sync_status, price_sync_message, price_source_snapshot
                ) VALUES (
                    %(model_id)s, %(price_source)s, %(price_reference)s, %(price_discount_percent)s,
                    %(context_price_tiers)s, %(list_input_cost_per_million)s,
                    %(list_output_cost_per_million)s, %(list_cached_cost_per_million)s,
                    %(list_cache_write_cost_per_million)s, %(pending_list_price)s,
                    %(pending_context_price_tiers)s, %(price_synced_at)s,
-                   %(price_sync_status)s, %(price_sync_message)s
+                   %(price_sync_status)s, %(price_sync_message)s, %(price_source_snapshot)s
                )
                ON CONFLICT (model_id) DO UPDATE SET
                  price_source = EXCLUDED.price_source,
@@ -972,6 +987,7 @@ class PostgreSqlRegistryRepositoryMixin:
                  price_sync_status = EXCLUDED.price_sync_status,
                  price_sync_message = EXCLUDED.price_sync_message,
                  price_synced_at = EXCLUDED.price_synced_at,
+                 price_source_snapshot = EXCLUDED.price_source_snapshot,
                  updated_at = now()""",
             parameters,
         )

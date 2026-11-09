@@ -105,6 +105,7 @@ import {
 } from "../components/model-management/model-publication-dialog"
 import { ConnectionDialog } from "../components/model-management/connection-dialog"
 import { ModelEditDialog } from "../components/model-management/model-edit-dialog"
+import { ModelPriceSyncDialog } from "../components/model-management/model-price-sync-dialog"
 import { RuntimeDiagnosticDialog, useRuntimeDiagnostics } from "../components/model-management/runtime-diagnostic-dialog"
 import { runtimeDiagnostic, runtimeHealthDescription, runtimeHealthLabels, runtimeHealthState, runtimeWithTelemetryHealth, type RuntimeHealthState } from "../lib/runtime-health"
 import { ModelAvailabilityDialog, ModelAvailabilityStatus, ModelAvailabilitySwitch, useModelAvailabilityCommand } from "../components/model-management/model-availability"
@@ -143,7 +144,7 @@ type Tab = ModelManagementTab
 type ModelTableTab = Tab
 
 const MODEL_TABLE_COLUMN_MIN_WIDTHS = {
-  models: [160, 120, 120, 160, 80, 125],
+  models: [160, 120, 120, 160, 80, 85],
   connections: [180, 160, 180, 140],
   apim: [180, 120, 160, 80, 48],
   gateways: [180, 120, 160, 80, 48],
@@ -681,6 +682,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       onToggleGateway={(gateway) => updateGateway(gateway, { enabled: !gateway.enabled })}
       onDefaultGateway={(gateway) => updateGateway(gateway, { is_default: true, enabled: true })}
       onDeleteGateway={setDeletingGateway}
+      onPricesSynced={(registry) => { void storeRegistry(client, registry) }}
     />
     {overlays}
   </>
@@ -1047,7 +1049,7 @@ function CredentialRotationDialog({ model, oauth = false, busy, error, onClose, 
   </Dialog>
 }
 
-function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds, diagnosticGatewayDeploymentId, diagnosticRuntimeId, removingModelKey, publications, topology, topologyAvailable, availabilityByModel, availabilityLoading, onOpenAvailability, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onRotateCredential, onDeleteModel, onOpenPublication, onArchivePublication, onToggleRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway }: {
+function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds, diagnosticGatewayDeploymentId, diagnosticRuntimeId, removingModelKey, publications, topology, topologyAvailable, availabilityByModel, availabilityLoading, onOpenAvailability, onTabChange, onDismissNotice, onNoticeAction, onToggleSidebar, onAdd, onEdit, onRotateCredential, onDeleteModel, onOpenPublication, onArchivePublication, onToggleRuntime, onCheckRuntime, onDeleteConnection, onToggleGateway, onDefaultGateway, onDeleteGateway, onPricesSynced }: {
   registry: ModelRegistry
   tab: Tab
   notice: Notice | null
@@ -1079,6 +1081,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
   onToggleGateway: (gateway: GatewayProfile) => void
   onDefaultGateway: (gateway: GatewayProfile) => void
   onDeleteGateway: (gateway: GatewayProfile) => void
+  onPricesSynced?: (registry: ModelRegistry) => void
 }) {
   const activeTab: ModelTableTab = tab
   const compactLayout = useIsMobile(761)
@@ -1221,7 +1224,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeIds
   return <div className="smh-workspace model-workspace">
     <header className="smh-page-header">
       <div><Button type="button" variant="ghost" size="icon-sm" className="model-mobile-sidebar-toggle" aria-label="切换导航栏" title="切换导航栏" onClick={onToggleSidebar}><PanelLeft size={16} /></Button><span className="smh-header-icon"><Cpu size={17} /></span><h1>模型管理</h1><span>{modelTotal}</span></div>
-      {activeTab !== "gateways" && onAdd && <div className="smh-header-actions"><button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
+      {activeTab !== "gateways" && onAdd && <div className="smh-header-actions">{activeTab === "models" && <ModelPriceSyncDialog onComplete={onPricesSynced} />}<button onClick={() => onAdd(kind)}><Plus size={14} />添加{addLabel}</button></div>}
     </header>
     <div className="model-toolbar">
       <ButtonGroup className="model-tabs usage-metric-segment" aria-label="模型管理类型">{tabs.map((value) => <button key={value} data-tab={value} className={activeTab === value ? "active" : ""} aria-pressed={activeTab === value} onClick={() => onTabChange(value)}>{value === "models" ? "模型" : value === "connections" ? "连接" : value === "apim" ? "APIM 实例" : "网关"}<span>{value === "connections" ? scopedConnections.length : value === "apim" ? topology?.total ?? "—" : value === "gateways" ? topologyAvailable && !topology ? "—" : gatewayCount : modelTotal}</span></button>)}</ButtonGroup>

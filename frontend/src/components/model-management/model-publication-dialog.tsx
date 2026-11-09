@@ -408,8 +408,11 @@ export function ModelPublicationDialog({
   const [modelKey, setModelKey] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [upstreamModelId, setUpstreamModelId] = useState("")
-  const [contextWindow, setContextWindow] = useState("")
   const [pricing, setPricing] = useState(() => createModelPriceDraft(registry.context_pricing_supported === true, registry.context_price_rules_supported === true))
+  const contextWindow = pricing.contextWindow ?? ""
+  const setContextWindow = (value: string) => setPricing(current => ({
+    ...current, contextWindow: value, contextWindowEdited: true,
+  }))
   const { inputPrice, outputPrice, cacheReadPrice, cacheWritePrice } = pricing
   const [formError, setFormError] = useState<string | null>(null)
   const [publishError, setPublishError] = useState<string | null>(null)
@@ -593,6 +596,8 @@ export function ModelPublicationDialog({
         } : {}),
         ...(pricing.priceSource !== "manual" || pricing.discountPercent.trim() ? {
           price_source: pricing.priceSource,
+          ...(pricing.priceEntryDigest && !pricing.contextPricingPreview
+            ? { price_entry_digest: pricing.priceEntryDigest } : {}),
           price_reference: pricing.priceSource === "manual" || pricing.contextPricingPreview ? null : pricing.priceReference.trim(),
           price_discount_percent: numberOrNull(pricing.discountPercent),
         } : {}),
@@ -864,7 +869,8 @@ export function ModelPublicationDialog({
             <div className="simple-pricing-fields">
               <ModelPriceSourceFields
                 key={`${gatewayId}:${selectedRuntime.id}:${modelOperation}`}
-                modelName={foundry ? foundryDeployment : effectiveDisplayName || upstreamModelId}
+                modelName={foundry ? foundryDeployment : upstreamModelId || effectiveDisplayName}
+                runtimeId={selectedRuntime.id}
                 draft={pricing} setDraft={setPricing} busy={publishing}
                 showAnthropic={!decision && !imageGeneration}
                 imageGeneration={imageGeneration}

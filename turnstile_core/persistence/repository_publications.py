@@ -2768,8 +2768,9 @@ class PostgreSqlPublicationRepositoryMixin:
                            model_id, price_source, price_reference, price_discount_percent,
                            list_input_cost_per_million, list_output_cost_per_million,
                            list_cached_cost_per_million, list_cache_write_cost_per_million,
-                           price_synced_at, price_sync_status, context_price_tiers
-                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                           price_synced_at, price_sync_status, context_price_tiers,
+                           price_source_snapshot
+                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         model["id"], model_spec.get("price_source", "manual"),
                         model_spec.get("price_reference"), model_spec.get("price_discount_percent"),
@@ -2781,6 +2782,8 @@ class PostgreSqlPublicationRepositoryMixin:
                         if model_spec.get("price_source", "manual") != "manual" else None,
                         "ok" if model_spec.get("price_source", "manual") != "manual" else None,
                         Jsonb(model_spec.get("context_price_tiers") or []),
+                        Jsonb(model_spec["price_source_snapshot"])
+                        if model_spec.get("price_source_snapshot") is not None else None,
                     ),
                 )
             self._sync_active_route_bindings(connection, publication)

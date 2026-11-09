@@ -68,6 +68,7 @@ class ModelPriceUpdate:
     expected_reference: str | None = None
     expected_discount_percent: float | None = None
     expected_list_prices: dict[str, float | None] | None = None
+    price_source_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,12 @@ def _plan_one(
             message="价目包含上下文档位，需选择并确认完整分档规则，未按单档覆盖现有价格。",
         )
 
+    if entry.text_to_image != ("image_generation" in model.capabilities):
+        return _planned_against(
+            model, status=PriceSyncStatus.STALE,
+            message="目录报价用途与模型不一致。",
+        )
+
     moved = _largest_drift(model, entry)
     if moved is not None and moved[1] > review_threshold:
         bucket, drift = moved
@@ -200,6 +207,7 @@ def _plan_one(
         list_output_cost_per_million=entry.output_per_million,
         list_cached_cost_per_million=entry.cached_per_million,
         list_cache_write_cost_per_million=entry.cache_write_per_million,
+        price_source_snapshot=entry.provenance,
     )
 
 

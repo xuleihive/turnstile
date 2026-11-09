@@ -1906,6 +1906,16 @@ schemas:
     title: LedgerAdmissionReceipt
   ManagedModel:
     properties:
+      price_entry_digest:
+        anyOf:
+        - type: string
+          pattern: ^[0-9a-f]{64}$
+        - type: 'null'
+      price_source_snapshot:
+        anyOf:
+        - type: object
+          additionalProperties: true
+        - type: 'null'
       provider_id:
         type: string
         format: uuid
@@ -2126,6 +2136,11 @@ schemas:
     title: ManagedModel
   ManagedModelWrite:
     properties:
+      price_entry_digest:
+        anyOf:
+        - type: string
+          pattern: ^[0-9a-f]{64}$
+        - type: 'null'
       provider_id:
         type: string
         format: uuid
@@ -2256,6 +2271,11 @@ schemas:
     title: ManagedModelWrite
   ModelCreateTarget:
     properties:
+      price_entry_digest:
+        anyOf:
+        - type: string
+          pattern: ^[0-9a-f]{64}$
+        - type: 'null'
       operation:
         type: string
         enum:
@@ -3059,6 +3079,13 @@ schemas:
     title: PriceCatalogModelsResponse
   PriceCatalogOption:
     properties:
+      entry_digest:
+        anyOf:
+        - type: string
+        - type: 'null'
+      source_metadata:
+        type: object
+        additionalProperties: true
       reference:
         type: string
         title: Reference
@@ -3196,12 +3223,74 @@ schemas:
     - rule_id
     - revision
     title: PriceCatalogRuleSource
+  PriceMatchRequest:
+    type: object
+    additionalProperties: false
+    required: [runtime_id, names]
+    properties:
+      runtime_id:
+        type: string
+        format: uuid
+      model_id:
+        anyOf:
+        - type: string
+          format: uuid
+        - type: 'null'
+      names:
+        type: array
+        minItems: 1
+        maxItems: 3
+        items:
+          type: string
+          minLength: 1
+          maxLength: 500
+      image_generation:
+        type: boolean
+        default: false
+      allow_ai:
+        type: boolean
+        default: false
+        description: Explicitly permit one normal default-model invocation, which may incur cost.
+  PriceMatchResponse:
+    type: object
+    additionalProperties: false
+    required: [status]
+    properties:
+      status:
+        type: string
+        enum: [matched, ambiguous, unmapped, stale]
+      model_entry:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PriceCatalogModel
+        - type: 'null'
+      candidates:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PriceCatalogModel
+      method:
+        anyOf:
+        - type: string
+          enum: [exact, ai]
+        - type: 'null'
+      price_basis:
+        anyOf:
+        - type: string
+          enum: [deployment, origin_reference]
+        - type: 'null'
+      requires_ai:
+        type: boolean
+        default: false
+      message:
+        anyOf:
+        - type: string
+        - type: 'null'
   PriceSource:
     type: string
     enum:
     - manual
     - azure_retail
     - anthropic
+    - models_dev
     title: PriceSource
     description: 'Where a model''s charged rates come from.
 
@@ -3218,6 +3307,28 @@ schemas:
       -- a published list price is a fact, the discount is a contract term.'
   PriceSyncDetail:
     properties:
+      current_context_price_tiers:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/StoredContextPriceTier
+      proposed_context_price_tiers:
+        anyOf:
+        - type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/StoredContextPriceTier
+        - type: 'null'
+      outcome:
+        anyOf:
+        - type: string
+        - type: 'null'
+      current_prices:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PendingListPrice
+        - type: 'null'
+      proposed_prices:
+        anyOf:
+        - $ref: ../../openapi.yaml#/components/schemas/PendingListPrice
+        - type: 'null'
       model_id:
         type: string
         format: uuid
@@ -3241,6 +3352,14 @@ schemas:
     title: PriceSyncDetail
   PriceSyncRequest:
     properties:
+      dry_run:
+        type: boolean
+        default: false
+      confirmation_digest:
+        anyOf:
+        - type: string
+          pattern: ^[0-9a-f]{64}$
+        - type: 'null'
       model_ids:
         anyOf:
         - items:
@@ -3256,6 +3375,22 @@ schemas:
       a list price.
   PriceSyncResponse:
     properties:
+      dry_run:
+        type: boolean
+        default: false
+      confirmation_digest:
+        anyOf:
+        - type: string
+        - type: 'null'
+      total:
+        type: integer
+        default: 0
+      skipped_manual:
+        type: integer
+        default: 0
+      unchanged:
+        type: integer
+        default: 0
       considered:
         type: integer
         title: Considered

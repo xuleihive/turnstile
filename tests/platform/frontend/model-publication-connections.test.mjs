@@ -25,6 +25,57 @@ import {
   publicationConnections,
 } from "../../../frontend/src/components/model-management/model-publication-connections.ts"
 
+test("unverified Gateway capability without an operation is not an enabling or disabling task", () => {
+  for (const enabled of [false, true]) {
+    const readback = {
+      model_id: "model-a", desired_enabled: enabled, desired_revision: 1,
+      effective_enabled: null, effective_revision: null, verified_at: null,
+      status: "pending", command_ready: false,
+      reason: "model_availability_capability_unverified", operation: null,
+    }
+    const state = availabilityPresentation(readback, false, enabled)
+    assert.equal(state.state, "unknown")
+    assert.equal(state.inFlight, false)
+    assert.equal(state.verified, false)
+    assert.equal(state.canChange, false)
+    assert.equal(availabilityRefetchInterval([readback]), 15000)
+    assert.equal(availabilityPresentation(readback, true, enabled, !enabled).inFlight, true)
+    const active = { ...readback, operation: { id: "real-operation" } }
+    assert.equal(availabilityPresentation(active, false, enabled).inFlight, true)
+    assert.equal(availabilityRefetchInterval([active]), 2000)
+  }
+})
+
+test("help click opens a closed tooltip and keeps a focus-open tooltip visible", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/field-help.tsx", import.meta.url), "utf8")
+  const handler = source.match(/<Tooltip\.Trigger[^>]*onClick=\{([^}]+)\}/)
+  assert.ok(handler)
+  let open = false
+  const click = runInNewContext(`(${handler[1]})`, {
+    setOpen: (value) => { open = typeof value === "function" ? value(open) : value },
+  })
+  click()
+  assert.equal(open, true)
+  click()
+  assert.equal(open, true)
+})
+
+test("price sync messages do not size columns and all headers stay on one line", () => {
+  const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
+  const { parse } = frontendRequire("postcss")
+  const css = parse(readFileSync(new URL("../../../frontend/src/styles/model-platform.css", import.meta.url), "utf8"))
+  const properties = (selector) => {
+    const declarations = {}
+    css.walkRules(selector, rule => rule.walkDecls(declaration => {
+      declarations[declaration.prop] = declaration.value
+    }))
+    return declarations
+  }
+  assert.equal(properties(".price-sync-message").contain, "inline-size")
+  assert.equal(properties(".price-sync-message")["overflow-wrap"], "anywhere")
+  assert.equal(properties(".price-sync-table thead th")["white-space"], "nowrap")
+})
+
 const gateway = (id, overrides = {}) => ({ id, implementation: "apim", enabled: true, base_url: `https://${id}.azure-api.net/models`, ...overrides })
 const provider = (id, overrides = {}) => ({ id, enabled: true, ...overrides })
 const connection = (id, gatewayId, overrides = {}) => ({
@@ -1005,14 +1056,214 @@ test("Decision and image price sources omit Anthropic while chat retains it", ()
   assert.match(dialog, /showAnthropic=\{!decision && !imageGeneration\}/)
   assert.match(dialog, /imageGeneration=\{imageGeneration\}/)
   assert.match(source, /showAnthropic = true/)
-  const choices = source.match(/\{(\(\["manual", "azure_retail", "anthropic"\] as const\)\.filter\(.*?\))\.map/)
+  const choices = source.match(/\{(\(\["manual"[^\n]+?\.filter\(.*?\))\.map/)
   assert.ok(choices)
   for (const showAnthropic of [true, false]) {
-    const sources = runInNewContext(stripTypeScriptTypes(choices[1]), { showAnthropic })
-    assert.deepEqual([...sources], showAnthropic
-      ? ["manual", "azure_retail", "anthropic"]
-      : ["manual", "azure_retail"])
+    for (const decision of [true, false]) {
+      const sources = runInNewContext(stripTypeScriptTypes(choices[1]), { showAnthropic, decision })
+      assert.deepEqual([...sources], ["manual", "azure_retail",
+        ...(showAnthropic ? ["anthropic"] : []), ...(decision ? [] : ["models_dev"])])
+    }
   }
+})
+
+test("new model automatic pricing uses the upstream identity before the display name", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url), "utf8")
+  const expression = source.match(/modelName=\{([^\n}]+)\}/)
+  assert.ok(expression)
+  for (const upstreamModelId of ["gpt-5-mini", "gpt-5-2026-01-01"]) {
+    const identity = runInNewContext(expression[1], {
+      foundry: false, foundryDeployment: "", effectiveDisplayName: "GPT 5", upstreamModelId,
+    })
+    assert.equal(identity, upstreamModelId)
+  }
+  assert.equal(runInNewContext(expression[1], {
+    foundry: true, foundryDeployment: "gpt-5-mini", effectiveDisplayName: "GPT 5", upstreamModelId: "",
+  }), "gpt-5-mini")
+})
+
+test("price picker only consumes Escape when its actual popup is open", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  const expression = source.match(/const popupOpen = ([^\n]+)/)
+  const handler = source.match(/if \(event\.key === "Escape" && popupOpen\) \{([\s\S]+?)\} else if/)
+  assert.ok(expression)
+  assert.ok(handler)
+  for (const [open, searching, matches, chosen, expected] of [
+    [true, false, null, null, false],
+    [true, false, [], null, true],
+    [true, true, null, null, true],
+    [false, true, [], null, false],
+  ]) {
+    const popupOpen = runInNewContext(expression[1], { open, searching, matches, chosen })
+    assert.equal(popupOpen, expected)
+    const actions = []
+    runInNewContext(`if (event.key === "Escape" && popupOpen) {${handler[1]}}`, {
+      popupOpen, event: { key: "Escape", preventDefault: () => actions.push("prevent"),
+        stopPropagation: () => actions.push("stop") },
+      onOpenChange: value => actions.push(value),
+    })
+    assert.deepEqual(actions, expected ? ["prevent", "stop", false] : [])
+  }
+})
+
+test("discount edits during catalog loading are applied once the quote arrives", async () => {
+  const { applyCatalogOption } = await import("../../../frontend/src/components/model-management/model-edit-form.ts")
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  const effect = source.match(/useEffect\(\(\) => \{\n(    const changed = lastDiscount[\s\S]+?)\n  \}, \[draft\.discountPercent, connectionDiscount[^\]]*\]\)/)
+  assert.ok(effect)
+  const execute = `(() => {${effect[1]}\n})()`
+  let draft = { ...createModelPriceDraft(), priceSource: "models_dev", discountPercent: "80", inputPrice: "0.75", outputPrice: "4.5" }
+  let applied = 0
+  const context = {
+    lastDiscount: { current: { own: "", connection: null } }, draft, connectionDiscount: null,
+    following: true, selectedOption: null, chosenModel: null, details: null,
+    discount: { percent: 80 },
+    setDraft: update => { draft = update(draft); context.draft = draft },
+    applyCatalogOption: (...args) => { applied += 1; return applyCatalogOption(...args) },
+  }
+  runInNewContext(execute, context)
+  assert.equal(context.lastDiscount.current.own, "")
+  assert.equal(draft.inputPrice, "0.75")
+  assert.equal(applied, 0)
+  context.selectedOption = {
+    reference: "models_dev:azure:gpt-5.4-mini", deployment: "Public reference",
+    regions: [], region_required: false, input_per_million: 0.75, output_per_million: 4.5,
+    cached_per_million: 0.075, cache_write_per_million: null,
+  }
+  context.chosenModel = { source: "models_dev" }
+  context.details = { complete: true }
+  runInNewContext(execute, context)
+  assert.equal(Number(draft.inputPrice), 0.6)
+  assert.equal(Number(draft.outputPrice), 3.6)
+  assert.equal(context.lastDiscount.current.own, "80")
+  assert.equal(applied, 1)
+  runInNewContext(execute, context)
+  assert.equal(applied, 1)
+  context.following = false
+  draft = { ...draft, priceSource: "manual", discountPercent: "50", inputPrice: "9" }
+  context.draft = draft
+  runInNewContext(execute, context)
+  assert.equal(draft.inputPrice, "9")
+  assert.equal(context.lastDiscount.current.own, "50")
+  assert.equal(applied, 1)
+})
+
+test("selected catalog quotes carry their digest into the pricing draft", async () => {
+  const { applyCatalogOption, createModelPriceDraft } = await import("../../../frontend/src/components/model-management/model-edit-form.ts")
+  const digest = "e".repeat(64)
+  const draft = applyCatalogOption(createModelPriceDraft(), "azure_retail", {
+    reference: "azure_retail:Azure OpenAI:gpt-example:Global:*", deployment: "Global",
+    regions: [], region_required: false, input_per_million: 2, output_per_million: 8,
+    cached_per_million: 0.5, cache_write_per_million: null, entry_digest: digest,
+  }, null)
+  assert.equal(draft.priceEntryDigest, digest)
+  assert.equal(draft.priceReference, "azure_retail:Azure OpenAI:gpt-example:Global:*")
+})
+
+test("public quote prefills context without overwriting user edits or existing limits", async () => {
+  const { applyCatalogOption, createModelPriceDraft, createModelEditDraft } = await import("../../../frontend/src/components/model-management/model-edit-form.ts")
+  const quote = {
+    reference: "models_dev:openai:gpt-example", deployment: "Public reference",
+    regions: [], region_required: false, input_per_million: 2, output_per_million: 8,
+    cached_per_million: 0.5, cache_write_per_million: null,
+    source_metadata: { context_window: 128000 },
+  }
+  const initial = applyCatalogOption(createModelPriceDraft(), "models_dev", quote, null)
+  assert.equal(initial.contextWindow, "128000")
+  const edited = { ...initial, contextWindow: "64000", contextWindowEdited: true }
+  assert.equal(applyCatalogOption(edited, "models_dev", quote, null).contextWindow, "64000")
+  const cleared = { ...edited, contextWindow: "" }
+  assert.equal(applyCatalogOption(cleared, "models_dev", quote, null).contextWindow, "")
+  const existing = createModelEditDraft({
+    display_name: "Existing", context_window: 32000, allowed_roles: [], capabilities: [],
+  })
+  assert.equal(applyCatalogOption(existing, "models_dev", quote, null).contextWindow, "32000")
+  for (const context_window of [0, -1, "128000", Infinity]) {
+    const invalid = { ...quote, source_metadata: { context_window } }
+    assert.equal(applyCatalogOption(createModelPriceDraft(), "models_dev", invalid, null).contextWindow, "")
+  }
+})
+
+test("new model automatic pricing discards the previous quote after a rename", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  const effect = source.match(/useEffect\(\(\) => \{\n    const renamed = matchedName\.current !== modelName([\s\S]+?)\n  \}, \[draft\.priceSource, modelName, runtimeId, model\?\.id\]\)/)
+  assert.ok(effect)
+  const execute = `(() => { const renamed = matchedName.current !== modelName${effect[1]}\n})()`
+  for (const existing of [false, true]) {
+    let cleared = false
+    let scheduled = false
+    runInNewContext(execute, {
+      matchedName: { current: "gpt-4.1" }, modelName: "gpt-5",
+      draft: { priceSource: "models_dev", priceReference: "models_dev:openai:gpt-4.1" },
+      model: existing ? { id: "registered" } : undefined, decision: false,
+      clearSelection: () => { cleared = true }, setQuery() {},
+      setTimeout: () => { scheduled = true; return 1 }, clearTimeout() {},
+      requestVersion: { current: 0 }, setSearching() {},
+    })
+    assert.equal(cleared, !existing)
+    assert.equal(scheduled, !existing)
+  }
+})
+
+test("manual price selection invalidates a queued automatic match", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  const effect = source.match(/useEffect\(\(\) => \{\n    const renamed = matchedName\.current !== modelName([\s\S]+?)\n  \}, \[draft\.priceSource, modelName, runtimeId, model\?\.id\]\)/)
+  assert.ok(effect)
+  const execute = `(() => { const renamed = matchedName.current !== modelName${effect[1]}\n})()`
+  for (const manuallySelected of [false, true]) {
+    let scheduled
+    let calls = 0
+    const version = { current: 0 }
+    runInNewContext(execute, {
+      matchedName: { current: "gpt-4.1" }, modelName: "gpt-4.1",
+      draft: { priceSource: "models_dev", priceReference: "" },
+      model: undefined, decision: false, runtimeId: "connection",
+      requestVersion: version, clearSelection() {}, setQuery() {}, setSearching() {},
+      setTimeout: callback => { scheduled = callback; return 1 }, clearTimeout() {},
+      matchPrice: () => { calls += 1 },
+    })
+    assert.equal(typeof scheduled, "function")
+    if (manuallySelected) version.current += 1
+    scheduled()
+    assert.equal(calls, manuallySelected ? 0 : 1)
+  }
+})
+
+test("price preview confirmation allows unchanged quotes to recover source status", () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-sync-dialog.tsx", import.meta.url), "utf8")
+  const condition = source.match(/disabled=\{(busy \|\| !result\.confirmation_digest[^}]+)\}/)
+  assert.ok(condition)
+  for (const [result, busy, expected] of [
+    [{ confirmation_digest: "accepted", updated: 0, unchanged: 1 }, false, false],
+    [{ confirmation_digest: "accepted", updated: 1, unchanged: 0 }, false, false],
+    [{ confirmation_digest: "accepted", updated: 0, unchanged: 0 }, false, true],
+    [{ confirmation_digest: null, updated: 0, unchanged: 1 }, false, true],
+    [{ confirmation_digest: "accepted", updated: 0, unchanged: 1 }, true, true],
+  ]) {
+    assert.equal(runInNewContext(condition[1], { result, busy }), expected)
+  }
+})
+
+test("sync context rows align by tier identity and keep both short and long prices", async () => {
+  const { priceSyncContextRows } = await import("../../../frontend/src/components/model-management/model-edit-form.ts")
+  const short = { key: "short", label: "Short context", min_input_tokens: 0, max_input_tokens: 1000 }
+  const long = { key: "long", label: "Long context", min_input_tokens: 1001, max_input_tokens: null }
+  const changedLong = { ...long, min_input_tokens: 901 }
+  const rows = priceSyncContextRows({
+    current_context_price_tiers: [long, short],
+    proposed_context_price_tiers: [changedLong, { ...short, max_input_tokens: 900 }],
+  })
+  assert.deepEqual(rows.map(row => row.key), ["short", "long"])
+  assert.equal(rows[1].current.min_input_tokens, 1001)
+  assert.equal(rows[1].proposed.min_input_tokens, 901)
+  const unavailable = priceSyncContextRows({ current_context_price_tiers: [short, long] })
+  assert.equal(unavailable.length, 2)
+  assert.ok(unavailable.every(row => row.proposed === undefined))
+  const replaced = priceSyncContextRows({
+    current_context_price_tiers: [short, long], proposed_context_price_tiers: [short],
+  })
+  assert.equal(replaced[1].key, "long")
+  assert.equal(replaced[1].proposed, undefined)
 })
 
 test("Decision purpose changes reset prices for shared catalog selection", () => {
@@ -1035,9 +1286,9 @@ test("Decision purpose changes reset prices for shared catalog selection", () =>
     assert.equal(draft.outputPrice, "")
     assert.equal(draft.cacheReadPrice, "")
     assert.equal(draft.cacheWritePrice, "")
-    assert.equal(draft.priceSource, operation === "decision" ? "azure_retail" : "manual")
+    assert.equal(draft.priceSource, operation === "decision" ? "azure_retail" : "models_dev")
     assert.equal(draft.priceReference, "")
-    assert.equal(validateModelPricing(draft), operation === "decision" ? "price_reference" : null)
+    assert.equal(validateModelPricing(draft), "price_reference")
   }
   assert.doesNotMatch(source, />应用参考价<\/Button>/)
   assert.match(source, /className=\{decision \? "publication-decision-price-fields" : "form-grid"\}/)

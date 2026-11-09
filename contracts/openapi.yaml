@@ -162,6 +162,8 @@ paths:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-catalog~1options
   /api/v1/model-management/price-sync:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-sync
+  /api/v1/model-management/price-match:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1price-match
   /api/v1/model-management/models:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1models
   /api/v1/model-management/models/{item_id}:
@@ -1063,6 +1065,10 @@ components:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogModel
     PriceCatalogModelsResponse:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogModelsResponse
+    PriceMatchRequest:
+      $ref: ./openapi/schemas/common.yaml#/schemas/PriceMatchRequest
+    PriceMatchResponse:
+      $ref: ./openapi/schemas/common.yaml#/schemas/PriceMatchResponse
     PriceCatalogOption:
       $ref: ./openapi/schemas/common.yaml#/schemas/PriceCatalogOption
     PriceCatalogOptionsResponse:

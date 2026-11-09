@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid5
 
 from pydantic import (
@@ -302,13 +302,22 @@ class ModelTarget(StrictModel):
         if self.image_profile is not None:
             if self.capabilities != ["image_generation"]:
                 raise ValueError("An image profile belongs only to an image model")
-            if self.price_source not in {PriceSource.MANUAL, PriceSource.AZURE_RETAIL}:
+            if self.price_source not in {
+                PriceSource.MANUAL, PriceSource.AZURE_RETAIL, PriceSource.MODELS_DEV,
+            }:
                 raise ValueError("Image generation requires manual or Azure retail prices")
             validate_image_profile(self.image_profile)
         return self
 
     price_source: PriceSource = Field(
         default=PriceSource.MANUAL, exclude_if=lambda value: value is PriceSource.MANUAL,
+    )
+
+    price_entry_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None,
+    )
+    price_source_snapshot: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
     )
 
     price_reference: str | None = Field(
@@ -387,7 +396,9 @@ class ModelCreateTarget(StrictModel):
                 raise ValueError("Catalog pricing requires a reference from its selected source")
             self.price_reference = reference
         if self.operation == "image_generation":
-            if self.price_source not in {PriceSource.MANUAL, PriceSource.AZURE_RETAIL}:
+            if self.price_source not in {
+                PriceSource.MANUAL, PriceSource.AZURE_RETAIL, PriceSource.MODELS_DEV,
+            }:
                 raise ValueError("Image generation requires manual or Azure retail prices")
             if self.deployment_name is None:
                 raise ValueError("Image generation requires an existing Foundry deployment")
@@ -414,6 +425,8 @@ class ModelCreateTarget(StrictModel):
         return self
 
     price_source: PriceSource = PriceSource.MANUAL
+
+    price_entry_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     price_reference: str | None = Field(default=None, max_length=1000)
 

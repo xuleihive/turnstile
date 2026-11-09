@@ -1,5 +1,5 @@
 import { Combobox } from "@base-ui/react/combobox"
-import { AlertTriangle, Check, ChevronDown, LoaderCircle, RefreshCw, Search } from "lucide-react"
+import { AlertTriangle, Check, ChevronDown, LoaderCircle, RefreshCw, Search, WandSparkles } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { dataSource } from "../../data-sources/apim/api"
@@ -39,6 +39,7 @@ const SOURCE_LABEL: Record<string, string> = {
   manual: "手工填写",
   azure_retail: "Azure 零售价",
   anthropic: "Anthropic 列表价",
+  models_dev: "models.dev 参考价",
 }
 
 const SYNC_STATUS_LABEL: Record<PriceSyncStatus, string> = {
@@ -77,9 +78,10 @@ async function loadModelPrices(candidate: ModelPriceCandidate): Promise<ModelPri
  * 24 to 28 regions it is sold in -- is a single choice with no region to pick, and a region is
  * asked for only where two regions genuinely disagree.
  */
-export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, decision = false, initialSearch }: {
+export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, modelName = "", runtimeId, draft, setDraft, busy, connectionDiscount, showAnthropic = true, imageGeneration = false, decision = false, initialSearch }: {
   model?: ManagedModel
   modelName?: string
+  runtimeId?: string
   draft: Draft
   setDraft: (updater: (current: Draft) => Draft) => void
   busy: boolean
@@ -100,8 +102,10 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [previewReference, setPreviewReference] = useState(() => restored?.options[0]?.reference ?? "")
   const [manualFromCatalog, setManualFromCatalog] = useState(false)
+  const [aiAvailable, setAiAvailable] = useState(false)
   const requestVersion = useRef(0)
   const lastDiscount = useRef({ own: draft.discountPercent, connection: connectionDiscount })
+  const matchedName = useRef(modelName)
 
   const following = draft.priceSource !== "manual"
   const discount = resolveDiscount(draft, connectionDiscount)
@@ -152,9 +156,13 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   // the box would say 66% while the rates below still showed the old figures.
   useEffect(() => {
     const changed = lastDiscount.current.own !== draft.discountPercent || lastDiscount.current.connection !== connectionDiscount
-    lastDiscount.current = { own: draft.discountPercent, connection: connectionDiscount }
     if (!changed) return
-    if (!following || !selectedOption || !chosenModel || !details?.complete) return
+    if (!following) {
+      lastDiscount.current = { own: draft.discountPercent, connection: connectionDiscount }
+      return
+    }
+    if (!selectedOption || !chosenModel || !details?.complete) return
+    lastDiscount.current = { own: draft.discountPercent, connection: connectionDiscount }
     if (selectedOption.contextPricing) {
       setDraft(current => ({ ...current, contextPriceRefresh: true }))
       return
@@ -162,7 +170,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     setDraft((current) =>
       applyCatalogOption(current, chosenModel.source, selectedOption, discount.percent))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.discountPercent, connectionDiscount])
+  }, [draft.discountPercent, connectionDiscount, following, selectedOption, chosenModel, details?.complete])
 
   const clearSelection = () => {
     requestVersion.current += 1
@@ -172,9 +180,10 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     setCatalogOpen(false)
     setLoadingOptions(false)
     setSearching(false)
+    setAiAvailable(false)
     setError(null)
     setPreviewReference("")
-    setDraft(current => ({ ...resetContextPriceRule(current), priceReference: "", contextPricingPreview: false,
+    setDraft(current => ({ ...resetContextPriceRule(current), priceReference: "", priceEntryDigest: undefined, contextPricingPreview: false,
       contextPriceReferences: [], contextPriceTiers: [], contextPriceRefresh: false }))
   }
 
@@ -189,7 +198,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     setCatalogOpen(true)
     setError(null)
     try {
-      const response = await dataSource.priceCatalogModels(text)
+      const response = await dataSource.priceCatalogModels(text, source)
       if (version !== requestVersion.current) return
       setMatches(groupContextPriceModels(response.models.filter(candidate => candidate.source === source
         && (!imageGeneration || candidate.text_to_image === true))))
@@ -267,17 +276,73 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       applyCatalogOption(current, chosenModel.source, option, discount.percent))
   }
 
+  const matchPrice = async (allowAI = false) => {
+    const connection = model?.runtime_id ?? runtimeId
+    const name = model?.upstream_model_id || modelName || model?.model_key || ""
+    if (!connection || !name.trim() || decision || draft.priceSource !== "models_dev") return
+    const version = ++requestVersion.current
+    setSearching(true)
+    setError(null)
+    try {
+      const response = await dataSource.matchPriceModel({
+        runtime_id: connection, model_id: model?.id, names: [name.trim()],
+        image_generation: imageGeneration, allow_ai: allowAI,
+      })
+      if (version !== requestVersion.current) return
+      setAiAvailable(response.requires_ai)
+      if (response.model_entry) {
+        setSearching(false)
+        await chooseModel(response.model_entry)
+      } else {
+        setMatches(groupContextPriceModels(response.candidates))
+        if (allowAI) setCatalogOpen(true)
+        if (response.status === "stale") setError(response.message)
+      }
+    } catch (failure) {
+      if (version === requestVersion.current) setError(failure instanceof Error ? failure.message : String(failure))
+    } finally {
+      if (version === requestVersion.current) setSearching(false)
+    }
+  }
+
+  useEffect(() => {
+    const renamed = matchedName.current !== modelName
+    matchedName.current = modelName
+    if (draft.priceSource !== "models_dev" || decision) return
+    if (!model && renamed) {
+      clearSelection()
+      setQuery(modelName)
+    } else if (draft.priceReference) return
+    const version = requestVersion.current
+    const timer = setTimeout(() => {
+      if (version === requestVersion.current) void matchPrice()
+    }, 500)
+    return () => { clearTimeout(timer); requestVersion.current += 1; setSearching(false) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.priceSource, modelName, runtimeId, model?.id])
+
   return <div className="model-price-source">
     <div className="model-price-source-row">
     <div className="registry-field-label-row">
       <span className="registry-field-label">价格来源</span>
       <FieldHelp>
-        「跟随官方价」按 官方价 × 折扣 自动维护单价；折扣由你维护，不会被任何来源覆盖。
+        <div className="model-price-help-content">
+          <ModelPriceText>{draft.priceSource === "models_dev"
+            ? "第三方参考价，不代表具体部署账单。"
+            : "「跟随官方价」按 官方价 × 折扣 自动维护单价；折扣由你维护，不会被任何来源覆盖。"}</ModelPriceText>
+          {draft.priceSource !== "models_dev" && details?.note && <ModelPriceText>{details.note}</ModelPriceText>}
+          {selectedOption?.entry_digest && <dl className="model-price-help-provenance">
+            <div><dt>价格引用</dt><dd data-no-localize>{selectedOption.reference}</dd></div>
+            {typeof selectedOption.source_metadata?.provider_id === "string" && <div><dt>提供方</dt><dd data-no-localize>{selectedOption.source_metadata.provider_id}</dd></div>}
+            {typeof selectedOption.source_metadata?.fetched_at === "string" && <div><dt>目录读取时间</dt><dd data-no-localize>{selectedOption.source_metadata.fetched_at}</dd></div>}
+            <div><dt>报价摘要</dt><dd data-no-localize>{selectedOption.entry_digest}</dd></div>
+          </dl>}
+        </div>
       </FieldHelp>
     </div>
     <ButtonGroup className="model-tabs usage-metric-segment model-price-source-choice" aria-label="价格来源"
       data-value={draft.priceSource}>
-      {(["manual", "azure_retail", "anthropic"] as const).filter(source => showAnthropic || source !== "anthropic").map((source) => (
+      {(["manual", "azure_retail", "anthropic", ...(decision ? [] : ["models_dev"])] as PriceSource[]).filter(source => showAnthropic || source !== "anthropic").map((source) => (
         <button key={source} type="button" disabled={busy} aria-label={SOURCE_LABEL[source]}
           className={draft.priceSource === source ? "active" : ""}
           title={SOURCE_LABEL[source]} aria-pressed={draft.priceSource === source}
@@ -292,7 +357,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
               if (text) void search(text, source)
             }
           }}>
-          {source === "manual" ? SOURCE_LABEL[source] : source === "azure_retail" ? "Azure" : "Anthropic"}
+          {source === "manual" ? SOURCE_LABEL[source] : source === "azure_retail" ? "Azure" : source === "models_dev" ? "models.dev" : "Anthropic"}
         </button>
       ))}
     </ButtonGroup>
@@ -314,6 +379,12 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
           peers={regionPeers} selected={selectedOption}
           busy={busy || !details?.complete} onChoose={chooseOption} />}
       </div>
+
+      {draft.priceSource === "models_dev" && aiAvailable && <div className="registry-field-label-row">
+        <Button type="button" variant="outline" size="sm" disabled={busy || searching || loadingOptions}
+          onClick={() => void matchPrice(true)}><WandSparkles size={13} /><ModelPriceText>AI 辅助匹配</ModelPriceText></Button>
+        <FieldHelp>使用默认聊天模型匹配候选，可能产生正常调用费用。不会生成价格。</FieldHelp>
+      </div>}
 
       {error && <p className="publication-form-note" role="alert"><ModelPriceText>{error}</ModelPriceText></p>}
       {loadingOptions && <p className="publication-form-note model-price-loading" role="status">
@@ -362,6 +433,10 @@ function ModelStep({ busy, query, setQuery, searching, open, onOpenChange, match
   onChoose: (model: ModelPriceCandidate) => void
 }) {
   const input = useRef<HTMLInputElement | null>(null)
+  const popupOpen = open && (searching || matches !== null || chosen !== null)
+  useEffect(() => {
+    if (popupOpen) input.current?.focus()
+  }, [popupOpen])
   const search = () => {
     input.current?.focus()
     onSearch()
@@ -383,7 +458,7 @@ function ModelStep({ busy, query, setQuery, searching, open, onOpenChange, match
           value={chosen} itemToStringLabel={candidate => candidate.label}
           isItemEqualToValue={(candidate, selected) => candidate.key === selected.key}
           openOnInputClick
-          open={open && (searching || matches !== null || chosen !== null)} onOpenChange={onOpenChange}
+          open={popupOpen} onOpenChange={onOpenChange}
           onValueChange={candidate => {
             if (!candidate || searching || busy) return
             onOpenChange(false)
@@ -393,7 +468,11 @@ function ModelStep({ busy, query, setQuery, searching, open, onOpenChange, match
             <Combobox.Input ref={input} id="model-price-model" render={<Input />}
               placeholder="搜索模型，例如 gpt 5、opus、grok" autoComplete="off"
               onKeyDown={event => {
-                if (event.key === "Enter" && !event.nativeEvent.isComposing
+                if (event.key === "Escape" && popupOpen) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onOpenChange(false)
+                } else if (event.key === "Enter" && !event.nativeEvent.isComposing
                   && !event.currentTarget.getAttribute("aria-activedescendant")) {
                   event.preventDefault()
                   if (!searching && !busy) search()
@@ -402,12 +481,12 @@ function ModelStep({ busy, query, setQuery, searching, open, onOpenChange, match
             <div className="model-price-input-actions">
               <Button type="button" variant="ghost" size="icon-sm" disabled={busy || searching}
                 aria-label="搜索" title="搜索" onClick={search}>
-                {searching ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}
+                {searching ? <LoaderCircle className="spin" size={14} /> : <Search className="size-3" size={12} />}
               </Button>
               <Combobox.Trigger render={<Button variant="ghost" size="icon-sm" />}
                 aria-label="选择模型" title="选择模型" disabled={busy}
                 onClick={() => {
-                  if (!open && matches === null && !chosen && !searching) search()
+                  if (!popupOpen && matches === null && !chosen && !searching) search()
                 }}>
                 <ChevronDown size={14} />
               </Combobox.Trigger>
@@ -710,10 +789,18 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
   // Decision bills inputs and outputs only.
   if (!decision) rows.push([imageGeneration ? "缓存文字输入" : "缓存读取", list.cached, charged.cached])
   if (!imageGeneration && !decision) rows.push(["缓存写入", list.cacheWrite, charged.cacheWrite])
+  const missingCacheWrite = !imageGeneration && !decision && !option?.contextPricing
+    && list.cacheWrite === null && (option !== null || model?.price_synced_at)
   return <div className="model-price-arithmetic">
     <div className="registry-field-label-row">
       <span className="registry-field-label">实际单价</span>
       <span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span>
+      {(option !== null && !option.contextPricing || missingCacheWrite) && <FieldHelp>
+        <div className="model-price-help-content">
+          {option !== null && !option.contextPricing && <ModelPriceText>保存后按此基准计费；下次同步会沿用它。</ModelPriceText>}
+          {missingCacheWrite && <ModelPriceText>该来源未单独发布缓存写入价，按缓存读取单价计费。</ModelPriceText>}
+        </div>
+      </FieldHelp>}
     </div>
     {draft.contextPricingPreview && <ContextRuleFields draft={draft} setDraft={setDraft} busy={busy} />}
     {option?.contextPricing ? <ContextPriceTable pricing={{ ...option.contextPricing, tiers: effectiveContextPriceTiers(draft) }} percent={percent} /> : <div className="model-price-grid">
@@ -733,17 +820,11 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
         </div>
       ))}
     </div>}
-    {option !== null && !option.contextPricing && <p className="publication-form-note">
-      保存后按此基准计费；下次同步会沿用它。
-    </p>}
     {option === null && model?.price_synced_at && <p className="publication-form-note">
       <RefreshCw size={12} /> 最近同步 {new Date(model.price_synced_at).toLocaleString()}
       {model.price_sync_status && model.price_sync_status !== "ok"
-        && ` · ${SYNC_STATUS_LABEL[model.price_sync_status] ?? model.price_sync_status}`}
-      {model.price_sync_message && ` · ${model.price_sync_message}`}
-    </p>}
-    {!imageGeneration && !decision && !option?.contextPricing && list.cacheWrite === null && (option !== null || model?.price_synced_at) && <p className="publication-form-note">
-      该来源未单独发布缓存写入价，按缓存读取单价计费。
+        && <> · <ModelPriceText>{SYNC_STATUS_LABEL[model.price_sync_status] ?? model.price_sync_status}</ModelPriceText></>}
+      {model.price_sync_message && <FieldHelp><ModelPriceText>{model.price_sync_message}</ModelPriceText></FieldHelp>}
     </p>}
     {otherMeters.length > 0 && <details className="model-editor-advanced">
       <summary>
@@ -764,7 +845,6 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
 
 function CatalogNotices({ details }: { details: PriceCatalogOptionsResponse }) {
   return <>
-    {details.note && <p className="publication-form-note">{details.note}</p>}
     {details.unreadable.length > 0 && <details className="model-editor-advanced">
       {/* The count sits in its own untranslated element rather than inside the sentence. An
           interpolated sentence has to be matched by a dynamic rule, and a generic fragment rule

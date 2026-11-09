@@ -104,6 +104,9 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationResponse,
     PriceCatalogModelsResponse,
     PriceCatalogOptionsResponse,
+    PriceMatchRequest,
+    PriceMatchResponse,
+    PriceSource,
     PriceSyncRequest,
     PriceSyncResponse,
     ProviderWrite,
@@ -392,12 +395,13 @@ def search_price_catalog_models(
     service: RuntimeService,
     identity: CurrentSession,
     q: Annotated[str, Query(max_length=120)] = "",
+    source: PriceSource | None = None,
 ) -> PriceCatalogModelsResponse:
     # Reading a vendor's published price list changes nothing and reveals nothing the vendor
     # does not print on its own website, so this is gated like the registry read it sits beside
     # rather than like the write it leads to.
     service.authorize(identity.role, manage=False)
-    return service.price_catalog_models(q)
+    return service.price_catalog_models(q, source=source)
 
 
 @protected_router.get(
@@ -423,7 +427,21 @@ def sync_model_prices(
     request: PriceSyncRequest | None = None,
 ) -> PriceSyncResponse:
     service.authorize(identity.role, manage=True)
-    return service.sync_prices(request.model_ids if request else None)
+    return service.sync_prices(
+        request.model_ids if request else None,
+        dry_run=request.dry_run if request else False,
+        confirmation_digest=request.confirmation_digest if request else None,
+    )
+
+
+@protected_router.post(
+    "/api/v1/model-management/price-match", response_model=PriceMatchResponse,
+)
+def match_model_price(
+    request: PriceMatchRequest, service: RuntimeService, identity: OwnerSession,
+) -> PriceMatchResponse:
+    service.authorize(identity.role, manage=True)
+    return service.match_price_model(request, user_id=identity.email)
 
 
 @protected_router.post("/api/v1/model-management/models", response_model=RegistryResponse)

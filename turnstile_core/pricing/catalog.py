@@ -28,6 +28,7 @@ of hiding it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -185,6 +186,26 @@ class CatalogEntry:
     # entry can ignore this; anything that writes a charged rate must not.
     complete: bool = True
     text_to_image: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def digest(self) -> str:
+        document = {
+            "reference": self.reference, "source": self.source, "label": self.label,
+            "input": self.input_per_million, "output": self.output_per_million,
+            "cached": self.cached_per_million, "cache_write": self.cache_write_per_million,
+            "text_to_image": self.text_to_image,
+            "context_tier": self.context_tier.model_dump(mode="json")
+            if self.context_tier else None,
+        }
+        return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return {
+            **self.metadata, "source": self.source.value, "reference": self.reference,
+            "label": self.label, "entry_digest": self.digest,
+        }
 
     @property
     def priced(self) -> bool:
@@ -263,6 +284,8 @@ class _ParsedMeter:
 
 class PriceCatalog(Protocol):
     source: PriceSource
+
+    def invalidate(self) -> None: ...
 
     def models(self) -> Sequence[CatalogModel]: ...
 
@@ -417,6 +440,10 @@ class AzureRetailCatalog:
         self._ttl = ttl_seconds
         self._models: tuple[float, tuple[CatalogModel, ...]] | None = None
         self._options: dict[str, tuple[float, CatalogOptions]] = {}
+
+    def invalidate(self) -> None:
+        self._models = None
+        self._options = {}
 
     # -- index -------------------------------------------------------------------------------
 
@@ -600,6 +627,7 @@ class AzureRetailCatalog:
             label=stem,
             product=product,
             source=PriceSource.AZURE_RETAIL,
+            context_tier=parse_context_tier(stem),
         )
         for option in self.options(model).options:
             if option.deployment != deployment:
@@ -721,6 +749,9 @@ class AnthropicCatalog:
     def __init__(self, *, ttl_seconds: int = CATALOG_TTL_SECONDS) -> None:
         self._ttl = ttl_seconds
         self._cache: tuple[float, tuple[CatalogEntry, ...]] | None = None
+
+    def invalidate(self) -> None:
+        self._cache = None
 
     def _entries(self) -> Sequence[CatalogEntry]:
         now = time.monotonic()
@@ -873,12 +904,41 @@ class CompositeCatalog:
 
     def __init__(self, catalogs: Sequence[PriceCatalog]) -> None:
         self._catalogs = list(catalogs)
+        self._sync_entries: dict[str, CatalogEntry | None] = {}
+        self._sync_failures: dict[str, Exception] = {}
 
-    def search_models(self, query: str, *, limit: int = 60) -> ModelSearch:
+    @staticmethod
+    def _sync_key(reference: str) -> str:
+        parts = reference.split(":")
+        return ":".join(parts[:3]) if parts[0] == PriceSource.AZURE_RETAIL else parts[0]
+
+    def for_sync(self, references: Sequence[str]) -> CompositeCatalog:
+        from copy import copy
+
+        sources = {reference.partition(":")[0] for reference in references}
+        catalogs = [copy(catalog) for catalog in self._catalogs if str(catalog.source) in sources]
+        for catalog in catalogs:
+            catalog.invalidate()
+        snapshot = CompositeCatalog(catalogs)
+        for reference in dict.fromkeys(references):
+            key = snapshot._sync_key(reference)
+            if key in snapshot._sync_failures:
+                continue
+            try:
+                snapshot._sync_entries[reference] = snapshot.lookup(reference)
+            except Exception as error:  # noqa: BLE001 - preserve prices on any source failure
+                snapshot._sync_failures[key] = error
+        return snapshot
+
+    def search_models(
+        self, query: str, *, limit: int = 60, source: PriceSource | None = None,
+    ) -> ModelSearch:
         terms = [term for term in re.split(r"[^a-z0-9.]+", query.lower()) if term]
         scored: list[tuple[int, int, str, CatalogModel]] = []
         unavailable: list[str] = []
         for catalog in self._catalogs:
+            if source is not None and getattr(catalog, "source", None) != source:
+                continue
             try:
                 candidates = catalog.models()
             except (httpx.HTTPError, ValueError):
@@ -900,22 +960,45 @@ class CompositeCatalog:
         )
 
     def options(self, model_key: str) -> CatalogOptions | None:
+        key = self._sync_key(model_key)
+        if key in self._sync_failures:
+            raise self._sync_failures[key]
         for catalog in self._catalogs:
-            try:
-                models = catalog.models()
-            except (httpx.HTTPError, ValueError):
+            if model_key.partition(":")[0] != str(getattr(catalog, "source", "")):
                 continue
+            if catalog.source == PriceSource.AZURE_RETAIL and any(
+                entry is not None and reference.startswith(model_key + ":")
+                for reference, entry in self._sync_entries.items()
+            ):
+                _, product, stem = model_key.split(":", 2)
+                return catalog.options(CatalogModel(
+                    key=model_key, label=stem, product=product, source=PriceSource.AZURE_RETAIL,
+                    context_tier=parse_context_tier(stem),
+                ))
+            models = catalog.models()
             for model in models:
                 if model.key == model_key:
                     return catalog.options(model)
         return None
 
-    def lookup(self, reference: str) -> CatalogEntry | None:
+    def public_entries(self) -> Sequence[CatalogEntry]:
+        from turnstile_core.pricing.models_dev import ModelsDevCatalog
+
         for catalog in self._catalogs:
-            try:
-                found = catalog.entry(reference)
-            except (httpx.HTTPError, ValueError):
+            if isinstance(catalog, ModelsDevCatalog):
+                return catalog.entries()
+        raise ValueError("Public price catalog is not configured")
+
+    def lookup(self, reference: str) -> CatalogEntry | None:
+        key = self._sync_key(reference)
+        if key in self._sync_failures:
+            raise self._sync_failures[key]
+        if reference in self._sync_entries:
+            return self._sync_entries[reference]
+        for catalog in self._catalogs:
+            if reference.partition(":")[0] != str(getattr(catalog, "source", "")):
                 continue
+            found = catalog.entry(reference)
             if found is not None:
                 return found
         return None
@@ -933,4 +1016,6 @@ def _term_score(term: str, tokens: Sequence[str]) -> int:
 
 
 def build_default_catalog() -> CompositeCatalog:
-    return CompositeCatalog([AzureRetailCatalog(), AnthropicCatalog()])
+    from turnstile_core.pricing.models_dev import ModelsDevCatalog
+
+    return CompositeCatalog([AzureRetailCatalog(), AnthropicCatalog(), ModelsDevCatalog()])

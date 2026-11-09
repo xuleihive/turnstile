@@ -1,5 +1,17 @@
 import contextRules from "../../../../turnstile_core/pricing/context-rules.json" with { type: "json" }
-import type { ContextPriceRule, ManagedModel, PriceCatalogContextTier, PriceCatalogModel, PriceCatalogOption, PriceCatalogOptionsResponse, PriceSource } from "../../data-sources/apim/types"
+import type { ContextPriceRule, ManagedModel, PriceCatalogContextTier, PriceCatalogModel, PriceCatalogOption, PriceCatalogOptionsResponse, PriceSource, PriceSyncDetail } from "../../data-sources/apim/types"
+
+export function priceSyncContextRows(detail: PriceSyncDetail) {
+  const current = new Map((detail.current_context_price_tiers ?? []).map(tier => [tier.key, tier]))
+  const proposed = new Map((detail.proposed_context_price_tiers ?? []).map(tier => [tier.key, tier]))
+  return [...new Set([...current.keys(), ...proposed.keys()])].map(key => ({
+    key, current: current.get(key), proposed: proposed.get(key),
+  })).sort((left, right) => {
+    const leftMinimum = (left.current ?? left.proposed)!.min_input_tokens
+    const rightMinimum = (right.current ?? right.proposed)!.min_input_tokens
+    return leftMinimum - rightMinimum || left.key.localeCompare(right.key)
+  })
+}
 
 export function resolveContextPriceRule(
   model: PriceCatalogModel,
@@ -213,6 +225,7 @@ export type ModelPriceDraft = {
   // "manual" keeps the four fields above exactly as they have always behaved. The other sources
   // derive them from a published list price, so the fields become read-out rather than input.
   priceSource: PriceSource
+  priceEntryDigest?: string
   priceReference: string
   // Blank inherits the connection's discount. Kept as a string so an empty box stays empty
   // instead of becoming a zero.
@@ -227,6 +240,8 @@ export type ModelPriceDraft = {
   contextThreshold?: string
   contextRuleNote?: string
   contextRuleUrl?: string
+  contextWindow?: string
+  contextWindowEdited?: boolean
 }
 
 export type ModelEditDraft = ModelPriceDraft & {
@@ -251,7 +266,8 @@ export type ModelEditError =
 export function createModelPriceDraft(contextPricingSupported = false, contextPriceRulesSupported = false): ModelPriceDraft {
   return {
     inputPrice: "", outputPrice: "", cacheReadPrice: "", cacheWritePrice: "",
-    priceSource: "manual", priceReference: "", discountPercent: "",
+    priceSource: "models_dev", priceReference: "", discountPercent: "",
+    contextWindow: "", contextWindowEdited: false,
     contextPricingPreview: false,
     contextPricingSupported, contextPriceReferences: [], contextPriceTiers: [], contextPriceRefresh: false,
     contextPriceRulesSupported, contextRuleMode: "catalog", contextThreshold: "", contextRuleNote: "", contextRuleUrl: "",
@@ -263,6 +279,7 @@ export function createModelEditDraft(model: ManagedModel, contextPricingSupporte
   return {
     displayName: model.display_name,
     contextWindow: model.context_window?.toString() ?? "",
+    contextWindowEdited: model.context_window != null,
     inputPrice: model.input_cost_per_million?.toString() ?? "",
     outputPrice: model.output_cost_per_million?.toString() ?? "",
     cacheReadPrice: model.cached_cost_per_million?.toString() ?? "",
@@ -374,9 +391,13 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
   }
   const rate = (value: number | null) =>
     value === null ? "" : discountedRate(value, effectiveDiscountPercent).toString()
+  const context = option.source_metadata?.context_window
+  const fillContext = source === "models_dev" && !draft.contextWindowEdited
+    && typeof context === "number" && Number.isSafeInteger(context) && context > 0
   return {
     ...resetContextPriceRule(draft),
     priceSource: source,
+    priceEntryDigest: option.entry_digest ?? undefined,
     priceReference: option.reference,
     contextPricingPreview: false,
     contextPriceReferences: [], contextPriceTiers: [], contextPriceRefresh: false,
@@ -384,6 +405,7 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
     outputPrice: rate(option.output_per_million),
     cacheReadPrice: rate(option.cached_per_million),
     cacheWritePrice: rate(option.cache_write_per_million),
+    ...(fillContext ? { contextWindow: String(context) } : {}),
   }
 }
 
@@ -393,6 +415,7 @@ export function applyCatalogOption<Draft extends ModelPriceDraft>(
  * `<source>:<product>:<model>:<deployment>:<region-or-*>`; the first three parts are the key.
  */
 export function modelKeyFromReference(reference: string): string | null {
+  if (reference.startsWith("models_dev:")) return reference
   const parts = reference.split(":")
   return parts.length === 5 ? parts.slice(0, 3).join(":") : null
 }
@@ -498,6 +521,8 @@ export function modelEditPayload(model: ManagedModel, draft: ModelEditDraft) {
     allowed_roles: [...draft.allowedRoles],
     is_default: draft.isDefault,
     price_source: draft.priceSource,
+    ...(draft.priceSource !== "manual" && !draft.contextPricingPreview && draft.priceEntryDigest
+      ? { price_entry_digest: draft.priceEntryDigest } : {}),
     price_reference: draft.priceSource === "manual" || draft.contextPricingPreview ? null : draft.priceReference.trim(),
     price_discount_percent: optionalNumber(draft.discountPercent),
     ...(draft.contextPricingPreview ? {

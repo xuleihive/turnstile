@@ -55,6 +55,7 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "028_product_index_alignment.up.sql",
         "029_model_intelligent_router.up.sql",
         "030_transport_status_ingestion.up.sql",
+        "031_model_price_provenance.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
 

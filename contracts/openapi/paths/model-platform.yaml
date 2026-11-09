@@ -1454,6 +1454,13 @@ paths:
       summary: Search Price Catalog Models
       operationId: search_price_catalog_models_api_v1_model_management_price_catalog_models_get
       parameters:
+      - name: source
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - $ref: ../../openapi.yaml#/components/schemas/PriceSource
+          - type: 'null'
       - name: q
         in: query
         required: false
@@ -1504,6 +1511,31 @@ paths:
                 $ref: ../../openapi.yaml#/components/schemas/HTTPValidationError
       security:
       - sessionCookie: []
+  /api/v1/model-management/price-match:
+    post:
+      summary: Match a public catalog price without saving configuration
+      operationId: matchModelPrice
+      security:
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/PriceMatchRequest
+      responses:
+        '200':
+          description: A matched catalog model or candidates requiring confirmation
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/PriceMatchResponse
+        '403':
+          description: Owner permission and a trusted write origin are required
+        '404':
+          description: The model or connection does not exist
+        '422':
+          description: Invalid matching request
   /api/v1/model-management/price-sync:
     post:
       summary: Sync Model Prices

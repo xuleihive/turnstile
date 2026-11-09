@@ -79,7 +79,11 @@ def test_image_editor_requires_prices_and_preserves_operation() -> None:
     assert "[draft.inputPrice, draft.cacheReadPrice, draft.outputPrice]" in editor
     assert "if (busy || !dirty || validation || imagePriceMissing) return" in editor
     assert "disabled={busy || imageGeneration || decision}" in editor
-    assert "showAnthropic={!decision} decision={decision} />}" in editor
+    assert (
+        "showAnthropic={!decision && !imageGeneration} decision={decision} "
+        "imageGeneration={imageGeneration} />"
+        in editor
+    )
     assert "{!draft.contextPricingPreview && !decision && <div className=\"form-grid\">" in editor
     assert "这四个值" not in editor
     assert (
