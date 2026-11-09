@@ -576,6 +576,28 @@ schemas:
           type:
           - string
           - 'null'
+  UsageRequestCounts:
+    properties:
+      total_requests:
+        type: integer
+        minimum: 0.0
+      success_requests:
+        type: integer
+        minimum: 0.0
+      client_error_requests:
+        type: integer
+        minimum: 0.0
+      server_error_requests:
+        type: integer
+        minimum: 0.0
+    additionalProperties: false
+    type: object
+    required:
+    - total_requests
+    - success_requests
+    - client_error_requests
+    - server_error_requests
+    title: UsageRequestCounts
   UsageRequestListResponse:
     properties:
       items:
@@ -584,11 +606,14 @@ schemas:
         type: array
       page:
         $ref: ../../openapi.yaml#/components/schemas/PageInfo
+      counts:
+        $ref: ../../openapi.yaml#/components/schemas/UsageRequestCounts
     additionalProperties: false
     type: object
     required:
     - items
     - page
+    - counts
     title: UsageRequestListResponse
   TimeInterval:
     type: string

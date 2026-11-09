@@ -883,6 +883,8 @@ components:
       $ref: ./openapi/schemas/observability.yaml#/schemas/UsageRequestSummary
     UsageRequestDetail:
       $ref: ./openapi/schemas/observability.yaml#/schemas/UsageRequestDetail
+    UsageRequestCounts:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/UsageRequestCounts
     UsageRequestListResponse:
       $ref: ./openapi/schemas/observability.yaml#/schemas/UsageRequestListResponse
     RunListResponse:

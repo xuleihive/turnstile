@@ -205,6 +205,11 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def usage_request_counts(
+        self, from_: datetime, to: datetime, filters: UsageFilters,
+    ) -> dict[str, Any]: ...
+
+    @abstractmethod
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None: ...
 
     @abstractmethod

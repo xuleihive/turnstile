@@ -172,9 +172,17 @@ class UsageRequestSummary(StrictModel):
     selected_model_name: str | None = None
 
 
+class UsageRequestCounts(StrictModel):
+    total_requests: int = Field(ge=0)
+    success_requests: int = Field(ge=0)
+    client_error_requests: int = Field(ge=0)
+    server_error_requests: int = Field(ge=0)
+
+
 class UsageRequestListResponse(StrictModel):
     items: list[UsageRequestSummary]
     page: PageInfo
+    counts: UsageRequestCounts
 
 
 class UsageRequestDetail(UsageRequestSummary):

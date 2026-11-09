@@ -1305,6 +1305,45 @@ class PostgreSqlOpsDbProxy(
             row["breakdown"] = grouped.get((str(row["id"]), parent_name), [])
         return rows
 
+    _REQUEST_TRACE_ROW_FILTER_SQL = """
+        AND usage.usage_domain = 'apim'
+        AND NOT EXISTS (
+            SELECT 1
+            FROM model_router_invocation logical_decision
+            CROSS JOIN LATERAL jsonb_array_elements(
+                logical_decision.attempts
+            ) logical_attempt
+            WHERE logical_decision.request_id <> usage.request_id
+              AND logical_attempt->>'request_id' = usage.request_id
+        )"""
+
+    def usage_request_counts(
+        self, from_: datetime, to: datetime, filters: UsageFilters,
+    ) -> dict[str, Any]:
+        filter_sql, filter_parameters = self._filter_sql(filters, trace=True)
+        with self._connection() as connection:
+            row = connection.execute(
+                f"""SELECT COUNT(*)::BIGINT AS total_requests,
+                    COUNT(*) FILTER (
+                        WHERE usage.status_code BETWEEN 100 AND 399
+                          AND usage.platform_outcome IS DISTINCT FROM 'failed'
+                    )::BIGINT AS success_requests,
+                    COUNT(*) FILTER (
+                        WHERE usage.status_code BETWEEN 400 AND 499
+                    )::BIGINT AS client_error_requests,
+                    COUNT(*) FILTER (
+                        WHERE usage.status_code >= 500 OR (
+                            usage.platform_outcome = 'failed'
+                            AND COALESCE(usage.status_code, 0) < 400
+                        )
+                    )::BIGINT AS server_error_requests
+                    FROM invocation_request_trace usage
+                    WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}
+                    {self._REQUEST_TRACE_ROW_FILTER_SQL}""",
+                [from_, to, *filter_parameters],
+            ).fetchone()
+        return cast(dict[str, Any], row)
+
     def list_usage_requests(
         self,
         from_: datetime,
@@ -1424,18 +1463,7 @@ class PostgreSqlOpsDbProxy(
                         WHERE attempt->>'request_id' IS NOT NULL
                     ) routed ON decision.request_id IS NOT NULL
                     WHERE usage.ts >= %s AND usage.ts < %s{filter_sql}{cursor_sql}
-                        AND usage.usage_domain = 'apim'
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM model_router_invocation logical_decision
-                            CROSS JOIN LATERAL jsonb_array_elements(
-                                logical_decision.attempts
-                            ) logical_attempt
-                            WHERE logical_decision.request_id
-                                <> usage.request_id
-                              AND logical_attempt->>'request_id'
-                                = usage.request_id
-                        )
+                        {self._REQUEST_TRACE_ROW_FILTER_SQL}
                     ORDER BY usage.ts DESC, usage.trace_id DESC LIMIT %s""",
                 [from_, to, *filter_parameters, limit],
             ).fetchall()

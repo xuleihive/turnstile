@@ -1241,13 +1241,14 @@ function RequestTrace({
   }
   const visibleRows = pricedRows.filter((item) => requestTraceMatches(item, normalizedSearch, statusFilter));
   const totals = overview.data?.totals;
-  const windowRequests = totals?.total_requests ?? 0;
-  const clientErrors = totals?.client_error_requests ?? 0;
-  const serverErrors = totals?.server_error_requests ?? 0;
+  const counts = query.data?.pages[0]?.counts;
+  const windowRequests = counts?.total_requests ?? 0;
+  const clientErrors = counts?.client_error_requests ?? 0;
+  const serverErrors = counts?.server_error_requests ?? 0;
   const failedRequests = clientErrors + serverErrors;
   const statusTotal = statusFilter === "all"
     ? windowRequests
-    : statusFilter === "success" ? totals?.success_requests ?? 0 : failedRequests;
+    : statusFilter === "success" ? counts?.success_requests ?? 0 : failedRequests;
   const slowRequests = totals?.latency_over_5s ?? 0;
   const slowRequestPercent = windowRequests ? (slowRequests / windowRequests) * 100 : 0;
   const volumeRows = (volumeTrend.data?.points ?? []).map((point) => ({

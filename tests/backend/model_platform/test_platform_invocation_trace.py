@@ -7,8 +7,12 @@ from uuid import UUID
 import httpx
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from backend.api import app
+from backend.http.dependencies import get_repository
+from backend.http.session import SessionIdentity, require_authenticated_session
 from backend.services.runtime_service import ModelRuntimeService
 from tests.backend.model_platform.test_apim_target_client_factory import registered
 from tests.backend.model_platform.test_gateway_targets import TARGET, deployment, target
@@ -165,6 +169,87 @@ def formal_usage(attempt: PlatformInvocationAttempt) -> TokenUsageRecord:
         estimated=False,
         ingest_source="eventhub",
     )
+
+
+def test_usage_request_counts_include_platform_failures_without_rewriting_usage() -> None:
+    repository = InMemoryRepository()
+    attempt = invocation_attempt()
+    repository.begin_platform_invocation(attempt)
+    repository.finish_platform_invocation(PlatformInvocationCompletion(
+        request_id=attempt.request_id, completed_at=datetime.now(UTC),
+        outcome="failed", status_code=502, latency_ms=15, failure_kind="invalid_response",
+        gateway_correlation_id="unit-correlation",
+    ))
+    usage = formal_usage(attempt)
+    repository.write_token_usage(usage)
+    for index in range(4):
+        repository.write_token_usage(usage.model_copy(update={
+            "id": f"denied-{index}", "request_id": f"denied-{index}",
+            "correlation_id": f"denied-correlation-{index}", "status_code": 403,
+            "input_tokens": 0, "output_tokens": 0, "et": 0, "estimated_cost": 0,
+        }))
+
+    counts = repository.usage_request_counts(
+        attempt.started_at - timedelta(seconds=1), datetime.now(UTC), UsageFilters(),
+    )
+
+    assert counts == {
+        "total_requests": 5, "success_requests": 0,
+        "client_error_requests": 4, "server_error_requests": 1,
+    }
+    assert len(repository.usage_records) == 5
+    assert repository.usage_records[0].status_code == 200
+    assert repository.usage_records[0].estimated_cost == usage.estimated_cost
+    owner = SessionIdentity(
+        id="unit-owner", email="owner@example.test", name="Owner", role="owner",
+        method="password", session_expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    parameters = {
+        "from": (attempt.started_at - timedelta(seconds=1)).isoformat(),
+        "to": datetime.now(UTC).isoformat(), "limit": "1",
+    }
+    with patch.dict(app.dependency_overrides, {
+        get_repository: lambda: repository, require_authenticated_session: lambda: owner,
+    }):
+        client = TestClient(app)
+        first_page = client.get("/api/v1/observability/requests", params=parameters)
+        assert first_page.status_code == 200
+        body = first_page.json()
+        assert len(body["items"]) == 1 and body["page"]["next_cursor"] is not None
+        assert body["counts"] == counts
+        second_page = client.get("/api/v1/observability/requests", params={
+            **parameters, "cursor": body["page"]["next_cursor"],
+        })
+        assert second_page.status_code == 200 and second_page.json()["counts"] == counts
+        denied = client.get("/api/v1/observability/requests", params={
+            **parameters, "status_code": "403",
+        })
+        assert denied.status_code == 200
+        assert denied.json()["counts"] == {
+            "total_requests": 4, "success_requests": 0,
+            "client_error_requests": 4, "server_error_requests": 0,
+        }
+
+
+def test_postgresql_usage_request_counts_use_the_same_trace_scope_as_the_list() -> None:
+    repository = PostgreSqlOpsDbProxy("postgresql://unused", pool_min_size=0)
+    context, connection = MagicMock(), MagicMock()
+    context.__enter__.return_value = connection
+    expected = {"total_requests": 5, "success_requests": 0,
+                "client_error_requests": 4, "server_error_requests": 1}
+    connection.execute.return_value.fetchone.return_value = expected
+    start = datetime.now(UTC) - timedelta(hours=1)
+    end = datetime.now(UTC)
+    with patch.object(repository, "_connection", return_value=context):
+        assert repository.usage_request_counts(
+            start, end, UsageFilters(organization_id="unit-organization"),
+        ) == expected
+
+    statement, parameters = connection.execute.call_args.args
+    assert "FROM invocation_request_trace usage" in statement
+    assert "usage.platform_outcome = 'failed'" in statement
+    assert repository._REQUEST_TRACE_ROW_FILTER_SQL in statement
+    assert parameters == [start, end, "unit-organization"]
 
 
 def test_trace_is_immediate_nonbilling_and_merges_only_unique_formal_correlation() -> None:

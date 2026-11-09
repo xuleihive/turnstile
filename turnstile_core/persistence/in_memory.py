@@ -1341,6 +1341,26 @@ class InMemoryRepository(
             reverse=True,
         )[:limit]
 
+    def usage_request_counts(
+        self, from_: datetime, to: datetime, filters: UsageFilters,
+    ) -> dict[str, Any]:
+        rows = self.list_usage_requests(
+            from_, to, filters, len(self.usage_records) + len(self.invocation_attempts),
+        )
+        counts = {
+            "total_requests": len(rows), "success_requests": 0,
+            "client_error_requests": 0, "server_error_requests": 0,
+        }
+        for row in rows:
+            status = row["status_code"] or 0
+            if 400 <= status < 500:
+                counts["client_error_requests"] += 1
+            elif status >= 500 or row.get("platform_outcome") == "failed":
+                counts["server_error_requests"] += 1
+            elif status >= 100:
+                counts["success_requests"] += 1
+        return counts
+
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None:
         platform = self.invocation_attempts.get(request_id.removeprefix("platform:"))
         if platform is not None and self._platform_usage(platform) is None:

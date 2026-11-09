@@ -106,8 +106,10 @@ function harness(initial = {}) {
     total_requests: 20, success_requests: 17, client_error_requests: 2, server_error_requests: 1,
     p50_latency_ms: 120, p95_latency_ms: 7200, p99_latency_ms: 9200,
     latency_under_1s: 10, latency_1_to_2s: 4, latency_2_to_5s: 2, latency_over_5s: 4,
+    ...state.overviewTotals,
   } }
-  const page = () => ({ items: state.rows, page: { next_cursor: state.nextCursor } })
+  const page = () => ({ items: state.rows, page: { next_cursor: state.nextCursor },
+    counts: state.requestCounts ?? overview.totals })
   const transport = {
     entities: () => entities,
     registry: () => ({ models: [] }),
@@ -330,6 +332,22 @@ test("An empty deep-link window retains controls and restores the ID after clear
   assert.equal(view.selected(), "")
   view.search("")
   assert.equal(view.selected(), "outside")
+})
+
+test("TRC-02: status KPIs use full-window Trace counts, not billing status or loaded rows", () => {
+  const view = harness({
+    rows: [request("denied", { status_code: 403 }),
+      request("platform-failed", { status_code: 200, platform_outcome: "failed" })],
+    overviewTotals: { total_requests: 5, success_requests: 1,
+      client_error_requests: 4, server_error_requests: 0 },
+    requestCounts: { total_requests: 5, success_requests: 0,
+      client_error_requests: 4, server_error_requests: 1 },
+  })
+  view.status("error")
+  const failure = view.control(node => node.props?.label === "失败请求")
+  assert.equal(failure.props.value, "5")
+  assert.equal(failure.props.note, "4xx 4 · 5xx 1")
+  assert.equal(view.control(node => node.props?.title === "请求记录").props.meta, "2 / 5 条")
 })
 
 test("User selection follows search, status and empty-list changes", () => {

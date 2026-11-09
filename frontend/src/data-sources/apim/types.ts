@@ -152,6 +152,12 @@ export type UsageRequestSummary = {
 export type UsageRequestPage = {
   items: UsageRequestSummary[]
   page: { next_cursor: string | null }
+  counts: {
+    total_requests: number
+    success_requests: number
+    client_error_requests: number
+    server_error_requests: number
+  }
 }
 
 export type UsageRequestDetail = UsageRequestSummary & {

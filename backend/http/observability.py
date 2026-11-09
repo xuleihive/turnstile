@@ -33,6 +33,7 @@ from turnstile_core.domain.models import (
     TrendResponse,
     UsageAnomaly,
     UsageAnomalyListResponse,
+    UsageRequestCounts,
     UsageRequestDetail,
     UsageRequestListResponse,
     UsageRequestSummary,
@@ -196,6 +197,9 @@ def list_usage_requests(
             for row in items
         ],
         page=PageInfo(next_cursor=next_cursor),
+        counts=UsageRequestCounts.model_validate(
+            repository.usage_request_counts(from_, to, filters),
+        ),
     )
 
 
