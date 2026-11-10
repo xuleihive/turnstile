@@ -9,7 +9,7 @@ import { Chip } from "../ui/chip"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog"
 import { RegistryNoticeBanner } from "../ui/registry-notice-banner"
 import { ResizableTable } from "../ui/resizable-table"
-import { priceSyncContextRows } from "./model-edit-form"
+import { discountedRate, priceSyncChangeCounts, priceSyncChangeLabels, priceSyncContextRows, priceSyncDetailForDisplay } from "./model-edit-form"
 import { ModelPriceText } from "./model-price-source"
 
 const outcomes: Record<string, string> = {
@@ -35,11 +35,11 @@ function RateComparison({ before, after, available }: {
   </span>
 }
 
-function contextRates(tier: StoredContextPriceTier): NonNullable<PriceSyncDetail["current_prices"]> {
-  return {
-    input: tier.input_price_per_million, output: tier.output_price_per_million,
-    cached: tier.cached_price_per_million, cache_write: tier.cache_write_price_per_million,
-  }
+function contextRates(tier: StoredContextPriceTier, percent: number | null): NonNullable<PriceSyncDetail["current_prices"]> {
+  const prices = tier.list_prices
+  return Object.fromEntries(priceBuckets.map(bucket => [bucket,
+    prices[bucket] == null ? null : discountedRate(prices[bucket], percent),
+  ])) as NonNullable<PriceSyncDetail["current_prices"]>
 }
 
 function tierRange(tier: StoredContextPriceTier): string {
@@ -52,6 +52,10 @@ export function ModelPriceSyncDialog({ onComplete }: { onComplete?: (registry: M
   const [result, setResult] = useState<PriceSyncResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const details = (result?.details ?? []).map(detail => priceSyncDetailForDisplay(
+    detail, result?.registry.models.find(model => model.id === detail.model_id),
+  ))
+  const changes = priceSyncChangeCounts(details)
 
   const execute = async (confirm = false) => {
     setBusy(true)
@@ -83,8 +87,10 @@ export function ModelPriceSyncDialog({ onComplete }: { onComplete?: (registry: M
           {error && <RegistryNoticeBanner notice={{ ok: false, text: error }} />}
           {result && <>
             <dl className="price-sync-summary">
-              <div data-tone="updated"><dt>{result.dry_run ? "可更新" : "已处理"}</dt><dd>{result.updated}</dd></div>
-              <div><dt>未变化</dt><dd>{result.unchanged ?? 0}</dd></div>
+              <div data-tone="updated"><dt><ModelPriceText>目录价变化</ModelPriceText></dt><dd>{changes.catalog}</dd></div>
+              <div data-tone="review"><dt><ModelPriceText>规则变化</ModelPriceText></dt><dd>{changes.rules}</dd></div>
+              <div><dt>未变化</dt><dd>{changes.unchanged}</dd></div>
+              {changes.unknown > 0 && <div><dt><ModelPriceText>目录基准未知</ModelPriceText></dt><dd>{changes.unknown}</dd></div>}
               <div><dt>手工价已跳过</dt><dd>{result.skipped_manual ?? 0}</dd></div>
               <div data-tone="review"><dt>待复核</dt><dd>{result.review_needed}</dd></div>
               <div data-tone="unavailable"><dt>未匹配或读取失败</dt><dd>{result.unmapped + result.stale + result.superseded}</dd></div>
@@ -93,22 +99,27 @@ export function ModelPriceSyncDialog({ onComplete }: { onComplete?: (registry: M
             <ResizableTable className="price-sync-table">
               <colgroup><col className="price-sync-model-column" /><col className="price-sync-tier-column" /><col /><col /><col /><col /><col className="price-sync-result-column" /></colgroup>
               <thead><tr><th>模型</th><th><ModelPriceText>计价档位</ModelPriceText></th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>结果</th></tr></thead>
-              {result.details.map(detail => {
+              {details.map(detail => {
                 const outcome = detail.outcome ?? detail.status
                 const model = result.registry.models.find(item => item.id === detail.model_id)
+                const labels = priceSyncChangeLabels(detail, model, !result.dry_run && outcome === "updated")
                 const contextRows = priceSyncContextRows(detail)
                 const originTier = contextRows[0]?.current ?? contextRows[0]?.proposed
                 const origin = originTier?.input_range_source?.origin
                 const rows = contextRows.length ? contextRows : [{ key: "flat", current: undefined, proposed: undefined }]
                 const status = <Chip className="price-sync-outcome" data-outcome={outcome}>
                   {outcome === "review_needed" && <TriangleAlert size={12} aria-hidden="true" />}
-                  <span>{!result.dry_run && outcome === "updated" ? "已同步" : outcomes[outcome] ?? detail.status}</span>
+                  <span><ModelPriceText>{labels.length ? [
+                    ...labels, ...(outcome === "review_needed" ? ["待复核"] : []),
+                    ...(!result.dry_run && outcome === "updated" ? ["已应用"] : []),
+                  ].join(" · ") : !result.dry_run && outcome === "updated" ? "已同步" : outcomes[outcome] ?? detail.status}</ModelPriceText></span>
                 </Chip>
                 return <tbody key={detail.model_id} data-model-key={detail.model_key} data-outcome={outcome}>
                   {rows.map((pair, index) => {
                     const tier = pair.current ?? pair.proposed
-                    const before = contextRows.length ? pair.current ? contextRates(pair.current) : null : detail.current_prices
-                    const after = contextRows.length ? pair.proposed ? contextRates(pair.proposed) : null : detail.proposed_prices
+                    const percent = model?.effective_discount_percent ?? null
+                    const before = contextRows.length ? pair.current ? contextRates(pair.current, percent) : null : detail.current_prices
+                    const after = contextRows.length ? pair.proposed ? contextRates(pair.proposed, percent) : null : detail.proposed_prices
                     const changedRange = pair.current && pair.proposed && (
                       pair.current.min_input_tokens !== pair.proposed.min_input_tokens
                       || pair.current.max_input_tokens !== pair.proposed.max_input_tokens)
@@ -159,7 +170,7 @@ export function ModelPriceSyncDialog({ onComplete }: { onComplete?: (registry: M
           </>}
         </div>
         <DialogFooter className="registry-editor-footer price-sync-footer">
-          <span className="price-sync-legend"><span>当前单价</span><ArrowRight size={12} aria-hidden="true" /><span>拟采用单价</span></span>
+          <span className="price-sync-legend"><ModelPriceText>原报价</ModelPriceText><ArrowRight size={12} aria-hidden="true" /><ModelPriceText>新报价（同一折扣）</ModelPriceText></span>
           <Button type="button" variant="outline" disabled={busy} onClick={() => void execute()}><RefreshCw size={14} />重新预览</Button>
           {result?.dry_run && <Button type="button" disabled={busy || !result.confirmation_digest || result.considered === 0}
             onClick={() => void execute(true)}><Check size={14} />确认同步</Button>}

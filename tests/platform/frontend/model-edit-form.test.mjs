@@ -36,8 +36,8 @@ const model = (overrides = {}) => ({
   ...overrides,
 })
 
-test("new pricing uses public reference while saved and legacy model sources are preserved", () => {
-  assert.equal(createModelPriceDraft().priceSource, "models_dev")
+test("new pricing defaults to Azure while saved and legacy model sources are preserved", () => {
+  assert.equal(createModelPriceDraft().priceSource, "azure_retail")
   for (const price_source of ["manual", "azure_retail", "anthropic", "models_dev"]) {
     assert.equal(createModelEditDraft(model({ price_source })).priceSource, price_source)
   }

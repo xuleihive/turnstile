@@ -60,7 +60,7 @@
 .price-sync-data-row > th > small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
 .price-sync-data-row > td { text-align: right; }
 .price-sync-data-row > .price-sync-result-cell { text-align: left; }
-.price-sync-outcome { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--foreground); font-size: 12px; line-height: 18px; font-weight: 400; }
+.price-sync-outcome { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; max-width: 100%; white-space: normal; color: var(--foreground); font-size: 12px; line-height: 18px; font-weight: 400; }
 .price-sync-outcome svg { flex: 0 0 auto; }
 .price-sync-outcome[data-outcome="updated"], .price-sync-outcome[data-outcome="ok"] { color: var(--success); border-color: color-mix(in srgb, var(--success) 25%, var(--border)); background: color-mix(in srgb, var(--success) 8%, var(--background)); }
 .price-sync-outcome[data-outcome="review_needed"] { color: color-mix(in srgb, var(--warning) 70%, var(--foreground)); border-color: color-mix(in srgb, var(--warning) 25%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, var(--background)); }
@@ -82,7 +82,7 @@
 .price-sync-loading { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; font-size: 12px; line-height: 18px; color: var(--muted-foreground); }
 .price-sync-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 16px; color: var(--muted-foreground); font-size: 12px; line-height: 18px; }
 .price-sync-empty p { margin: 0; }
-.price-sync-footer.registry-editor-footer > button { width: 144px; }
+.price-sync-footer.registry-editor-footer > button { width: auto; flex: 0 0 auto; }
 .price-sync-legend { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
 @media (max-width: 600px) {
 	.registry-editor-dialog.price-sync-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
@@ -91,7 +91,7 @@
 	.price-sync-summary { gap: 6px 16px; }
 	.price-sync-footer.registry-editor-footer { flex-wrap: wrap; padding-inline: 12px; }
 	.price-sync-legend { width: 100%; }
-	.price-sync-footer > button { min-width: 0; flex: 1; }
+	.price-sync-footer > button { min-width: 0; flex: 0 0 auto; }
 }
 .model-price-help-content { display: grid; gap: 8px; max-width: 256px; overflow-wrap: anywhere; }
 .model-price-help-provenance { display: grid; gap: 8px; margin: 0; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -1979,6 +1979,7 @@ button.router-new-button:disabled { cursor: not-allowed; opacity: .5; }
 .model-price-results { max-height: min(264px, var(--available-height)); overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: 4px; margin: 0; list-style: none; }
 .model-price-results:empty { display: none; }
 .model-price-arithmetic { min-width: 0; display: grid; gap: 6px; border-radius: 8px; padding: 10px 12px; background: var(--muted); }
+.model-price-context-refresh { margin-left: auto; margin-right: -4px; }
 .model-price-grid { display: grid; gap: 0; font-size: 12px; line-height: 18px; }
 .model-price-grid-head, .model-price-grid-row { display: grid; grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr)); gap: 10px; padding: 3px 0; }
 .model-price-grid-head { color: var(--muted-foreground); font-size: 11px; line-height: 16px; }

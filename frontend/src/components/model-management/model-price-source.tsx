@@ -1,6 +1,7 @@
 import { Combobox } from "@base-ui/react/combobox"
+import { Tooltip } from "@base-ui/react/tooltip"
 import { AlertTriangle, Check, ChevronDown, LoaderCircle, RefreshCw, Search, WandSparkles } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import { dataSource } from "../../data-sources/apim/api"
 import { translateForLocale, useLocale } from "../../locales/index"
@@ -411,6 +412,20 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       <PriceArithmetic model={model} draft={draft} setDraft={setDraft} percent={discount.percent}
         imageGeneration={imageGeneration} decision={decision}
         busy={busy || loadingOptions || details?.complete === false}
+        refreshAction={draft.contextPricingPreview && chosenModel && model?.context_price_tiers?.length ? <Tooltip.Provider delay={200} closeDelay={100}>
+          <Tooltip.Root>
+            <Tooltip.Trigger render={<Button type="button" variant="ghost" size="icon-sm"
+              className="model-price-context-refresh" aria-label="重新读取分档价格"
+              disabled={busy || loadingOptions} onClick={() => void chooseModel(chosenModel)} />}>
+              <RefreshCw size={14} aria-hidden="true" />
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Positioner side="top" sideOffset={6} className="field-help-positioner">
+                <Tooltip.Popup className="field-help-popup"><ModelPriceText>重新读取分档价格</ModelPriceText></Tooltip.Popup>
+              </Tooltip.Positioner>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        </Tooltip.Provider> : undefined}
         option={details?.complete ? selectedOption : null} otherMeters={details?.other_meters ?? []} />
 
       {draft.contextPricingPreview && validateModelPricing(draft) === "context_pricing_preview" && <p className="publication-form-note" role="status">
@@ -422,10 +437,8 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       {draft.contextPricingPreview && draft.contextRuleMode === "custom" && !draft.contextPriceRulesSupported && <p className="publication-form-note" role="status">
         <ModelPriceText>当前后端尚不支持自定义阈值，暂不可保存或发布。</ModelPriceText>
       </p>}
-      {draft.contextPricingPreview && chosenModel && model?.context_price_tiers?.length ? <div className="registry-field-label-row">
-        <Button type="button" variant="outline" size="sm" disabled={busy || loadingOptions}
-          onClick={() => void chooseModel(chosenModel)}><RefreshCw size={12} /><ModelPriceText>重新读取分档价格</ModelPriceText></Button>
-        {model.pending_context_price_tiers?.length ? <span className="publication-form-note"><ModelPriceText>新的分档价格待复核</ModelPriceText></span> : null}
+      {draft.contextPricingPreview && chosenModel && model?.context_price_tiers?.length && model.pending_context_price_tiers?.length ? <div className="registry-field-label-row">
+        <span className="publication-form-note"><ModelPriceText>新的分档价格待复核</ModelPriceText></span>
       </div> : null}
       {details && <CatalogNotices details={details} />}
     </div>}
@@ -744,7 +757,7 @@ function ContextPriceTable({ pricing, percent }: {
           </th>
         })}
       </tr>
-      <tr>{pricing.tiers.flatMap(tier => [<th key={`${tier.key}-list`} scope="col">官方价</th>, <th key={`${tier.key}-charged`} scope="col">实际单价</th>])}</tr>
+      <tr>{pricing.tiers.flatMap(tier => [<th key={`${tier.key}-list`} scope="col"><ModelPriceText>目录价</ModelPriceText></th>, <th key={`${tier.key}-charged`} scope="col"><ModelPriceText>拟采用计费价</ModelPriceText></th>])}</tr>
     </thead>
     <tbody>
       {rows.map(([bucket, label]) => <tr key={bucket} data-price-bucket={bucket}>
@@ -765,7 +778,7 @@ function ContextPriceTable({ pricing, percent }: {
   </div>
 }
 
-function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft, busy, percent, option, otherMeters, imageGeneration, decision }: {
+function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft, busy, percent, option, otherMeters, imageGeneration, decision, refreshAction }: {
   model?: ManagedModel
   draft: Draft
   setDraft: (updater: (current: Draft) => Draft) => void
@@ -775,6 +788,7 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
   otherMeters: string[]
   imageGeneration: boolean
   decision: boolean
+  refreshAction?: ReactNode
 }) {
   // A freshly picked option wins over the last sync, so the list price and the charged rate in
   // each row always come from the same place and the multiplication reads true.
@@ -806,19 +820,20 @@ function PriceArithmetic<Draft extends ModelPriceDraft>({ model, draft, setDraft
     && list.cacheWrite === null && (option !== null || model?.price_synced_at)
   return <div className="model-price-arithmetic">
     <div className="registry-field-label-row">
-      <span className="registry-field-label">实际单价</span>
+      <span className="registry-field-label"><ModelPriceText>拟采用计费价</ModelPriceText></span>
       <span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span>
-      {(option !== null && !option.contextPricing || missingCacheWrite) && <FieldHelp>
+      <FieldHelp>
         <div className="model-price-help-content">
-          {option !== null && !option.contextPricing && <ModelPriceText>保存后按此基准计费；下次同步会沿用它。</ModelPriceText>}
+          <ModelPriceText>按当前配置计算，保存后才采用；不代表线上生效价或历史账单价格。</ModelPriceText>
           {missingCacheWrite && <ModelPriceText>该来源未单独发布缓存写入价，按缓存读取单价计费。</ModelPriceText>}
         </div>
-      </FieldHelp>}
+      </FieldHelp>
+      {refreshAction}
     </div>
     {draft.contextPricingPreview && <ContextRuleFields draft={draft} setDraft={setDraft} busy={busy} />}
     {option?.contextPricing ? <ContextPriceTable pricing={{ ...option.contextPricing, tiers: effectiveContextPriceTiers(draft) }} percent={percent} /> : <div className="model-price-grid">
       <div className="model-price-grid-head">
-        <span>计费项</span><span>官方价</span><span>折扣</span><span>实际单价</span>
+        <span>计费项</span><span><ModelPriceText>目录价</ModelPriceText></span><span>折扣</span><span><ModelPriceText>拟采用计费价</ModelPriceText></span>
       </div>
       {rows.map(([label, listed, actual]) => (
         <div className="model-price-grid-row" key={label}>

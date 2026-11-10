@@ -114,7 +114,7 @@ from turnstile_core.pricing.context import (
     resolve_context_prices,
 )
 from turnstile_core.pricing.matching import match_model
-from turnstile_core.pricing.sync import plan_price_sync, repriced_at_discount
+from turnstile_core.pricing.sync import plan_price_sync, price_sync_changes, repriced_at_discount
 from turnstile_core.security import CredentialCipher, credential_hint
 from turnstile_core.services.application_access import ApplicationAccessService
 from turnstile_core.services.budget_settlement import BudgetScopeRepository, BudgetStatusRepository
@@ -2609,24 +2609,27 @@ class ModelRuntimeService:
                     for bucket, price in update.pending_list_price.items()
                 }) if update.pending_list_price else None
             )
-            same = update.writes and (
-                current_prices == proposed if proposed is not None else
-                update.context_price_tiers == [
-                    tier.model_dump(mode="json") for tier in model.context_price_tiers
-                ]
-            )
-            unchanged += int(same)
             proposed_tiers = (update.context_price_tiers if update.writes
                               else update.pending_context_price_tiers)
+            typed_tiers = [StoredContextPriceTier.model_validate(tier) for tier in proposed_tiers
+                           ] if proposed_tiers is not None else None
+            list_proposal = PendingListPrice(**{
+                bucket: getattr(update, "list_" + column)
+                for bucket, column in zip(columns, charged_columns, strict=True)
+            }) if update.writes and typed_tiers is None else (
+                PendingListPrice(**update.pending_list_price) if update.pending_list_price else None
+            )
+            reasons, catalog_changed = price_sync_changes(model, list_proposal, typed_tiers)
+            same = update.writes and not reasons and catalog_changed is False
+            unchanged += int(same)
             details.append(PriceSyncDetail(
                 model_id=update.model_id, model_key=update.model_key, status=update.status,
+                change_reasons=reasons, catalog_price_changed=catalog_changed,
                 outcome=("unchanged" if same else
                          "updated" if update.writes else update.status.value),
                 message=update.message, current_prices=current_prices, proposed_prices=proposed,
                 current_context_price_tiers=model.context_price_tiers,
-                proposed_context_price_tiers=[
-                    StoredContextPriceTier.model_validate(tier) for tier in proposed_tiers
-                ] if proposed_tiers is not None else None,
+                proposed_context_price_tiers=typed_tiers,
             ))
         if dry_run:
             return PriceSyncResponse(
@@ -2683,6 +2686,8 @@ class ModelRuntimeService:
                 status=PriceSyncStatus.SUPERSEDED if superseded else update.status,
                 message=current.price_sync_message if superseded and current else update.message,
                 outcome="superseded" if superseded else preview_detail.outcome,
+                change_reasons=preview_detail.change_reasons,
+                catalog_price_changed=preview_detail.catalog_price_changed,
                 current_prices=preview_detail.current_prices,
                 proposed_prices=preview_detail.proposed_prices,
                 current_context_price_tiers=preview_detail.current_context_price_tiers,

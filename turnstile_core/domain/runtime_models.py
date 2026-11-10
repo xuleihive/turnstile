@@ -766,12 +766,17 @@ class PriceSyncRequest(StrictModel):
     confirmation_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+PriceSyncChangeReason = Literal["catalog_price_changed", "discount_pending", "pricing_rule_changed"]
+
+
 class PriceSyncDetail(StrictModel):
     model_id: UUID
     model_key: str
     status: PriceSyncStatus
     message: str | None = None
     outcome: str | None = None
+    change_reasons: list[PriceSyncChangeReason] = Field(default_factory=list)
+    catalog_price_changed: bool | None = None
     current_prices: PendingListPrice | None = None
     proposed_prices: PendingListPrice | None = None
     current_context_price_tiers: list[StoredContextPriceTier] = Field(default_factory=list)

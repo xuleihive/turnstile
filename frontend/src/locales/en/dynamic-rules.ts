@@ -2,7 +2,7 @@ const plural = (value: string, singular: string, pluralForm = `${singular}s`) =>
   Number(value.replace(/,/g, "")) === 1 ? singular : pluralForm
 
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
-  [/^官方(输入价|输出价|缓存读取价|缓存写入价)较上次接受的价格变动\s*([\d.]+)%[，,]\s*超过\s*([\d.]+)%\s*复核阈值[，,]\s*未自动写入$/g, (_match, bucket, change, threshold) => {
+  [/^(?:官方|目录)(输入价|输出价|缓存读取价|缓存写入价)较上次接受的价格变动\s*([\d.]+)%[，,]\s*超过\s*([\d.]+)%\s*复核阈值[，,]\s*未自动写入$/g, (_match, bucket, change, threshold) => {
     const names: Record<string, string> = { 输入价: "input", 输出价: "output", 缓存读取价: "cache-read", 缓存写入价: "cache-write" }
     return `Catalog ${names[bucket]} price changed ${change}%, exceeding the ${threshold}% review threshold. Existing prices are preserved.`
   }],

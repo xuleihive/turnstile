@@ -86,7 +86,7 @@
 	justify-content: center;
 	border-radius: 6px;
 	padding: 0 4px;
-	color: color-mix(in oklch, var(--sidebar-foreground) 70%, transparent);
+	color: var(--muted-foreground);
 	font-size: 12px;
 	font-weight: 500;
 	font-variant-numeric: tabular-nums;
@@ -315,13 +315,17 @@ img.sidebar-avatar { object-fit: cover; background: var(--accent); }
 	cursor: pointer;
 	gap: 4px;
 }
-.pinned-group-trigger:hover {
+.nav-group-trigger { appearance: none; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.pinned-group-trigger:hover,
+.nav-group-trigger:hover {
 	background: color-mix(in oklch, var(--sidebar-accent) 70%, transparent);
 	color: var(--sidebar-accent-foreground);
 }
-.pinned-group-trigger:focus-visible { outline: 2px solid var(--sidebar-ring); outline-offset: -2px; }
-.pinned-group-caret { flex: 0 0 auto; transition: transform 200ms ease; }
-.pinned-group-trigger[aria-expanded="true"] .pinned-group-caret { transform: rotate(90deg); }
+.pinned-group-trigger:focus-visible,
+.nav-group-trigger:focus-visible { outline: 2px solid var(--sidebar-ring); outline-offset: -2px; }
+.pinned-group-caret { flex: 0 0 auto; width: 14px; height: 14px; margin-left: auto; margin-right: -2px; color: color-mix(in oklch, var(--muted-foreground) 70%, transparent); transition: transform 200ms ease; }
+.pinned-group-trigger[aria-expanded="true"] .pinned-group-caret,
+.nav-group-trigger[aria-expanded="true"] .pinned-group-caret { transform: rotate(90deg); }
 /* Hidden until the group is hovered: the count is a reassurance when a collapsed group
    hides its rows, not a number worth competing with the report titles. */
 .pinned-group-count {
@@ -337,12 +341,16 @@ img.sidebar-avatar { object-fit: cover; background: var(--accent); }
 .sidebar-nav-menu { gap: 4px; }
 .sidebar-nav-menu .sidebar-menu-button em {
 	margin-left: auto;
-	color: inherit;
+	color: var(--muted-foreground);
 	font-size: 12px;
 	line-height: 16px;
 	font-weight: 500;
 	font-style: normal;
 }
+.sidebar-count-skeleton { display: inline-block; width: 18px; height: 12px; border-radius: 3px; background: var(--muted); vertical-align: middle; }
+.sidebar-nav-menu .sidebar-menu-button em,
+.sidebar-menu-badge,
+.pinned-group-count { display: none; }
 @media (max-width: 767px) {
 	.sidebar-peer > aside { padding: 0; }
 	.sidebar-inner { border-radius: 0; box-shadow: none; outline: 0; }

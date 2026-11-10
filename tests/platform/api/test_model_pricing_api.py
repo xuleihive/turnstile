@@ -249,6 +249,8 @@ def test_owner_price_preview_is_read_only_and_member_is_denied(
     )
     assert response.status_code == 200
     assert response.json()["dry_run"] and response.json()["confirmation_digest"]
+    assert "change_reasons" in response.json()["details"][0]
+    assert "catalog_price_changed" in response.json()["details"][0]
     assert publication_api.models == before
     owner = app.dependency_overrides[require_authenticated_session]()
     app.dependency_overrides[require_authenticated_session] = lambda: replace(owner, role="member")
@@ -299,5 +301,7 @@ def test_price_preview_route_returns_both_context_schedules_without_scalar_repla
     assert len(detail["proposed_context_price_tiers"]) == 2
     assert detail["current_context_price_tiers"][0]["max_input_tokens"] == 1000
     assert detail["proposed_context_price_tiers"][1]["output_price_per_million"] == 11.5
+    assert detail["catalog_price_changed"] is True
+    assert detail["change_reasons"] == ["catalog_price_changed"]
     assert detail["current_prices"] is None and detail["proposed_prices"] is None
     assert publication_api.models == before

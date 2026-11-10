@@ -100,6 +100,7 @@ import { ModelRouterPage } from "./pages/model-router-page";
 import { ApimNativeRoutesPage } from "./pages/apim-native-routes-page";
 import { GatewayReleasesPage } from "./pages/gateway-releases-page";
 import { ApplicationsPage } from "./pages/applications-page";
+import { nativeRouteManagedModels } from "./components/model-management/apim-native-route-eligibility";
 import { SettingsPage } from "./pages/settings-page";
 import type {
   AuditFinding,
@@ -890,6 +891,8 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(sidebarOpenFromCookie);
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
+  const [collapsedNavGroups, setCollapsedNavGroups] = useState<Record<string, boolean>>({});
+  const toggleNavGroup = (label: string) => setCollapsedNavGroups(current => ({ ...current, [label]: !current[label] }));
   const [nativeRouteDrawerOpen, setNativeRouteDrawerOpen] = useState(false);
   const [modelRouterDrawerOpen, setModelRouterDrawerOpen] = useState(false);
   const [gatewayReleaseDrawerOpen, setGatewayReleaseDrawerOpen] = useState(false);
@@ -908,6 +911,31 @@ export function App() {
     refetchInterval: 5 * 60_000,
   });
   const anomalyCount = anomalyQuery.data?.length ?? 0;
+  const menuQueryOptions = {
+    enabled: selectedDataSource === "apim",
+    staleTime: Infinity,
+    refetchOnMount: false as const,
+    refetchOnWindowFocus: false as const,
+    refetchInterval: false as const,
+    retry: false as const,
+  };
+  const menuRegistry = useQuery({ ...finopsQueries.registry(), ...menuQueryOptions });
+  const menuPools = useQuery({ ...finopsQueries.modelBackendPools(), ...menuQueryOptions });
+  const menuRouters = useQuery({ ...finopsQueries.modelRouters(), ...menuQueryOptions });
+  const menuReleases = useQuery({ ...finopsQueries.gatewayReleases(), ...menuQueryOptions });
+  const menuApplications = useQuery({ ...finopsQueries.gatewayApplications(), ...menuQueryOptions });
+  const menuCounts: Partial<Record<Page, { count: number | undefined; failed: boolean }>> = {
+    models: { count: menuRegistry.data?.models.length, failed: menuRegistry.isError },
+    "apim-native-routes": {
+      count: menuRegistry.data && menuPools.data
+        ? nativeRouteManagedModels(menuRegistry.data).filter(model =>
+          menuPools.data!.some(pool => pool.model_id === model.id)).length : undefined,
+      failed: menuRegistry.isError || menuPools.isError,
+    },
+    "model-router": { count: menuRouters.data?.items.length, failed: menuRouters.isError },
+    "gateway-releases": { count: menuReleases.data?.items.length, failed: menuReleases.isError },
+    applications: { count: menuApplications.data?.total, failed: menuApplications.isError },
+  };
   const [pinnedChartId, setPinnedChartId] = useState(
     () => new URLSearchParams(window.location.search).get("chart"),
   );
@@ -1190,17 +1218,17 @@ export function App() {
       label: "模型平台",
       items: [
         { label: "模型管理", icon: Cpu, page: "models" },
-        { label: "模型负载均衡", icon: Network, page: "apim-native-routes" },
-        { label: "模型智能路由", icon: Workflow, page: "model-router" },
+        { label: "负载均衡", icon: Network, page: "apim-native-routes" },
+        { label: "模型路由", icon: Workflow, page: "model-router" },
         { label: "发布历史", icon: History, page: "gateway-releases" },
         { label: "订阅管理", icon: KeyRound, page: "applications" },
       ],
     });
   }
   navGroups.push({
-    label: "系统管理",
+    label: "平台设置",
     items: [
-      { label: "设置", icon: Settings, page: "settings" },
+      { label: "系统设置", icon: Settings, page: "settings" },
     ],
   });
   // The invocation console is deliberately absent from the sidebar: the header already
@@ -1355,8 +1383,8 @@ export function App() {
                     onClick={() => setPinnedOpen((open) => !open)}
                   >
                     <span>报表</span>
-                    <ChevronRight size={12} className="pinned-group-caret" />
                     <span className="pinned-group-count">{pinnedCharts.data.length}</span>
+                    <ChevronRight size={14} className="pinned-group-caret" aria-hidden="true" />
                   </button>
                   {pinnedOpen && (
                   <div className="sidebar-group-content">
@@ -1400,10 +1428,19 @@ export function App() {
                   )}
                 </div>
               )}
-              {navGroups.map((group) => (
+              {navGroups.map((group, index) => (
                 <div className="nav-group sidebar-group" key={group.label}>
-                  <span className="nav-label">{group.label}</span>
-                  <div className="sidebar-group-content">
+                  <button
+                    type="button"
+                    className="nav-label nav-group-trigger"
+                    aria-expanded={!collapsedNavGroups[group.label]}
+                    aria-controls={`nav-group-${index}`}
+                    onClick={() => toggleNavGroup(group.label)}
+                  >
+                    <span>{group.label}</span>
+                    <ChevronRight size={14} className="pinned-group-caret" aria-hidden="true" />
+                  </button>
+                  <div id={`nav-group-${index}`} className="sidebar-group-content" hidden={Boolean(collapsedNavGroups[group.label])}>
                     <ul className="sidebar-menu sidebar-nav-menu">
                       {group.items.map((item) => (
                         <li className="sidebar-menu-item" key={item.label}>
@@ -1420,6 +1457,10 @@ export function App() {
                           >
                             <item.icon size={16} />
                             <span>{item.label}</span>
+                            {menuCounts[item.page] && <em data-no-localize>
+                              {menuCounts[item.page]!.count ?? (menuCounts[item.page]!.failed
+                                ? "—" : <span className="sidebar-count-skeleton" aria-hidden="true" />)}
+                            </em>}
                             {item.page === "finops-governance" && anomalyCount > 0 && <em>{anomalyCount}</em>}
                           </button>
                         </li>

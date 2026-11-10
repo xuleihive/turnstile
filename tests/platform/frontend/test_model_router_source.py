@@ -21,7 +21,7 @@ def test_model_router_is_an_apim_model_platform_workspace() -> None:
     ).read_text(encoding="utf-8")
 
     assert '| "model-router"' in app
-    assert '{ label: "模型智能路由", icon: Workflow, page: "model-router" }' in app
+    assert '{ label: "模型路由", icon: Workflow, page: "model-router" }' in app
     assert 'page === "model-router" && <ModelRouterPage routerDrawerOpen=' in app
     assert '"model-router",' in source
     assert "finopsQueries.modelRouters()" in page

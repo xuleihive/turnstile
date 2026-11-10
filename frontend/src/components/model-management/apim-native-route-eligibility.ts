@@ -51,6 +51,15 @@ function runtimeCompatibilityIssue(runtime: ModelRuntime, primary: ModelRuntime)
   return null
 }
 
+export function nativeRouteManagedModels(registry: ModelRegistry) {
+  return registry.models.filter(model => model.enabled
+    && !model.capabilities.includes("image_generation") && !model.capabilities.includes("decision")
+    && registry.runtimes.some(runtime => runtime.id === model.runtime_id
+      && runtime.enabled && runtime.config.control_plane_managed === true
+      && registry.gateways.some(gateway => gateway.id === runtime.gateway_profile_id
+        && gateway.implementation === "apim")))
+}
+
 export function nativeRouteUpstreamIdentity(model: ManagedModel) {
   return (model.upstream_model_id ?? model.model_key).trim().toLocaleLowerCase()
 }

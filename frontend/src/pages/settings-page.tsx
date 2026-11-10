@@ -198,7 +198,7 @@ export function SettingsPage({ dataSource }: { dataSource: "apim" | "github-copi
       <div className="settings-section compact">
         <div><h2>查看时区</h2><p>用于用量活动图和热力图日期。</p></div>
         <Select value={timezonePreference} onValueChange={(value) => value && setTimezonePreference(value as "browser" | "UTC")}>
-          <SelectTrigger aria-label="查看时区" className="settings-select-trigger">
+          <SelectTrigger aria-label="查看时区" className="settings-select-trigger settings-timezone-trigger">
             <SelectValue>{timezoneLabel}</SelectValue>
           </SelectTrigger>
           <SelectContent align="start" alignItemWithTrigger={false}>

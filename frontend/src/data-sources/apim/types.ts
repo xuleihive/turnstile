@@ -2083,6 +2083,8 @@ export type PriceCatalogOptionsResponse = {
 }
 
 export type PriceSyncDetail = {
+  change_reasons?: ("catalog_price_changed" | "discount_pending" | "pricing_rule_changed")[]
+  catalog_price_changed?: boolean | null
   current_context_price_tiers?: StoredContextPriceTier[]
   proposed_context_price_tiers?: StoredContextPriceTier[] | null
   outcome?: string | null

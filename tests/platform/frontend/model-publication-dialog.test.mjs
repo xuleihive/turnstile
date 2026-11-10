@@ -403,7 +403,7 @@ test("connection changes clear credentials, model operation, prices and deployme
   for (const id of ["existing-connection-api-key", "foundry-deployment"]) assert.equal(view.find(node => node.type === "Input" && node.props.id === id).props.value, "")
   assert.ok(view.find(node => node.type === "Select" && node.props.value === "chat"))
   const draft = view.find(node => node.type === "ModelPriceSourceFields").props.draft
-  assert.equal(draft.priceSource, "models_dev")
+  assert.equal(draft.priceSource, "azure_retail")
   assert.equal(draft.inputPrice, "")
   assert.equal(draft.priceReference, "")
 })
@@ -416,7 +416,7 @@ test("new text models expose the shared pricing picker without a fabricated save
   assert.equal(section.type, "section")
   const picker = view.find(node => node.type === "ModelPriceSourceFields")
   assert.equal(picker.props.model, undefined)
-  assert.equal(picker.props.draft.priceSource, "models_dev")
+  assert.equal(picker.props.draft.priceSource, "azure_retail")
   assert.equal(picker.props.connectionDiscount, 90)
 })
 

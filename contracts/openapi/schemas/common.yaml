@@ -3312,6 +3312,20 @@ schemas:
       -- a published list price is a fact, the discount is a contract term.'
   PriceSyncDetail:
     properties:
+      change_reasons:
+        type: array
+        items:
+          type: string
+          enum:
+          - catalog_price_changed
+          - discount_pending
+          - pricing_rule_changed
+        description: Independent change reasons; multiple reasons may apply to one model.
+      catalog_price_changed:
+        anyOf:
+        - type: boolean
+        - type: 'null'
+        description: Compares accepted and proposed list prices before discounts; null means the baseline or proposal is unavailable.
       current_context_price_tiers:
         type: array
         items:

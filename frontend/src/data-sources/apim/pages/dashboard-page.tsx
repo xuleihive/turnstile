@@ -184,17 +184,17 @@ export function FinOpsDashboard({
       <Button variant="ghost" size="icon-sm" className="finops-header-refresh" aria-label="刷新当前页面数据" title="刷新当前页面数据" disabled={isRefreshing} onClick={() => void refreshCurrentPage()}><RefreshCw className={isRefreshing ? "spin" : undefined} size={15} /></Button>
     </header>
     {tab !== "invoke" && <div className="finops-filterbar">
-      <FilterMenuField label="时间范围" icon={Clock3} value={String(days)} active={days !== "month"} allowAll={false} options={[{ value: "month", label: "本月" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(next === "month" ? next : Number(next))} />
+      <FilterMenuField label="时间范围" showChevron={tab === "overview"} icon={Clock3} value={String(days)} active={days !== "month"} allowAll={false} options={[{ value: "month", label: "本月" }, { value: "7", label: "近 7 天" }, { value: "30", label: "近 30 天" }, { value: "90", label: "近 90 天" }]} onChange={(next) => next && onDaysChange(next === "month" ? next : Number(next))} />
       {entities && <>
-        <FilterMenuField label="组织" icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
-        <FilterMenuField label="部门" icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
+        <FilterMenuField label="组织" showLabel={tab === "overview"} icon={Building2} value={scope.organization_id} options={entities.organizations.map((item) => ({ value: item.id, label: item.name }))} onChange={(organization_id) => updateScope({ organization_id, department_id: undefined, agent_id: undefined, user_id: undefined })} />
+        <FilterMenuField label="部门" showLabel={tab === "overview"} icon={Users} value={scope.department_id} options={entities.departments.map((item) => ({ value: item.id, label: item.name }))} onChange={(department_id) => updateScope({ department_id, agent_id: undefined, user_id: undefined })} />
         {/* No project filter. It is the one dimension no token carries -- the APIM policy
             writes it as `unattributed` outright -- so 98.8% of production tokens have
             none, and a control that narrows to 1.2% of the spend is a trap rather than a
             tool. `project_id` stays in the API and the schema for callers that do send
             it. */}
-        <FilterMenuField label="智能体" icon={Bot} value={scope.agent_id} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
-        <FilterMenuField label="人员" icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
+        <FilterMenuField label="智能体" showLabel={tab === "overview"} icon={Bot} value={scope.agent_id} options={agents.map((item) => ({ value: item.id, label: item.name }))} onChange={(agent_id) => updateScope({ agent_id })} />
+        <FilterMenuField label="人员" showLabel={tab === "overview"} icon={UserRound} value={scope.user_id} options={users.map((item) => ({ value: item.id, label: item.name }))} onChange={(user_id) => updateScope({ user_id })} />
       </>}
       {activeFilterCount > 0 && <Button variant="ghost" size="sm" className="finops-clear" onClick={() => { onDaysChange("month"); onScopeChange({}) }}><X size={14} />重置</Button>}
     </div>}

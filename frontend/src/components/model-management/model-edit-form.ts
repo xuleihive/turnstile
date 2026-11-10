@@ -1,6 +1,58 @@
 import contextRules from "../../../../turnstile_core/pricing/context-rules.json" with { type: "json" }
 import type { ContextPriceRule, ManagedModel, PriceCatalogContextTier, PriceCatalogModel, PriceCatalogOption, PriceCatalogOptionsResponse, PriceSource, PriceSyncDetail } from "../../data-sources/apim/types"
 
+export function priceSyncDetailForDisplay(detail: PriceSyncDetail, model?: Pick<ManagedModel, "effective_discount_percent">): PriceSyncDetail {
+  if (detail.change_reasons !== undefined || detail.catalog_price_changed !== undefined) {
+    const reasons = (detail.change_reasons ?? []).filter(reason => reason !== "discount_pending")
+    return { ...detail, change_reasons: reasons,
+      outcome: detail.catalog_price_changed === false && !reasons.length && detail.outcome === "updated" ? "unchanged" : detail.outcome }
+  }
+  const rows = priceSyncContextRows(detail)
+  if (!rows.length || detail.proposed_context_price_tiers == null) return detail
+  const buckets = [
+    ["input", "input_price_per_million"], ["output", "output_price_per_million"],
+    ["cached", "cached_price_per_million"], ["cache_write", "cache_write_price_per_million"],
+  ] as const
+  const baselineKnown = rows.every(({ current, proposed }) => current && proposed
+    && current.list_prices?.input != null && current.list_prices?.output != null)
+  if (!baselineKnown) return detail
+  const catalogChanged = rows.some(({ current, proposed }) =>
+    buckets.some(([bucket]) => current!.list_prices[bucket] !== proposed!.list_prices[bucket]))
+  const rulesChanged = rows.some(({ current, proposed }) =>
+    current!.reference !== proposed!.reference
+    || current!.min_input_tokens !== proposed!.min_input_tokens
+    || current!.max_input_tokens !== proposed!.max_input_tokens
+    || current!.input_range_source?.origin !== proposed!.input_range_source?.origin)
+  const reasons: NonNullable<PriceSyncDetail["change_reasons"]> = []
+  if (catalogChanged) reasons.push("catalog_price_changed")
+  if (rulesChanged) reasons.push("pricing_rule_changed")
+  return { ...detail, change_reasons: reasons, catalog_price_changed: catalogChanged,
+    outcome: detail.outcome === "updated" && !reasons.length ? "unchanged" : detail.outcome }
+}
+
+export function priceSyncChangeLabels(detail: PriceSyncDetail, model?: Pick<ManagedModel, "price_source" | "effective_discount_percent">, applied = false): string[] {
+  detail = priceSyncDetailForDisplay(detail, model)
+  const catalog = model?.price_source === "azure_retail" || model?.price_source === "anthropic" ? "官方价格" : "目录价"
+  const labels: string[] = []
+  if (detail.catalog_price_changed === null && (detail.proposed_prices != null || detail.proposed_context_price_tiers != null)) labels.push("目录基准未知")
+  for (const reason of detail.change_reasons ?? []) {
+    if (reason === "catalog_price_changed") labels.push(`${catalog}变化`)
+    if (reason === "pricing_rule_changed") labels.push("计价规则变化")
+  }
+  return labels
+}
+
+export function priceSyncChangeCounts(details: PriceSyncDetail[], models: Pick<ManagedModel, "id" | "effective_discount_percent">[] = []) {
+  details = details.map(detail => priceSyncDetailForDisplay(detail, models.find(model => model.id === detail.model_id)))
+  return {
+    catalog: details.filter(detail => detail.change_reasons?.includes("catalog_price_changed")).length,
+    rules: details.filter(detail => detail.change_reasons?.includes("pricing_rule_changed")).length,
+    unchanged: details.filter(detail => detail.outcome === "unchanged").length,
+    unknown: details.filter(detail => detail.catalog_price_changed === null
+      && (detail.proposed_prices != null || detail.proposed_context_price_tiers != null)).length,
+  }
+}
+
 export function priceSyncContextRows(detail: PriceSyncDetail) {
   const current = new Map((detail.current_context_price_tiers ?? []).map(tier => [tier.key, tier]))
   const proposed = new Map((detail.proposed_context_price_tiers ?? []).map(tier => [tier.key, tier]))
@@ -266,7 +318,7 @@ export type ModelEditError =
 export function createModelPriceDraft(contextPricingSupported = false, contextPriceRulesSupported = false): ModelPriceDraft {
   return {
     inputPrice: "", outputPrice: "", cacheReadPrice: "", cacheWritePrice: "",
-    priceSource: "models_dev", priceReference: "", discountPercent: "",
+    priceSource: "azure_retail", priceReference: "", discountPercent: "",
     contextWindow: "", contextWindowEdited: false,
     contextPricingPreview: false,
     contextPricingSupported, contextPriceReferences: [], contextPriceTiers: [], contextPriceRefresh: false,

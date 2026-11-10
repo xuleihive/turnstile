@@ -20,7 +20,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from turnstile_core.domain.runtime_models import ManagedModel, PriceSource, PriceSyncStatus
+from turnstile_core.domain.runtime_models import (
+    ManagedModel,
+    PendingListPrice,
+    PriceSource,
+    PriceSyncChangeReason,
+    PriceSyncStatus,
+    StoredContextPriceTier,
+)
 from turnstile_core.pricing.catalog import CatalogEntry, CompositeCatalog, parse_context_tier
 from turnstile_core.pricing.context import rediscount_context_tiers, resolve_context_prices
 
@@ -112,6 +119,58 @@ def plan_price_sync(
     return SyncSummary(updates=tuple(updates))
 
 
+def _context_rules(
+    tiers: Sequence[StoredContextPriceTier],
+) -> dict[str, tuple[int, int | None, str, str | None]]:
+    return {tier.key: (
+        tier.min_input_tokens, tier.max_input_tokens, tier.reference,
+        tier.input_range_source.origin if tier.input_range_source else None,
+    ) for tier in tiers}
+
+
+def price_sync_changes(
+    model: ManagedModel, proposed: PendingListPrice | None,
+    proposed_tiers: Sequence[StoredContextPriceTier] | None,
+) -> tuple[list[PriceSyncChangeReason], bool | None]:
+    reasons: list[PriceSyncChangeReason] = []
+    if model.context_price_tiers:
+        if proposed_tiers is None:
+            return reasons, None
+        previous = {tier.key: tier for tier in model.context_price_tiers}
+        latest = {tier.key: tier for tier in proposed_tiers}
+        baseline_known = all(
+            tier.list_prices.input is not None and tier.list_prices.output is not None
+            for tier in previous.values()
+        )
+        complete = set(previous) == set(latest) and baseline_known
+        changed = any(
+            previous[key].list_prices != latest[key].list_prices
+            for key in previous.keys() & latest.keys()
+            if previous[key].list_prices.input is not None
+            and previous[key].list_prices.output is not None
+        )
+        catalog_changed = True if changed else False if complete else None
+        if _context_rules(model.context_price_tiers) != _context_rules(proposed_tiers):
+            reasons.append("pricing_rule_changed")
+    else:
+        if proposed is None:
+            return reasons, None
+        accepted = PendingListPrice(**{
+            bucket: getattr(model, column)
+            for bucket, (_, column, _) in zip(
+                ("input", "output", "cached", "cache_write"), _BUCKETS, strict=True,
+            )
+        })
+        baseline_known = accepted.input is not None and accepted.output is not None
+        catalog_changed = accepted != proposed if baseline_known else None
+    if catalog_changed:
+        reasons.insert(0, "catalog_price_changed")
+    pending_discount = repriced_at_discount(model) if baseline_known else None
+    if pending_discount is not None:
+        reasons.append("discount_pending")
+    return reasons, catalog_changed
+
+
 def _planned_against(model: ManagedModel, **fields: Any) -> ModelPriceUpdate:
     """Every decision carries the configuration it was made against, so the write can check it."""
     return ModelPriceUpdate(
@@ -182,7 +241,7 @@ def _plan_one(
             model,
             status=PriceSyncStatus.REVIEW_NEEDED,
             message=(
-                f"官方{bucket}较上次接受的价格变动 {drift:.0%}，"
+                f"目录{bucket}较上次接受的价格变动 {drift:.0%}，"
                 f"超过 {review_threshold:.0%} 复核阈值，未自动写入"
             ),
             pending_list_price={
@@ -226,14 +285,7 @@ def _plan_context(
             message=f"分档价目读取失败，保留已接受的完整规则：{type(error).__name__}",
         )
     previous = {tier.key: tier for tier in model.context_price_tiers}
-    changed_rules = {tier.key for tier in updated} != set(previous) or any(
-        tier.key not in previous
-        or (tier.min_input_tokens, tier.max_input_tokens, tier.reference) != (
-            previous[tier.key].min_input_tokens, previous[tier.key].max_input_tokens,
-            previous[tier.key].reference,
-        ) or tier.input_range_source != previous[tier.key].input_range_source
-        for tier in updated
-    )
+    changed_rules = _context_rules(updated) != _context_rules(model.context_price_tiers)
     drift = 0.0
     for tier in updated:
         old = previous.get(tier.key)
@@ -250,7 +302,7 @@ def _plan_context(
     if changed_rules or drift > review_threshold:
         return _planned_against(
             model, status=PriceSyncStatus.REVIEW_NEEDED,
-            message="分档计价规则或官方价格发生较大变化，需确认后才能采用。",
+            message="分档计价规则或目录价发生较大变化，需确认后才能采用。",
             pending_context_price_tiers=payload,
         )
     return _planned_against(

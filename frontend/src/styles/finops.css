@@ -434,8 +434,12 @@ section.simple-pricing { padding-top: 16px; }
 	.simple-model-form .registry-editor-footer { padding-inline: 12px; }
 }
 .finops-filter-menu-trigger { flex: 0 0 auto; justify-content: center; }
-.finops-filter-menu-trigger[data-active="true"], .finops-filter-menu-trigger[data-active="true"]:hover, .finops-filter-menu-trigger[data-active="true"][aria-expanded="true"] { border-color: var(--brand) !important; background-color: var(--brand) !important; color: var(--brand-foreground) !important; transition: box-shadow 100ms ease !important; }
+.finops-filter-menu-trigger:not(.finops-scope-filter-trigger)[data-active="true"], .finops-filter-menu-trigger:not(.finops-scope-filter-trigger)[data-active="true"]:hover, .finops-filter-menu-trigger:not(.finops-scope-filter-trigger)[data-active="true"][aria-expanded="true"] { border-color: var(--brand) !important; background-color: var(--brand) !important; color: var(--brand-foreground) !important; transition: box-shadow 100ms ease !important; }
 .finops-filter-menu-trigger > svg { width: 14px; height: 14px; color: currentColor; }
+.finops-filter-menu-trigger.finops-scope-filter-trigger { height: 32px; padding: 2px 10px; }
+.finops-scope-filter-trigger .finops-scope-filter-label,
+.finops-scope-filter-trigger > svg { color: var(--muted-foreground); }
+.finops-scope-filter-trigger .finops-scope-filter-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: inherit; }
 .isolate.z-50 { z-index: 50; isolation: isolate; outline: none; }
 [data-slot="dropdown-menu-content"] { z-index: 50; max-height: var(--available-height); min-width: 128px; overflow-x: hidden; overflow-y: auto; border-radius: var(--radius); padding: 4px; outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent); background: var(--popover); color: var(--popover-foreground); box-shadow: 0 4px 10px oklch(0 0 0 / 12%); transform-origin: var(--transform-origin); }
 [data-slot="dropdown-menu-content"][data-open] { animation: smh-menu-in 100ms ease-out; }

@@ -1,5 +1,5 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
-  [/^官方(输入价|输出价|缓存读取价|缓存写入价)较上次接受的价格变动\s*([\d.]+)%[，,]\s*超过\s*([\d.]+)%\s*复核阈值[，,]\s*未自动写入$/g, (_match, bucket, change, threshold) => {
+  [/^(?:官方|目录)(输入价|输出价|缓存读取价|缓存写入价)较上次接受的价格变动\s*([\d.]+)%[，,]\s*超过\s*([\d.]+)%\s*复核阈值[，,]\s*未自动写入$/g, (_match, bucket, change, threshold) => {
     const names: Record<string, string> = { 输入价: "입력", 输出价: "출력", 缓存读取价: "캐시 읽기", 缓存写入价: "캐시 쓰기" }
     return `${names[bucket]} 가격이 ${change}% 변경되어 검토 임계값 ${threshold}%를 초과했습니다. 기존 단가가 유지됩니다.`
   }],

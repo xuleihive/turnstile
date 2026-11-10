@@ -33,6 +33,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select"
 import { useResizablePane } from "../components/ui/use-resizable-pane"
 import { useAuth } from "../providers/auth-provider"
+import { nativeRouteManagedModels } from "../components/model-management/apim-native-route-eligibility"
 
 const NATIVE_ROUTE_PANE_WIDTH_KEY = "turnstile_apim_native_route_pane_width"
 const NATIVE_ROUTE_PANE_WIDTH_DEFAULT = 304
@@ -182,12 +183,7 @@ export function ApimNativeRoutesPage({
   })
   const managedModels = useMemo(() => {
     if (!registry.data) return []
-    return registry.data.models.filter((model) => model.enabled
-      && !model.capabilities.includes("image_generation") && !model.capabilities.includes("decision")
-      && registry.data!.runtimes.some(runtime => runtime.id === model.runtime_id
-        && runtime.enabled && runtime.config.control_plane_managed === true
-        && registry.data!.gateways.some(gateway => gateway.id === runtime.gateway_profile_id
-          && gateway.implementation === "apim")))
+    return nativeRouteManagedModels(registry.data)
       .sort((left, right) => left.model_key.localeCompare(right.model_key))
   }, [registry.data])
   const poolByModelId = new Map((pools.data ?? []).map(item => [item.model_id, item.pool] as const))

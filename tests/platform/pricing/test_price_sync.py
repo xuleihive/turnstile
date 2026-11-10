@@ -26,7 +26,7 @@ from turnstile_core.domain.runtime_models import (
 )
 from turnstile_core.persistence.in_memory_registry import InMemoryRegistryRepositoryMixin
 from turnstile_core.pricing.catalog import CatalogEntry, CompositeCatalog
-from turnstile_core.pricing.sync import plan_price_sync
+from turnstile_core.pricing.sync import plan_price_sync, price_sync_changes
 
 REFERENCE = "azure_retail:Azure OpenAI:gpt 4.1 mini:Global:*"
 
@@ -104,6 +104,70 @@ def context_model() -> ManagedModel:
         cached_price_per_million=0.2, cache_write_price_per_million=1.0,
         list_prices=PendingListPrice(input=2 + index, output=10 + index, cached=0.2, cache_write=1),
     ) for index in range(2)])
+
+
+@pytest.mark.parametrize("bucket", ["input", "output", "cached", "cache_write"])
+def test_preview_reasons_compare_every_catalog_bucket_before_discount(bucket: str) -> None:
+    current = model(
+        list_input_cost_per_million=0.4, list_output_cost_per_million=1.6,
+        list_cached_cost_per_million=0.1, list_cache_write_cost_per_million=0.2,
+        input_cost_per_million=0.36, output_cost_per_million=1.44,
+        cached_cost_per_million=0.09, cache_write_cost_per_million=0.18,
+        effective_discount_percent=90,
+    )
+    proposed = PendingListPrice(input=0.4, output=1.6, cached=0.1, cache_write=0.2)
+    assert price_sync_changes(current, proposed, None) == ([], False)
+    setattr(proposed, bucket, getattr(proposed, bucket) * 1.05)
+    assert price_sync_changes(current, proposed, None) == (["catalog_price_changed"], True)
+    current.list_input_cost_per_million = None
+    assert price_sync_changes(current, proposed, None)[1] is None
+
+
+@pytest.mark.parametrize("kind", ["metadata", "rules", "reference", "tiers", "all", "unknown"])
+def test_context_preview_reasons_ignore_metadata_but_preserve_independent_changes(
+    kind: str,
+) -> None:
+    from turnstile_core.domain.models import PriceCatalogRuleSource
+
+    current = context_model()
+    for tier in current.context_price_tiers:
+        tier.input_range_source = PriceCatalogRuleSource(
+            rule_id="unit-rule", revision="first", verified_on="2026-11-09",
+        )
+    updated = [tier.model_copy(deep=True) for tier in current.context_price_tiers]
+    expected: list[str] = []
+    catalog_changed: bool | None = False
+    if kind == "metadata":
+        updated[0].label = "Refreshed label"
+        assert updated[0].input_range_source is not None
+        updated[0].input_range_source.verified_on = "2026-11-10"
+        updated[0].input_range_source.revision = "later-observation"
+    if kind in {"rules", "all"}:
+        updated[0].max_input_tokens = 900
+        updated[1].min_input_tokens = 901
+        expected.append("pricing_rule_changed")
+    if kind == "reference":
+        updated[0].reference += "different"
+        expected.append("pricing_rule_changed")
+    if kind == "tiers":
+        updated = updated[:1]
+        expected.append("pricing_rule_changed")
+        catalog_changed = None
+    if kind == "all":
+        current.effective_discount_percent = 90
+        assert updated[0].list_prices.cache_write is not None
+        updated[0].list_prices.cache_write *= 1.05
+        expected = ["catalog_price_changed", *expected, "discount_pending"]
+        catalog_changed = True
+    if kind == "unknown":
+        current.context_price_tiers[0].list_prices.input = None
+        catalog_changed = None
+    assert price_sync_changes(current, None, updated) == (expected, catalog_changed)
+    with patch("turnstile_core.pricing.sync.resolve_context_prices", return_value=updated):
+        update = only(plan_price_sync([current], Mock(spec=CompositeCatalog)))
+    assert (update.status is PriceSyncStatus.REVIEW_NEEDED) == (
+        kind in {"rules", "reference", "tiers", "all", "unknown"}
+    )
 
 
 def test_context_sync_updates_every_tier_without_flattening_the_prices() -> None:

@@ -82,6 +82,83 @@ def test_every_source_phrase_is_covered_by_each_catalog() -> None:
         )
 
 
+def test_price_sync_labels_and_review_messages_translate_as_whole_phrases() -> None:
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for locale translation tests"
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", r"""
+import assert from "node:assert/strict"
+import { createRequire } from "node:module"
+import { resolve } from "node:path"
+import { runInNewContext } from "node:vm"
+
+const frontendRequire = createRequire(resolve("frontend/package.json"))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+const labels = [
+    "拟采用计费价",
+    "按当前配置计算，保存后才采用；不代表线上生效价或历史账单价格。",
+    "新报价（同一折扣）", "目录价变化", "目录基准未知", "规则变化",
+    "原报价", "目录价", "官方价格变化", "计价规则变化", "已应用",
+    "官方价格变化 · 已应用", "计价规则变化 · 待复核",
+]
+for (const [locale, functionName] of [
+    ["en", "translateToEnglish"], ["ja", "translateToJapanese"],
+    ["ko", "translateToKorean"],
+]) {
+    const bundle = await rolldown({
+        input: resolve(`frontend/src/locales/${locale}.ts`), logLevel: "silent",
+    })
+    let code
+    try { code = (await bundle.generate({ format: "cjs" })).output[0].code }
+    finally { await bundle.close() }
+    const exports = {}
+    runInNewContext(code, { exports })
+    const translate = exports[functionName]
+    for (const source of labels) {
+        const translated = translate(source)
+        assert.notEqual(translated, source, `${locale}: ${source}`)
+        assert.doesNotMatch(translated,
+            locale === "ja"
+                ? /拟|目录|计费|报价|变化|阈值|较上次|未自动写入|已应用|待复核/
+                : /[\u4e00-\u9fff]/, `${locale}: ${translated}`)
+    }
+    for (const bucket of ["输入价", "输出价", "缓存读取价", "缓存写入价"]) {
+        const suffix = `${bucket}较上次接受的价格变动 35%，超过 20% 复核阈值，未自动写入`
+        const previous = translate(`官方${suffix}`)
+        const current = translate(`目录${suffix}`)
+        assert.equal(current, previous, `${locale}: ${bucket}`)
+        assert.ok(current.includes("35%") && current.includes("20%"), current)
+        assert.doesNotMatch(current, /目录|较上次|复核阈值|未自动写入/)
+    }
+    const previous = "分档计价规则或官方价格发生较大变化，需确认后才能采用。"
+    const current = "分档计价规则或目录价发生较大变化，需确认后才能采用。"
+    assert.notEqual(translate(current), current)
+    assert.equal(translate(current), translate(previous))
+    assert.equal(translate("负载均衡"), translate("模型负载均衡"))
+    assert.equal(translate("模型路由"), translate("模型智能路由"))
+    const navigation = {
+        en: ["Platform settings", "System settings"],
+        ja: ["プラットフォーム設定", "システム設定"],
+        ko: ["플랫폼 설정", "시스템 설정"],
+    }
+    assert.equal(translate("平台设置"), navigation[locale][0])
+    assert.equal(translate("系统设置"), navigation[locale][1])
+    if (locale === "en") {
+        assert.equal(translate("官方价格变化 · 已应用"), "Official price changed · Applied")
+        assert.equal(translate("计价规则变化 · 待复核"), "Pricing rules changed · Needs review")
+    }
+}
+console.log("Pricing labels, joined outcomes and both review wordings translate in en/ja/ko")
+"""],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_locale_context_survives_phrase_catalog_hot_updates() -> None:
         node = shutil.which("node")
         assert node is not None, "Node.js is required for locale hot-update tests"

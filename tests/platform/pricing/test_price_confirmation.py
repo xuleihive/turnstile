@@ -41,6 +41,60 @@ def service() -> tuple[ModelRuntimeService, InMemoryRepository, dict[str, Any], 
     return runtime, repository, model, catalog
 
 
+@pytest.mark.parametrize("model_discount", [None, 80])
+def test_context_preview_distinguishes_pending_inherited_discount_from_catalog_change(
+    model_discount: int | None,
+) -> None:
+    from datetime import UTC, datetime
+
+    from turnstile_core.domain.models import PriceCatalogRuleSource
+    from turnstile_core.domain.runtime_models import ContextPriceRule
+    from turnstile_core.pricing.context import rediscount_context_tiers
+
+    runtime, repository, row, _ = service()
+    tiers = context_model().context_price_tiers
+    rule = ContextPriceRule(short_context_max_tokens=272000, note="Unit custom threshold")
+    source = PriceCatalogRuleSource(
+        rule_id="custom-context-v1", revision=rule.revision, origin="custom",
+        configured_at=datetime.now(UTC), note=rule.note,
+    )
+    for tier, key, minimum, maximum, rates in zip(
+        tiers, ("short", "long"), (0, 272001), (272000, None),
+        ((0.2, 1.2, 0.02, 0.25), (0.4, 1.8, 0.04, 0.5)), strict=True,
+    ):
+        tier.key = key
+        tier.min_input_tokens, tier.max_input_tokens = minimum, maximum
+        tier.input_price_per_million, tier.output_price_per_million = rates[:2]
+        tier.cached_price_per_million, tier.cache_write_price_per_million = rates[2:]
+        tier.input_range_source = source
+        for bucket, price in zip(("input", "output", "cached", "cache_write"), rates, strict=True):
+            setattr(tier.list_prices, bucket, price)
+    row.update(price_source="azure_retail", price_discount_percent=model_discount,
+               context_price_tiers=[tier.model_dump(mode="json") for tier in tiers])
+    connection = next(item for item in repository.runtimes if item["id"] == row["runtime_id"])
+    connection["price_discount_percent"] = 90
+    before = deepcopy(repository.models)
+    effective_discount = model_discount or 90
+    proposed = rediscount_context_tiers(tiers, PriceSource.AZURE_RETAIL, effective_discount)
+    with patch("turnstile_core.pricing.sync.resolve_context_prices", return_value=proposed):
+        preview = runtime.sync_prices([row["id"]], dry_run=True)
+    detail = preview.details[0]
+    assert detail.proposed_context_price_tiers is not None
+    assert [[tier.input_price_per_million, tier.output_price_per_million,
+             tier.cached_price_per_million, tier.cache_write_price_per_million]
+            for tier in detail.proposed_context_price_tiers] == ([
+        [0.18, 1.08, 0.018, 0.225], [0.36, 1.62, 0.036, 0.45],
+    ] if model_discount is None else [
+        [0.16, 0.96, 0.016, 0.2], [0.32, 1.44, 0.032, 0.4],
+    ])
+    assert detail.model_dump().get("change_reasons") == ["discount_pending"]
+    assert detail.model_dump().get("catalog_price_changed") is False
+    assert preview.updated == 1 and preview.unchanged == 0
+    assert preview.registry.models[0].effective_discount_percent == effective_discount
+    assert preview.registry.models[0].context_price_rule == rule
+    assert repository.models == before
+
+
 def test_preview_is_read_only_and_confirmed_sync_is_bound_to_prices() -> None:
     runtime, repository, model, catalog = service()
     before = deepcopy(repository.models)

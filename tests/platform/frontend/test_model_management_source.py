@@ -981,7 +981,8 @@ def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     ).read_text(encoding="utf-8")
     styles = read_frontend_styles()
 
-    assert '{ label: "模型负载均衡", icon: Network, page: "apim-native-routes" }' in app
+    assert '{ label: "负载均衡", icon: Network, page: "apim-native-routes" }' in app
+    assert '{ label: "模型路由", icon: Workflow, page: "model-router" }' in app
     assert 'page === "apim-native-routes" && <ApimNativeRoutesPage routeDrawerOpen=' in app
     assert 'aria-label="打开模型负载均衡列表"' in app
     assert 'className="settings-mobile-topbar-end-action"' in app
