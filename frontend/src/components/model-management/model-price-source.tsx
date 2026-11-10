@@ -104,6 +104,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
   const [manualFromCatalog, setManualFromCatalog] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(false)
   const requestVersion = useRef(0)
+  const automaticMatchVersion = useRef<number | null>(null)
   const lastDiscount = useRef({ own: draft.discountPercent, connection: connectionDiscount })
   const matchedName = useRef(modelName)
 
@@ -175,6 +176,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
 
   const clearSelection = () => {
     requestVersion.current += 1
+    automaticMatchVersion.current = null
     setChosenModel(null)
     setDetails(null)
     setMatches(null)
@@ -221,9 +223,10 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const chooseModel = async (candidate: ModelPriceCandidate) => {
+  const chooseModel = async (candidate: ModelPriceCandidate, automatic = false) => {
     if (candidate.source !== draft.priceSource) return
     const version = ++requestVersion.current
+    if (automatic) automaticMatchVersion.current = version
     const previousRule = chosenModel?.key === candidate.key ? contextPriceRulePayload(draft) : undefined
     const previousReferences = chosenModel?.key === candidate.key ? draft.contextPriceReferences ?? [] : []
     const preserveSelection = !!candidate.contextPricing && previousReferences.length > 0
@@ -277,11 +280,12 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       applyCatalogOption(current, chosenModel.source, option, discount.percent))
   }
 
-  const matchPrice = async (allowAI = false) => {
+  const matchPrice = async (allowAI = false, automatic = false) => {
     const connection = model?.runtime_id ?? runtimeId
     const name = model?.upstream_model_id || modelName || model?.model_key || ""
     if (!connection || !name.trim() || decision || draft.priceSource !== "models_dev") return
     const version = ++requestVersion.current
+    if (automatic) automaticMatchVersion.current = version
     setSearching(true)
     setError(null)
     try {
@@ -293,7 +297,7 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
       setAiAvailable(response.requires_ai)
       if (response.model_entry) {
         setSearching(false)
-        await chooseModel(response.model_entry)
+        await chooseModel(response.model_entry, automatic)
       } else {
         setMatches(groupContextPriceModels(response.candidates))
         if (allowAI) setCatalogOpen(true)
@@ -316,9 +320,16 @@ export function ModelPriceSourceFields<Draft extends ModelPriceDraft>({ model, m
     } else if (draft.priceReference) return
     const version = requestVersion.current
     const timer = setTimeout(() => {
-      if (version === requestVersion.current) void matchPrice()
+      if (version === requestVersion.current) void matchPrice(false, true)
     }, 500)
-    return () => { clearTimeout(timer); requestVersion.current += 1; setSearching(false) }
+    return () => {
+      clearTimeout(timer)
+      if (requestVersion.current === version || requestVersion.current === automaticMatchVersion.current) {
+        requestVersion.current += 1
+        automaticMatchVersion.current = null
+        setSearching(false)
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.priceSource, modelName, runtimeId, model?.id])
 

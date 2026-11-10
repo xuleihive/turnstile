@@ -937,6 +937,11 @@ class CompositeCatalog:
                 snapshot._sync_failures[key] = error
         return snapshot
 
+    def invalidate(self, sources: Sequence[PriceSource]) -> None:
+        for catalog in self._catalogs:
+            if catalog.source in sources:
+                catalog.invalidate()
+
     def search_models(
         self, query: str, *, limit: int = 60, source: PriceSource | None = None,
     ) -> ModelSearch:

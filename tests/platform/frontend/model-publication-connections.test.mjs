@@ -1232,6 +1232,81 @@ test("manual price selection invalidates a queued automatic match", () => {
   }
 })
 
+for (const priceSource of ["azure_retail", "anthropic"]) {
+test(`switching from models.dev keeps the user-started ${priceSource} search`, async () => {
+  const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url), "utf8")
+  const effect = source.match(/useEffect\(\(\) => \{\n(    const renamed = matchedName\.current !== modelName[\s\S]+?)\n  \}, \[draft\.priceSource, modelName, runtimeId, model\?\.id\]\)/)
+  const clear = source.match(/const clearSelection = \(\) => \{\n([\s\S]+?)\n  \}\n/)
+  const search = source.match(/const search = async \(text = searchQuery, source: PriceSource = draft\.priceSource\) => \{\n([\s\S]+?)\n  \}\n/)
+  const click = source.match(/onClick=\{\(\) => \{\n(            if \(source === draft\.priceSource\) return[\s\S]+?)\n          \}\}>/)
+  const matching = source.match(/const matchPrice = async \(([^\n]+)\) => \{\n([\s\S]+?)\n  \}\n/)
+  const choosing = source.match(/const chooseModel = async \(([^\n]+)\) => \{\n([\s\S]+?)\n  \}\n/)
+  assert.ok(effect && clear && search && click && matching && choosing)
+  const execute = stripTypeScriptTypes(`
+    var clearSelection = () => {${clear[1]}\n}
+    var search = async (text = searchQuery, source = draft.priceSource) => {${search[1]}\n}
+    var matchPrice = async (${matching[1]}) => {${matching[2]}\n}
+    var chooseModel = async (${choosing[1]}) => {${choosing[2]}\n}
+    var runEffect = () => {${effect[1]}\n}
+    var click = source => {${click[1]}\n}
+  `)
+  for (const stage of ["queued", "matching", "options"]) {
+    const state = { draft: createModelPriceDraft(), matches: null, chosen: null, details: null, searching: false, open: false }
+    let resolveSearch
+    let resolveMatch
+    let resolveOptions
+    let scheduled
+    const automatic = { key: "models_dev:openai:gpt-4.1", label: "GPT 4.1", source: "models_dev" }
+    const context = {
+      requestVersion: { current: 0 }, automaticMatchVersion: { current: null },
+      matchedName: { current: "gpt-4.1" }, modelName: "gpt-4.1", model: undefined,
+      runtimeId: "connection", decision: false, imageGeneration: false, searchQuery: "gpt-4.1",
+      get draft() { return state.draft },
+      get chosenModel() { return state.chosen },
+      setDraft: updater => { state.draft = updater(state.draft) },
+      setMatches: matches => { state.matches = matches },
+      setSearching: value => { state.searching = value },
+      setCatalogOpen: value => { state.open = value },
+      setDetails: details => { state.details = details },
+      setChosenModel: chosen => { state.chosen = chosen },
+      setQuery() {}, setManualFromCatalog() {},
+      setLoadingOptions() {}, setPreviewReference() {}, setAiAvailable() {}, setError() {},
+      resetContextPriceRule: draft => draft, groupContextPriceModels: matches => matches,
+      dataSource: {
+        priceCatalogModels: () => new Promise(resolve => { resolveSearch = resolve }),
+        matchPriceModel: () => new Promise(resolve => { resolveMatch = resolve }),
+      },
+      loadModelPrices: () => new Promise(resolve => { resolveOptions = resolve }),
+      setTimeout: callback => { scheduled = callback; return 1 }, clearTimeout() {},
+    }
+    runInNewContext(execute, context)
+    const cleanup = context.runEffect()
+    if (stage !== "queued") scheduled()
+    if (stage === "options") {
+      resolveMatch({ model_entry: automatic, requires_ai: false })
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(typeof resolveOptions, "function")
+    }
+    context.click(priceSource)
+    cleanup()
+    context.runEffect()
+    assert.equal(state.searching, true)
+    if (stage === "matching") resolveMatch({ model_entry: automatic, requires_ai: false })
+    if (stage === "options") resolveOptions({ model_entry: automatic, options: [], complete: true })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(state.chosen, null)
+    assert.equal(state.details, null)
+    assert.equal(state.searching, true)
+    const candidate = { key: `${priceSource}:unit-model`, label: "Unit model", source: priceSource }
+    resolveSearch({ models: [candidate], unavailable: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(Array.from(state.matches ?? [], model => model.key), [candidate.key])
+    assert.equal(state.searching, false)
+    assert.equal(state.open, true)
+  }
+})
+}
+
 test("price preview confirmation allows catalog status updates but skips manual-only batches", () => {
   const source = readFileSync(new URL("../../../frontend/src/components/model-management/model-price-sync-dialog.tsx", import.meta.url), "utf8")
   const condition = source.match(/disabled=\{(busy \|\| !result\.confirmation_digest[^}]+)\}/)

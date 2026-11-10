@@ -2670,10 +2670,12 @@ class ModelRuntimeService:
         refreshed = self.registry()
         current_models = {model.id: model for model in refreshed.models}
         outcomes = []
+        updated_sources: list[PriceSource] = []
         for update in summary.updates:
             current = current_models.get(update.model_id)
             superseded = current is None or current.price_sync_status is PriceSyncStatus.SUPERSEDED
             if update.writes and not superseded:
+                updated_sources.append(by_id[update.model_id].price_source)
                 self._project_accepted_model_price(update.model_id)
             preview_detail = next(item for item in details if item.model_id == update.model_id)
             outcomes.append(PriceSyncDetail(
@@ -2686,6 +2688,7 @@ class ModelRuntimeService:
                 current_context_price_tiers=preview_detail.current_context_price_tiers,
                 proposed_context_price_tiers=preview_detail.proposed_context_price_tiers,
             ))
+        self._price_catalog.invalidate(updated_sources)
         return PriceSyncResponse(
             considered=len(summary.updates),
             updated=written,

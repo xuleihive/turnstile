@@ -54,6 +54,30 @@ def test_preview_is_read_only_and_confirmed_sync_is_bound_to_prices() -> None:
     assert error.value.status_code == 409 and repository.models == before
 
 
+def test_confirmed_sync_keeps_fresh_prices_when_discount_is_saved_later() -> None:
+    runtime, repository, model, catalog = service()
+    assert catalog.entries()[0].input_per_million == 2
+    before = deepcopy(repository.models)
+    catalog._fetch = lambda: document({"input": 2.2, "output": 8.8})
+
+    preview = runtime.sync_prices([model["id"]], dry_run=True)
+    assert preview.updated == 1 and preview.confirmation_digest
+    assert repository.models == before
+    assert catalog.entries()[0].input_per_million == 2
+
+    runtime.sync_prices([model["id"]], confirmation_digest=preview.confirmation_digest)
+    assert model["list_input_cost_per_million"] == 2.2
+    runtime.save_model(ManagedModelWrite.model_validate({
+        **{key: model[key] for key in ("provider_id", "runtime_id", "model_key", "display_name")},
+        "price_source": "models_dev", "price_reference": model["price_reference"],
+        "price_discount_percent": 90,
+    }), model["id"])
+    assert model["list_input_cost_per_million"] == 2.2
+    assert model["input_cost_per_million"] == pytest.approx(1.98)
+    assert model["list_output_cost_per_million"] == 8.8
+    assert model["output_cost_per_million"] == pytest.approx(7.92)
+
+
 def test_sync_refreshes_once_and_http_failure_recovers_without_changing_prices() -> None:
     import json
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -490,16 +514,52 @@ def test_repeated_public_quote_reuses_publication_after_catalog_refresh(
     assert repeated.desired_spec_sha256 == first.desired_spec_sha256
 
 
-@pytest.mark.parametrize("postgres", [False, True])
-def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
-    pricing_postgres: tuple[str, Event], postgres: bool,
+@pytest.mark.parametrize("name", ["GPT 4.1", "\u751f\u4ea7 GPT 4.1"])
+@pytest.mark.parametrize("with_manifest", [False, True])
+def test_legacy_publication_digest_uses_the_producer_canonicalization(
+    name: str, with_manifest: bool,
 ) -> None:
     import hashlib
     import json
 
+    from turnstile_core.domain.storage_routes import document_digest
+    from turnstile_core.persistence.repository_support import _publication_idempotency_digests
+
+    legacy: dict[str, Any] = {
+        "bindings": [{"model": {"display_name": name, "model_key": "gpt-4.1"}}],
+    }
+    current = deepcopy(legacy)
+    current["bindings"][0]["model"]["price_source_snapshot"] = {"entry_digest": "e" * 64}
+    manifest = {
+        "model_route_addition": {"version": 1, "alias": "gpt-4.1"},
+    } if with_manifest else None
+    expected = document_digest({**manifest, "desired_spec": legacy}) if manifest else (
+        hashlib.sha256(json.dumps(
+            legacy, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+    )
+    digests = _publication_idempotency_digests(current, "f" * 64, "model_add", manifest)
+    assert digests == ("f" * 64, expected)
+    assert current["bindings"][0]["model"]["price_source_snapshot"] == {"entry_digest": "e" * 64}
+
+
+@pytest.mark.parametrize("postgres", [False, True])
+@pytest.mark.parametrize("with_manifest", [False, True])
+@pytest.mark.parametrize("name", ["Legacy quote", "\u4e2d\u6587\u6a21\u578b"])
+def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
+    pricing_postgres: tuple[str, Event], postgres: bool, with_manifest: bool, name: str,
+) -> None:
+    import hashlib
+    import json
+    from contextlib import ExitStack, nullcontext
+
+    import psycopg
+    from psycopg.rows import dict_row
+
     from tests.backend.model_platform.control_plane_support import foundry_publication
     from tests.platform.pricing.test_price_catalog import GPT_41, StubAzure
     from turnstile_core.domain.runtime_models import ProviderTarget
+    from turnstile_core.domain.storage_routes import document_digest
     from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
     from turnstile_core.services.control_plane import (
         ControlPlaneConflictError,
@@ -507,7 +567,16 @@ def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
     )
 
     repository = PostgreSqlOpsDbProxy(pricing_postgres[0]) if postgres else InMemoryRepository()
+    contexts = ExitStack()
     try:
+        if postgres:
+            connection = contexts.enter_context(psycopg.connect(
+                pricing_postgres[0], autocommit=True, row_factory=dict_row,
+            ))
+            contexts.enter_context(connection.transaction(force_rollback=True))
+            contexts.enter_context(patch.object(
+                repository, "_connection", return_value=nullcontext(connection),
+            ))
         registry = repository.registry()
         publisher = GatewayControlPlaneService(
             repository, price_catalog=CompositeCatalog([StubAzure(GPT_41)]),
@@ -525,17 +594,82 @@ def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
         )
         write.model.price_source = PriceSource.AZURE_RETAIL
         write.model.price_reference = "azure_retail:Azure OpenAI:gpt 4.1:Global:*"
+        write.model.display_name = name
         prepared = publisher._prepare_model_publication(write, None)
-        legacy_payload, _ = publisher._release_payload(prepared.spec)
+        spec = prepared.spec
+        if with_manifest:
+            binding = spec.bindings[-1].model_copy(update={
+                "model": spec.bindings[-1].model.model_copy(update={"display_name": name}),
+            })
+            spec = spec.model_copy(update={
+                "bindings": [binding], "discovery_models": [
+                    model.model_copy(update={"display_name": name})
+                    for model in spec.discovery_models if model.id == binding.model.model_key
+                ],
+            })
+        legacy_payload, _ = publisher._release_payload(spec)
         for binding in legacy_payload["bindings"]:
             binding["model"].pop("price_source_snapshot", None)
-        legacy_digest = hashlib.sha256(json.dumps(
-            legacy_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-        ).encode()).hexdigest()
+        if with_manifest and name.isascii():
+            assert json.dumps(legacy_payload, ensure_ascii=False).isascii()
+        manifest = None
+        base_id = None
+        if with_manifest:
+            parent_payload = deepcopy(legacy_payload)
+            for binding in parent_payload["bindings"]:
+                binding["model"]["model_key"] += "-initial"
+            for discovery in parent_payload["discovery_models"]:
+                discovery["id"] += "-initial"
+            parent = repository.create_gateway_publication(
+                write.gateway_profile_id, parent_payload, document_digest(parent_payload),
+                "model_add", "legacy-owner",
+            )
+            base_id = parent["id"]
+            claimed = repository.claim_gateway_publication("legacy-worker", 180)
+            assert claimed is not None and claimed["id"] == base_id
+            previous = "queued"
+            for status in (
+                "validating", "provisioning", "building_revision", "verifying", "promoting",
+            ):
+                if not repository.renew_gateway_publication_lease(base_id, "legacy-worker", 180):
+                    claimed = repository.claim_gateway_publication("legacy-worker", 180)
+                    assert claimed is not None and claimed["id"] == base_id
+                assert repository.transition_gateway_publication(
+                    base_id, previous, status,
+                    {"apim_revision": "1", "policy_sha256": "b" * 64,
+                     "resource_manifest": {"fixed_route_program": {}}}, "legacy-worker",
+                )
+                previous = status
+            if not repository.renew_gateway_publication_lease(base_id, "legacy-worker", 180):
+                claimed = repository.claim_gateway_publication("legacy-worker", 180)
+                assert claimed is not None and claimed["id"] == base_id
+            repository.activate_gateway_publication(base_id, "legacy-worker")
+            manifest = {"model_route_addition": {
+                "version": 1, "program_release_id": str(base_id),
+                "alias": legacy_payload["bindings"][0]["model"]["model_key"],
+            }}
+        if manifest:
+            legacy_digest = document_digest({**manifest, "desired_spec": legacy_payload})
+        else:
+            legacy_digest = hashlib.sha256(json.dumps(
+                legacy_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
         original = repository.create_gateway_publication(
             write.gateway_profile_id, legacy_payload, legacy_digest, "model_add", "legacy-owner",
+            expected_base_release_id=base_id, initial_manifest=manifest,
         )
         before = deepcopy(repository.list_gateway_publications())
+        if manifest:
+            current_payload, _ = publisher._release_payload(spec)
+            repeated_row = repository.create_gateway_publication(
+                write.gateway_profile_id, current_payload,
+                document_digest({**manifest, "desired_spec": current_payload}),
+                "model_add", "owner", expected_base_release_id=base_id, initial_manifest=manifest,
+            )
+            assert repeated_row["id"] == original["id"]
+            assert repeated_row["desired_spec_sha256"] == legacy_digest
+            assert repository.list_gateway_publications() == before
+            return
         repeated = publisher.publish(write, "owner")
         assert repeated.id == original["id"]
         assert repeated.desired_spec_sha256 == legacy_digest
@@ -547,6 +681,7 @@ def test_legacy_catalog_publication_reuses_its_unchanged_frozen_intent(
                 publisher.publish(changed, "owner")
         assert repository.list_gateway_publications() == before
     finally:
+        contexts.close()
         if isinstance(repository, PostgreSqlOpsDbProxy):
             repository.close()
 

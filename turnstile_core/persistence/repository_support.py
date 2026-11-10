@@ -25,12 +25,14 @@ def _publication_idempotency_digests(
                  for binding in legacy["bindings"]]
     if not any(snapshot is not None for snapshot in snapshots):
         return (desired_spec_sha256,)
-    document = legacy if initial_manifest is None else {
-        **initial_manifest, "desired_spec": legacy,
-    }
-    digest = hashlib.sha256(json.dumps(
-        document, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")).hexdigest()
+    if initial_manifest is not None:
+        from ..domain.storage_routes import document_digest
+
+        digest = document_digest({**initial_manifest, "desired_spec": legacy})
+    else:
+        digest = hashlib.sha256(json.dumps(
+            legacy, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
     return desired_spec_sha256, digest
 
 
